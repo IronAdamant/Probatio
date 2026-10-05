@@ -1,6 +1,6 @@
 # Probatio
 
-Probatio (Latin: a testing, a proof) is a free, open-source testing toolkit built for AI agents
+Probatio (Latin: a testing, a proof) is a free testing toolkit under the MIT license, built for AI agents
 (Claude, Grok, ChatGPT, others), working alone or as swarms. Every claim it makes is checkable;
 it remembers what was fixed so agents with small context do not redo or undo work; and it finds
 the bugs a test suite would miss instead of asking anyone to read more tests.
