@@ -5,7 +5,7 @@ Probatio (Latin: a testing, a proof) is a free, open-source testing toolkit buil
 it remembers what was fixed so agents with small context do not redo or undo work; and it finds
 the bugs a test suite would miss instead of asking anyone to read more tests.
 
-Status (2026-10-04): `mutate` passes the Auspex check at b38e85f (51 killed, 1 survived, the known miss). `ledger build` rebuilds the 13 cleanly reverting train fixes and reports the other 20 as needing a hand-made mutant. `matrix report` reproduces the round-2 table from the recorded scores, with slim C at 10/18 and the gap list as the headline. `golden check` splits contract from wording. `verify-change` on one Auspex function reported 2 caught, 1 missed, rest 0, in 5.34s and 5.38s. The MCP server returns the same JSON as the CLI.
+Status (2026-10-05): `mutate run` discovers the project suite and scores it. Python, JavaScript, and TypeScript narrow each mutant with a line map collected on the baseline. C does the same when the binary was built with LLVM coverage. A suite with no line map, a baseline of 5 seconds or more, and more than 30 mutants stops before the first mutant. `verify-change` mutates the changed lines and uses that same map. `mutate tally` reads a finished run, names tests that killed nothing, and does not delete a test. The MCP server speaks one JSON object per line and returns the same JSON as the CLI.
 
 Read in this order:
 
@@ -23,10 +23,19 @@ One JSON object on stdout. `schemaVersion`, `ok`, `summary`, `next`, `nextCall`.
 
 ```bash
 npx probatio mutate generate --package . --out .probatio/generate
-npx probatio mutate run --package . --patches .probatio/generate/mutants --out .probatio/runs --no-build
+npx probatio mutate run --package . --patches .probatio/generate/mutants --out .probatio/runs
+npx probatio mutate tally --out .probatio/runs
 ```
 
-`generate` writes operator mutants (conditions, `&&`/`||`, `===`/`!==`, boundaries, booleans, a dropped `!`). The same command also writes that operator class for COBOL (`.cob`, `.cbl`), Rust, C, C++, Java, Go, and Python: `AND`/`OR` or a relational swap in COBOL, `and`/`or` in Python, and `&&`/`||` or a relational swap in the others. Strings and comments are not mutated. A COBOL `*>` comment and a fixed-format line whose column 7 is `*` or `/` are comments. Each patch is forward: apply it to introduce the bug, and the file says so. `run` executes the Node test runner. A package whose only tests are Python (`test_*.py` or `*_test.py`) runs those with `python3`. COBOL, Rust, C, C++, Java, and Go stay generate-only. A worktree that has no `node_modules` uses the main checkout's. It counts a kill only when the killing test fails twice on its own. A file that finishes its named tests and then does not exit is the same kind of kill: that file is rerun twice with no name filter. A timeout of the whole suite is not a kill. Add `--affected` to run only the test files that can see the change. The default runs the whole suite.
+`generate` writes operator mutants (conditions, `&&`/`||`, `===`/`!==`, boundaries, booleans, a dropped `!`). The same class is written for COBOL (`.cob`, `.cbl`), Rust, C, C++, Java, Go, Python, JavaScript, and C#. Strings and comments are not mutated. A COBOL `*>` comment and a fixed-format line whose column 7 is `*` or `/` are comments. Each patch is forward: apply it to introduce the bug, and the file says so. When mutants were written, `next` states the count, the suite command if one was discovered, and whether the first run collects a line map.
+
+`run` discovers the suite: `run_tests.sh`, Cargo, Go, Swift, Maven, dotnet, pytest, unittest, node:test, Mocha, then `make test` when COBOL tests sit under that Makefile. An unknown layout stops and asks for `--suite-command`. It does not compile one file and call that the suite. `make test` that would curl or wget a missing file stops, and nothing is fetched. A worktree that has no `node_modules` uses the main checkout's. Omitting `--build` runs no build. Pass `--build` with a command when the suite needs one first.
+
+Python, JavaScript, and TypeScript collect a line map on the baseline. C collects one when LLVM coverage was instrumented. Go and Maven/Java collect file, line, and the test names that hit that line. A later mutant runs only those tests (`go test -run`, Maven `-Dtest`). A line no test executed is `no coverage`, and the suite is not started. Rust and C# can take a test name and do not collect a line. A baseline of 5 seconds or more, with no line map and more than 30 mutants still pending, stops before the first mutant. `next` names that baseline and tells you to narrow `--src` or pass a smaller patch directory. A one-file C, C++, Java, COBOL, or assembly launcher is not a suite discovery returns.
+
+The mutant timeout is the baseline duration times 5, and at least 20 seconds, capped by `--suite-timeout-ms`. A timeout is not a kill. `--budget-ms` stops mutant work after the baseline. The first mutant still runs, except for that no-line-map stop. A kill is the test that failed, or a compiler token when the mutant did not build. Confirm is on by default and reruns the failing names. Pytest names that `-k` cannot express are passed as node ids. A usage error, including pytest exit 4, is not a kill. `verify-change` does not confirm a second time. Add `--affected` to limit the file list to tests that can see the change. The default, once a line map exists, runs the tests on the changed line.
+
+`tally` reads that run directory. The summary leads with the no-coverage count, then the survivors. It names tests that killed a mutant and tests that killed nothing. A gap is a survivor. An unseen line is not a gap and not a pass. A timeout is neither a kill nor a gap. `deletedTests` is 0. It does not delete a file.
 
 ## ledger
 
@@ -66,10 +75,10 @@ Rewrites `PROBATIO.md` from the same JSON: open gaps, recent fixes and their gua
 npx probatio verify-change --package . --base HEAD~1 --out .probatio/verify
 ```
 
-Lists the tests that can see the diff, runs mutants on the changed lines, and reports caught, missed, mutants that were not run, and any golden contract change. The mutants are the same operator class `mutate generate` would write, including a non-TypeScript diff. A string or a comment is not a mutant. The default runs every test file that imports a changed file. `--max-tests` caps that list and names the ones left out.
+Lists the tests that can see the diff, runs mutants on the changed lines, and reports caught, missed, mutants that were not run, lines with no coverage, and any golden contract change. The mutants are the same operator class `mutate generate` would write, including a non-TypeScript diff. A string or a comment is not a mutant. `ran` is still the direct-importer list. The tests that execute are chosen by the line map, the same way `mutate run` chooses them, including when that importer list is empty. No discovered suite leaves those mutants in `notRun` and does not start a run. The suite timeout is 10 minutes. `--max-tests` only shortens the reported importer list. `--max-mutants` (default 4) caps how many changed lines are run.
 
 ## queue
 
-An item is `.probatio/queue/<id>.json`. `queue claim` renames it to `claimed/<agent>-<id>.json` with a lease. `queue reap` moves an expired lease back. `check-kill <id>` runs only the tests that directly import the mutated file, the same set `verify-change` would run. It is done only when that mutant dies, the killing test fails again on its own, and that suite is still green.
+An item is `.probatio/queue/<id>.json`. `queue claim` renames it to `claimed/<agent>-<id>.json` with a lease. `queue reap` moves an expired lease back. `check-kill <id>` runs the tests that directly import the mutated file and confirms the killing test again. It is done only when that mutant dies and that suite is still green. `verify-change` is the edit-sized run: it uses the line map and does not confirm a second time.
 
 The MCP server speaks stdio JSON-RPC. Its one tool runs the CLI and returns that command's JSON.

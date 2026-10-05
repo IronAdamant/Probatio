@@ -26,6 +26,8 @@ type Body = {
   noCoverage?: number
   timeouts?: number
   notStarted?: string[]
+  gaps?: Array<{ id: string }>
+  kills?: Array<{ id: string }>
   baselineMs?: number | null
   commands?: Array<{ id: string; outcome: string; command: string; cause: string | null; next: string; reused?: boolean; wholeSuite?: boolean }>
 }
@@ -119,8 +121,12 @@ test("a mutant past the baseline multiple times out and another mutant finishes"
   assert.ok(slow, result.stdout)
   assert.equal(slow?.cause ?? null, null)
   assert.equal(slow?.outcome, "timeout")
+  assert.match(body.summary, /^\d+ no coverage, \d+ survived/)
   assert.match(body.next, /Timed out/)
   assert.match(body.next, /baseline/)
+  assert.equal((body.kills ?? []).some((item) => item.id === slow?.id), false)
+  assert.equal((body.gaps ?? []).some((item) => item.id === slow?.id), false)
+  assert.ok((body.timeouts ?? 0) >= 1)
   for (const token of ["clang", "cobc", "javac", "nasm", "swiftc", "cargo", "tsc", "dotnet"]) {
     assert.notEqual(slow?.cause, token)
   }

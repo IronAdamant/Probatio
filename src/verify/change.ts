@@ -7,6 +7,8 @@ import { findInSource } from "../mutate/find.js"
 import { mutantId } from "../mutate/ids.js"
 import { forwardDiff, git } from "../mutate/patch.js"
 import { runMutants, type MutantResult } from "../mutate/run.js"
+import { leadSummary } from "../mutate/suite-decision.js"
+import { discoverSuite } from "../mutate/suites.js"
 
 export type VerifyOptions = {
   packageDir: string
@@ -16,12 +18,14 @@ export type VerifyOptions = {
   commit: string
   maxMutants: number
   maxMinutes: number
-  /** Direct importers to run. Null runs every direct importer. */
+  /** Caps the direct-importer names in the report. The run itself uses the line map. */
   maxTests: number | null
   onProgress?: (line: string) => void
 }
 
 type Located = { id: string; file: string; line: number; op: string }
+
+type Other = { id: string; outcome: string; file: string; line: number }
 
 /** Diff-scoped mutants, the tests that can see the edit, and golden contract rows that changed. */
 export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
@@ -77,8 +81,10 @@ export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
   const notRan = direct.slice(ran.length)
   let caught: Located[] = []
   let missed: Located[] = []
-  let other: Array<{ id: string; outcome: string }> = []
-  if (written.length > 0 && ran.length > 0) {
+  let other: Other[] = []
+  let suiteCommand = ""
+  const suite = discoverSuite(packageDir, "tests")
+  if (written.length > 0 && suite && suite.files.length > 0) {
     const report = await runMutants({
       packageDir,
       repoDir: repo,
@@ -93,24 +99,26 @@ export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
       build: null,
       testsDir: "tests",
       unset: ["SOLARI_API_KEY", "AUSPEX_LIVE"],
-      suiteTimeoutMs: 120_000,
+      suiteTimeoutMs: 600_000,
       testTimeoutMs: 60_000,
       confirm: false,
       affected: false,
       agent: null,
-      onlyTests: ran,
       onProgress: options.onProgress,
     })
-    if (!report.ok) return fail(options.outDir, report.summary, { affected, ran, notRan, goldenContract, notRun })
+    suiteCommand = report.suiteCommand
+    if (!report.ok) return fail(options.outDir, report.summary, { affected, ran, notRan, goldenContract, notRun, next: report.next, suiteCommand })
     const byId = new Map(written.map((item) => [item.id, item]))
     const results = readOutcomes(path.join(options.outDir, "run"), written.map((item) => item.id))
     caught = results.filter((item) => item.outcome === "killed").map((item) => byId.get(item.id)).filter((item): item is Located => item !== undefined)
     missed = results.filter((item) => item.outcome === "survived").map((item) => byId.get(item.id)).filter((item): item is Located => item !== undefined)
-    other = results.filter((item) => item.outcome !== "killed" && item.outcome !== "survived").map((item) => ({ id: item.id, outcome: item.outcome }))
+    other = results
+      .filter((item) => item.outcome !== "killed" && item.outcome !== "survived")
+      .map((item) => ({ id: item.id, outcome: item.outcome, file: byId.get(item.id)?.file ?? "", line: byId.get(item.id)?.line ?? 0 }))
   } else {
     notRun.push(...written)
   }
-  const envelope = bodyOf(options.outDir, true, affected, ran, notRan, caught, missed, other, goldenContract, notRun)
+  const envelope = bodyOf(options.outDir, true, affected, ran, notRan, caught, missed, other, goldenContract, notRun, suiteCommand)
   writeFileSync(path.join(options.outDir, "verify.json"), `${JSON.stringify(envelope, null, 2)}\n`)
   return envelope
 }
@@ -123,15 +131,16 @@ function bodyOf(
   notRan: string[],
   caught: Located[],
   missed: Located[],
-  other: Array<{ id: string; outcome: string }>,
+  other: Other[],
   goldenContract: Array<{ file: string; row: string; fields: string[] }>,
   notRun: Located[],
+  suiteCommand: string,
 ): Envelope {
-  const held = `${notRun.length} not run`
+  const uncovered = other.filter((item) => item.outcome === "no coverage")
   const summary = ok
-    ? `${caught.length} caught, ${missed.length} missed, ${held}, ${affected.length} affected tests, ${goldenContract.length} golden contract changes.`
+    ? leadSummary(uncovered.length, missed.length, "missed", `${caught.length} caught, ${notRun.length} not run, ${affected.length} affected tests, ${goldenContract.length} golden contract changes.`)
     : "verify-change did not finish."
-  const first = missed[0] ?? notRun[0] ?? caught[0]
+  const first = missed[0] ?? uncovered[0] ?? notRun[0] ?? caught[0]
   return {
     schemaVersion: SCHEMA_VERSION,
     ok,
@@ -142,6 +151,7 @@ function bodyOf(
     affected,
     ran,
     notRan,
+    suiteCommand,
     caught,
     missed,
     other,
@@ -170,6 +180,8 @@ function fail(
     notRan: string[]
     goldenContract: Array<{ file: string; row: string; fields: string[] }>
     notRun: Located[]
+    next?: string
+    suiteCommand?: string
   },
 ): Envelope {
   mkdirSync(outDir, { recursive: true })
@@ -179,11 +191,12 @@ function fail(
     ok: false,
     command: "verify-change",
     summary,
-    next: "Fix that and run the same command again.",
+    next: extra?.next ?? "Fix that and run the same command again.",
     nextCall: null,
     affected: extra?.affected ?? [],
     ran: extra?.ran ?? [],
     notRan: extra?.notRan ?? [],
+    suiteCommand: extra?.suiteCommand ?? "",
     caught: [],
     missed: [],
     other: [],

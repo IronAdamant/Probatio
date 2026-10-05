@@ -2,7 +2,7 @@
 import path from "node:path"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { SCHEMA_VERSION, render, type Envelope } from "./contract.js"
-import { bool, int, parseArgs, requireText, text, texts } from "./flags.js"
+import { bool, int, parseArgs, requireText, text, texts, type FlagValue } from "./flags.js"
 import { asTable, checkGolden, goldenShape, readGolden, writeGolden } from "./golden/check.js"
 import { buildLedger } from "./ledger/build.js"
 import { readKills, reportMatrix } from "./matrix/report.js"
@@ -25,6 +25,9 @@ import {
 import { git } from "./mutate/patch.js"
 import { generateMutants } from "./mutate/generate.js"
 import { runMutants } from "./mutate/run.js"
+import { generateNext } from "./mutate/suite-decision.js"
+import { discoverSuite } from "./mutate/suites.js"
+import { tallyRun } from "./mutate/tally.js"
 import { checkKill } from "./swarm/check-kill.js"
 import { claimItem, reapClaims, seedQueue } from "./swarm/queue.js"
 import { verifyChange } from "./verify/change.js"
@@ -35,6 +38,7 @@ const [group, action] = parsed.command
 try {
   if (group === "mutate" && action === "generate") finish(await generateCommand(parsed.flags), parsed.human)
   if (group === "mutate" && action === "run") finish(await runCommand(parsed.flags), parsed.human)
+  if (group === "mutate" && action === "tally") finish(tallyCommand(parsed.flags), parsed.human)
   if (group === "ledger" && action === "build") finish(await ledgerCommand(parsed.flags), parsed.human)
   if (group === "matrix" && action === "report") finish(matrixCommand(parsed.flags), parsed.human)
   if (group === "golden" && action === "check") finish(goldenCommand(parsed.flags), parsed.human)
@@ -71,7 +75,7 @@ function usage(ok: boolean, summary: string): Envelope {
     ok,
     command: "mutate.help",
     summary,
-    next: "probatio mutate generate writes operator mutants. probatio mutate run confirms each kill twice. probatio ledger build reverts fix commits. probatio matrix report reads a recorded score table.",
+    next: "probatio mutate generate writes operator mutants. probatio mutate run confirms each kill twice. probatio mutate tally reads a finished run and does not delete a test. probatio ledger build reverts fix commits. probatio matrix report reads a recorded score table.",
     nextCall: null,
   }
 }
@@ -106,6 +110,7 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
   const shown = result.mutants.slice(0, 10).map(({ id, file, line, op }) => ({ id, file, line, op }))
   const patches = path.join(outDir, "mutants")
   const stopped = result.budgetHit
+  const suite = discoverSuite(packageDir, text(flags, "tests-dir") ?? "tests")
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: true,
@@ -115,9 +120,7 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
       : `${result.mutants.length} mutants in ${result.filesVisited} files. No string-literal mutant.`,
     next: stopped
       ? "Narrow --src or raise --max-minutes, then run the same command."
-      : result.mutants.length === 0
-        ? "Nothing to run."
-        : "Run the batch.",
+      : generateNext(result.mutants.length, suite ? { kind: suite.kind, command: suite.command } : null),
     nextCall:
       result.mutants.length === 0
         ? null
@@ -144,12 +147,7 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise
   if (direction !== "auto" && direction !== "forward" && direction !== "reverse") {
     throw new Error("--direction must be auto, forward, or reverse")
   }
-  const buildValues = flags.get("build")
-  const build = !buildValues || buildValues.length === 0
-    ? ["npm", "run", "build:mcp", "--silent"]
-    : buildValues[buildValues.length - 1] === false
-      ? null
-      : String(buildValues[buildValues.length - 1]).split(" ").filter(Boolean)
+  const build = buildCommand(flags)
   const report = await runMutants({
     packageDir,
     repoDir,
@@ -205,6 +203,10 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise
     kills: report.kills,
     full: report.full,
   }
+}
+
+function tallyCommand(flags: ReturnType<typeof parseArgs>["flags"]): Envelope {
+  return tallyRun(path.resolve(requireText(flags, "out")))
 }
 
 async function ledgerCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
@@ -447,12 +449,7 @@ async function checkKillCommand(flags: ReturnType<typeof parseArgs>["flags"], id
   const packageDir = path.resolve(requireText(flags, "package"))
   const patchDirs = texts(flags, "patches").map((dir) => path.resolve(dir))
   if (patchDirs.length === 0) throw new Error("--patches is required")
-  const buildValues = flags.get("build")
-  const build = !buildValues || buildValues.length === 0
-    ? null
-    : buildValues[buildValues.length - 1] === false
-      ? null
-      : String(buildValues[buildValues.length - 1]).split(" ").filter(Boolean)
+  const build = buildCommand(flags)
   return checkKill(id, {
     packageDir,
     repoDir: path.resolve(text(flags, "repo") ?? gitRoot(packageDir)),
@@ -500,4 +497,14 @@ function gitRoot(cwd: string): string {
 function finish(envelope: Envelope, human: boolean): never {
   process.stdout.write(render(envelope, human))
   process.exit(envelope.ok ? 0 : 1)
+}
+
+/** Omitted `--build` and `--no-build` both mean no build. `--build <cmd>` opts in. */
+function buildCommand(flags: Map<string, FlagValue[]>): string[] | null {
+  const values = flags.get("build")
+  if (!values || values.length === 0) return null
+  const last = values[values.length - 1]
+  if (typeof last !== "string") return null
+  const parts = last.split(" ").filter(Boolean)
+  return parts.length > 0 ? parts : null
 }

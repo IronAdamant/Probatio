@@ -85,8 +85,8 @@ test("golden re-records wording, refuses a contract change without a trailer, an
   }
 })
 
-test("a real Auspex golden treats nextLead as wording and refuses a contract field without a trailer", () => {
-  const source = path.resolve("/Users/aron/Documents/coding_projects/auspex/examples/auspex-ts/tests/golden/out/live-host-change.json")
+test("a golden row treats nextLead as wording and refuses a contract field without a trailer", () => {
+  const source = path.join(root, "tests", "fixtures", "live-host-change.json")
   const originalBytes = readFileSync(source)
   const table = JSON.parse(originalBytes.toString("utf8")) as Record<string, unknown>
   const found = Object.entries(table).find(([key, value]) => {

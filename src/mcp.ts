@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -12,32 +12,38 @@ type Request = {
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-let buffer = Buffer.alloc(0)
+const version = readVersion()
+const tool = {
+  name: "probatio",
+  description: "Run one probatio command. argv is the CLI words and flags.",
+  inputSchema: {
+    type: "object",
+    properties: { argv: { type: "array", items: { type: "string" } } },
+    required: ["argv"],
+  },
+}
 
-process.stdin.on("data", (chunk: Buffer) => {
-  buffer = Buffer.concat([buffer, chunk])
+let buffer = ""
+
+process.stdin.setEncoding("utf8")
+process.stdin.on("data", (chunk: string) => {
+  buffer += chunk
   drain()
 })
-process.stdin.on("end", () => process.exit(0))
+process.stdin.on("end", () => {
+  drain(true)
+  process.exit(0)
+})
 
-function drain() {
-  for (;;) {
-    const headerEnd = buffer.indexOf("\r\n\r\n")
-    if (headerEnd === -1) return
-    const header = buffer.subarray(0, headerEnd).toString("utf8")
-    const match = header.match(/Content-Length:\s*(\d+)/i)
-    const start = headerEnd + 4
-    if (!match) {
-      buffer = buffer.subarray(start)
-      continue
-    }
-    const length = Number(match[1])
-    if (buffer.length < start + length) return
-    const body = buffer.subarray(start, start + length).toString("utf8")
-    buffer = buffer.subarray(start + length)
+function drain(flush = false) {
+  const lines = buffer.split("\n")
+  buffer = flush ? "" : lines.pop() ?? ""
+  for (const line of lines) {
+    const text = line.replace(/\r$/, "").trim()
+    if (!text) continue
     let message: Request
     try {
-      message = JSON.parse(body) as Request
+      message = JSON.parse(text) as Request
     } catch {
       continue
     }
@@ -55,29 +61,14 @@ function handle(message: Request) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "probatio", version: "0.0.1" },
+        serverInfo: { name: "probatio", version },
+        tools: [tool],
       },
     })
     return
   }
   if (message.method === "tools/list") {
-    send({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: {
-        tools: [
-          {
-            name: "probatio",
-            description: "Run one probatio command. argv is the CLI words and flags.",
-            inputSchema: {
-              type: "object",
-              properties: { argv: { type: "array", items: { type: "string" } } },
-              required: ["argv"],
-            },
-          },
-        ],
-      },
-    })
+    send({ jsonrpc: "2.0", id: message.id, result: { tools: [tool] } })
     return
   }
   if (message.method === "tools/call") {
@@ -118,8 +109,16 @@ function cliCommand(): { bin: string; args: string[] } {
   return { bin: tsx, args: [path.join(here, "cli.ts")] }
 }
 
+function readVersion(): string {
+  try {
+    const raw = JSON.parse(readFileSync(path.resolve(here, "..", "package.json"), "utf8")) as { version?: string }
+    return typeof raw.version === "string" && raw.version.length > 0 ? raw.version : "0.0.1"
+  } catch {
+    return "0.0.1"
+  }
+}
+
 function send(message: unknown) {
-  const payload = Buffer.from(JSON.stringify(message), "utf8")
-  process.stdout.write(`Content-Length: ${payload.length}\r\n\r\n`)
-  process.stdout.write(payload)
+  const line = JSON.stringify(message)
+  process.stdout.write(`${line}\n`)
 }

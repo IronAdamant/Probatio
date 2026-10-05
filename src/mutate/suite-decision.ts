@@ -28,10 +28,68 @@ export function noCoverageNext(file: string, line: number): string {
   return `No coverage for ${file}:${line}. No test executed that line.`
 }
 
+/** Every agent-facing count starts with unseen lines, then survivors. */
+export function leadSummary(noCoverage: number, survivors: number, survivorWord: "survived" | "missed", rest: string): string {
+  return `${noCoverage} no coverage, ${survivors} ${survivorWord}, ${rest}`
+}
+
+export function campaignSummary(counts: {
+  noCoverage: number
+  survived: number
+  killed: number
+  flaky: number
+  timeouts: number
+  errors: number
+  finished: number
+}): string {
+  return leadSummary(
+    counts.noCoverage,
+    counts.survived,
+    "survived",
+    `${counts.killed} killed, ${counts.flaky} flaky, ${counts.timeouts} timed out, ${counts.errors} errored, of ${counts.finished} finished.`,
+  )
+}
+
 export function timeoutLimitMs(baselineMs: number, multiple: number, floorMs: number): number {
   const floor = Math.max(1, floorMs)
   const scaled = Math.ceil(Math.max(0, baselineMs) * Math.max(1, multiple))
   return Math.max(floor, scaled)
+}
+
+/** Kinds that collect a per-line map on the baseline. Other kinds pay the whole suite. */
+const LINE_MAP_KINDS = new Set(["node", "pytest", "c", "go", "maven"])
+
+/** A baseline this long, with no line map, is too expensive to repeat for a large batch. */
+export const SLOW_BASELINE_MS = 5_000
+
+/** Pending mutants above this count, on a slow unmapped suite, are not started. */
+export const LARGE_BATCH = 30
+
+export function hasLineMap(kind: string): boolean {
+  return LINE_MAP_KINDS.has(kind)
+}
+
+export function scaleStop(input: {
+  kind: string
+  baselineMs: number | null
+  pending: number
+}): { action: "run" } | { action: "stop"; summary: string; next: string } {
+  if (hasLineMap(input.kind)) return { action: "run" }
+  if (input.baselineMs == null || input.baselineMs < SLOW_BASELINE_MS) return { action: "run" }
+  if (input.pending <= LARGE_BATCH) return { action: "run" }
+  const seconds = (input.baselineMs / 1000).toFixed(1)
+  const next = `No line map for this suite. The baseline took ${seconds}s and ${input.pending} mutants are waiting. Narrow --src or pass a patch slice. Nothing was started.`
+  return { action: "stop", summary: next, next }
+}
+
+/** What generate tells the agent before any mutant runs. */
+export function generateNext(count: number, suite: { kind: string; command: string } | null): string {
+  if (count === 0) return "Nothing to run."
+  if (!suite) return `${count} mutants. No suite was discovered. Pass --suite-command when you run the batch.`
+  const map = hasLineMap(suite.kind)
+    ? "The first run pays that suite once, then a line map narrows each mutant."
+    : "This suite has no line map. A baseline of 5 seconds or more with more than 30 mutants stops before the first mutant."
+  return `${count} mutants. Suite is ${suite.command}. ${map}`
 }
 
 export type SuiteChoice = {

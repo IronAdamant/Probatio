@@ -321,6 +321,9 @@ async function launch(
     const tests = selection.map(surefireTest).filter((name) => name.length > 0)
     const args = ["-B", "test", ...(tests.length > 0 ? [`-Dtest=${tests.join(",")}`] : [])]
     const whole = wantsNames && tests.length === 0
+    // Surefire leaves the previous run's XML in place. A confirm that did not
+    // re-execute a class would otherwise read that class as failed again.
+    rmSync(path.join(pkg, "target", "surefire-reports"), { recursive: true, force: true })
     return tag(spawnCollected("mvn", args, pkg, javaEnv(env), timeoutMs), shown("mvn", args), whole, selection)
   }
   if (spec.kind === "dotnet") {
@@ -329,8 +332,11 @@ async function launch(
   }
   if (spec.kind === "dotnet-exe") return tag(runDotnetExe(pkg, spec, files, timeoutMs, env), spec.command, wantsNames, selection)
   if (spec.kind === "mocha") return tag(runMocha(pkg, files, timeoutMs, env), spec.command, wantsNames, selection)
-  // macOS `script` allocates a tty. tini's suite calls `docker run -it`, which exits immediately without one.
-  if (spec.kind === "script") return tag(runScript(pkg, timeoutMs, env), spec.command, wantsNames, selection)
+  // A tty is only for a suite that runs `docker run -it` (tini). Everything else is bash.
+  if (spec.kind === "script") {
+    const launched = scriptInvocation(pkg)
+    return tag(runScript(pkg, timeoutMs, env, launched), launched.command, wantsNames, selection)
+  }
   if (spec.kind === "c" || spec.kind === "cpp") return tag(compileAndRun(pkg, files, spec.kind === "cpp", timeoutMs, env), spec.command, wantsNames, selection)
   if (spec.kind === "java") return tag(compileJava(pkg, files, timeoutMs, env), spec.command, wantsNames, selection)
   if (spec.kind === "swiftc") return tag(compileSwift(pkg, files, timeoutMs, env), spec.command, wantsNames, selection)
@@ -607,10 +613,71 @@ function clearBytecode(pkg: string): void {
   }
 }
 
+let gnuScriptCache: boolean | null = null
+
+function suiteNeedsTty(pkg: string): boolean {
+  const files = new Set<string>()
+  const rootScript = path.join(pkg, "run_tests.sh")
+  if (existsSync(rootScript)) files.add(rootScript)
+  try {
+    for (const name of readdirSync(pkg)) {
+      if (name.endsWith(".sh")) files.add(path.join(pkg, name))
+    }
+  } catch {
+    // A missing directory is not a tty.
+  }
+  let entry = ""
+  try {
+    entry = readFileSync(rootScript, "utf8")
+  } catch {
+    entry = ""
+  }
+  for (const match of entry.matchAll(/(?:^|[\s"'`/])([\w.-]+\.sh)\b/g)) {
+    const full = path.resolve(pkg, match[1])
+    if (full.startsWith(pkg + path.sep) && existsSync(full)) files.add(full)
+  }
+  for (const file of files) {
+    let body = ""
+    try {
+      body = readFileSync(file, "utf8")
+    } catch {
+      continue
+    }
+    if (dockerWantsTty(body)) return true
+  }
+  return false
+}
+
+function dockerWantsTty(text: string): boolean {
+  return text.split("\n").some((line) => {
+    if (!/\bdocker\s+run\b/.test(line)) return false
+    return /(?:^|\s)--tty(?:\s|=|$)/.test(line) || /(?:^|\s)-[A-Za-z]*t[A-Za-z]*(?:\s|$)/.test(line)
+  })
+}
+
+function gnuScript(): boolean {
+  if (gnuScriptCache !== null) return gnuScriptCache
+  const probe = spawnSync("script", ["--version"], { encoding: "utf8", timeout: 2000 })
+  const text = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`
+  gnuScriptCache = probe.status === 0 && /util-linux|\bGNU\b/.test(text)
+  return gnuScriptCache
+}
+
+function scriptInvocation(pkg: string): { bin: string; args: string[]; command: string } {
+  if (!suiteNeedsTty(pkg)) return { bin: "bash", args: ["run_tests.sh"], command: "bash run_tests.sh" }
+  if (gnuScript()) {
+    const args = ["-q", "-c", "bash run_tests.sh", "/dev/null"]
+    return { bin: "script", args, command: shown("script", args) }
+  }
+  const args = ["-q", "/dev/null", "bash", "run_tests.sh"]
+  return { bin: "script", args, command: shown("script", args) }
+}
+
 function runScript(
   pkg: string,
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
+  launched: { bin: string; args: string[] },
 ): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   const next = { ...env }
   const shim = writeDockerShim(pkg)
@@ -621,7 +688,7 @@ function runScript(
   if (!next.ARCH_NATIVE && existsSync(inner) && existsSync(build) && readFileSync(build, "utf8").includes("ARCH_NATIVE")) {
     next.ARCH_NATIVE = "1"
   }
-  return spawnCollected("script", ["-q", "/dev/null", "bash", "run_tests.sh"], pkg, next, timeoutMs)
+  return spawnCollected(launched.bin, launched.args, pkg, next, timeoutMs)
 }
 
 function writeDockerShim(pkg: string): string | null {
@@ -1227,7 +1294,9 @@ function parseDotnet(text: string, code: number): TestReport | null {
   const names: string[] = []
   const failed: TestReport["failed"] = []
   for (const line of text.split("\n")) {
-    const match = line.match(/^\s*(Passed|Failed)\s+(\S+)/)
+    // A result line carries a duration: "Passed StaysClosed [4 ms]".
+    // "Failed to load ..." is a diagnostic, not a test, and must not redden the baseline.
+    const match = line.match(/^\s*(Passed|Failed)\s+(.+?)\s+\[(?:<\s*)?\d+(?:\.\d+)?\s*(?:ms|s)\]\s*$/)
     if (!match) continue
     names.push(match[2])
     if (match[1] === "Failed") failed.push({ name: match[2], file: "", line: 0 })

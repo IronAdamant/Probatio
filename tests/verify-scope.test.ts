@@ -16,7 +16,7 @@ test("verify-change diffs the package when the rest of the repo diff is huge", {
   try {
     mkdirSync(path.join(pkg, "src"), { recursive: true })
     mkdirSync(path.join(pkg, "tests"))
-    writeFileSync(path.join(pkg, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n > 0\n}\n")
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n > 0 || n < -1000\n}\n")
     writeFileSync(
       path.join(pkg, "tests", "gate.test.ts"),
       [
@@ -31,7 +31,7 @@ test("verify-change diffs the package when the rest of the repo diff is huge", {
     git(repo, ["init", "-q"])
     git(repo, ["add", "."])
     git(repo, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "init"])
-    writeFileSync(path.join(pkg, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n >= 0\n}\n")
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n > 0 || n <= -1000\n}\n")
     writeFileSync(path.join(repo, "noise.txt"), `${"b".repeat(80)}\n`.repeat(25000))
     git(repo, ["add", "."])
     git(repo, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "edit"])

@@ -20,50 +20,66 @@ test("the mcp tool returns the same json object as the cli", async () => {
     assert.equal(cli.status, 0, cli.stderr)
     const first = await callMcp(argv)
     const second = await callMcp(argv)
-    assert.deepEqual(first, JSON.parse(cli.stdout))
-    assert.deepEqual(second, first)
-    assert.equal(JSON.stringify(first).includes(homedir()), false)
-    assert.equal(typeof first.schemaVersion, "number")
-    assert.equal(first.ok, true)
-    assert.equal(typeof first.next, "string")
-    assert.ok("nextCall" in first)
+    assert.deepEqual(first.envelope, JSON.parse(cli.stdout))
+    assert.deepEqual(second.envelope, first.envelope)
+    assert.equal(JSON.stringify(first.envelope).includes(homedir()), false)
+    assert.equal(typeof first.envelope.schemaVersion, "number")
+    assert.equal(first.envelope.ok, true)
+    assert.equal(typeof first.envelope.summary, "string")
+    assert.equal(typeof first.envelope.next, "string")
+    assert.ok("nextCall" in first.envelope)
+    assert.equal(first.handshake.protocolVersion, "2024-11-05")
+    assert.ok(first.handshake.capabilities && "tools" in first.handshake.capabilities)
+    assert.deepEqual(first.handshake.tools?.map((item) => item.name), ["probatio"])
+    assert.equal(first.raw.includes("Content-Length"), false)
+    assert.equal(second.raw.includes("Content-Length"), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-function callMcp(argv: string[]): Promise<{ schemaVersion: number; ok: boolean; next: string; nextCall: unknown }> {
+type Handshake = {
+  protocolVersion?: string
+  capabilities?: { tools?: unknown }
+  tools?: Array<{ name?: string }>
+}
+
+function callMcp(argv: string[]): Promise<{ envelope: { schemaVersion: number; ok: boolean; summary: string; next: string; nextCall: unknown }; handshake: Handshake; raw: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(tsx, ["src/mcp.ts"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] })
-    let buf = Buffer.alloc(0)
+    let pending = ""
+    let raw = ""
     const frames: string[] = []
     const timer = setTimeout(() => {
       child.kill("SIGKILL")
       reject(new Error(`mcp timed out: ${frames.length} frames`))
     }, 15_000)
     child.stdout.on("data", (chunk: Buffer) => {
-      buf = Buffer.concat([buf, chunk])
+      const text = chunk.toString("utf8")
+      raw += text
+      pending += text
       for (;;) {
-        const headerEnd = buf.indexOf("\r\n\r\n")
-        if (headerEnd === -1) return
-        const header = buf.subarray(0, headerEnd).toString("utf8")
-        const match = header.match(/Content-Length:\s*(\d+)/i)
-        if (!match) return
-        const length = Number(match[1])
-        const start = headerEnd + 4
-        if (buf.length < start + length) return
-        frames.push(buf.subarray(start, start + length).toString("utf8"))
-        buf = buf.subarray(start + length)
+        const nl = pending.indexOf("\n")
+        if (nl === -1) return
+        const line = pending.slice(0, nl).replace(/\r$/, "").trim()
+        pending = pending.slice(nl + 1)
+        if (!line) continue
+        frames.push(line)
         if (frames.length < 2) continue
         clearTimeout(timer)
         child.stdin.end()
+        const hello = JSON.parse(frames[0]) as { result?: Handshake }
         const call = JSON.parse(frames[1]) as { result?: { content?: Array<{ text?: string }> } }
-        const text = call.result?.content?.[0]?.text
-        if (!text) {
-          reject(new Error("mcp result had no text"))
+        const body = call.result?.content?.[0]?.text
+        if (!hello.result || !body) {
+          reject(new Error("mcp result had no handshake or text"))
           return
         }
-        resolve(JSON.parse(text) as { schemaVersion: number; ok: boolean; next: string; nextCall: unknown })
+        resolve({
+          handshake: hello.result,
+          envelope: JSON.parse(body) as { schemaVersion: number; ok: boolean; summary: string; next: string; nextCall: unknown },
+          raw,
+        })
         return
       }
     })
@@ -71,12 +87,7 @@ function callMcp(argv: string[]): Promise<{ schemaVersion: number; ok: boolean; 
       clearTimeout(timer)
       reject(error)
     })
-    child.stdin.write(frame({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {} } }))
-    child.stdin.write(frame({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "probatio", arguments: { argv } } }))
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {} } })}\n`)
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "probatio", arguments: { argv } } })}\n`)
   })
-}
-
-function frame(message: unknown): Buffer {
-  const payload = Buffer.from(JSON.stringify(message), "utf8")
-  return Buffer.concat([Buffer.from(`Content-Length: ${payload.length}\r\n\r\n`, "utf8"), payload])
 }

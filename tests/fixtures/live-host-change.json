@@ -1,0 +1,13 @@
+{
+  "gate": {
+    "ok": true,
+    "reason": "opened",
+    "status": "pass",
+    "nextLead": "The host is steady.",
+    "hostChanged": false,
+    "nextCall": {
+      "tool": "probatio",
+      "argv": ["status"]
+    }
+  }
+}

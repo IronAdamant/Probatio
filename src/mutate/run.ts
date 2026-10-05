@@ -6,6 +6,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { affectedTests } from "./affected.js"
 import { binaryFromCommand, readCoverageMap, selectionFor, writeLlvmCoverage, type CoverageMap } from "./coverage-map.js"
+import { writeGoCoverage } from "./go-coverage.js"
+import { writeJavaCoverage } from "./java-coverage.js"
 import { applyPatch, changedLines, chooseDirection, filesInDiff, git, restoreTree, type PatchDirection } from "./patch.js"
 import { killLabel, type KillCause } from "./kill-label.js"
 import {
@@ -14,9 +16,12 @@ import {
   TIMEOUT_NEXT,
   WHOLE_PROGRAM_TEST,
   WHOLE_SUITE_NEXT,
+  campaignSummary,
   decideSuite,
+  hasLineMap,
   noCoverageNext,
   resumeNext,
+  scaleStop,
   timeoutLimitMs,
 } from "./suite-decision.js"
 import { commandSuite, discoverSuite, runDiscoveredSuite, sourceCandidates, type SuiteSpec } from "./suites.js"
@@ -185,6 +190,14 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
     const pkg = packageIn(worktrees.dirs[0], repo, packageDir)
     const prep = await prepare(pkg, options, progress)
     if (!prep.ok) return failReport(options.outDir, run.id, commit, prep.error, prep.baselineFailed, prep.next, prep.suiteCommand)
+    // The baseline already ran. A slow suite with no line map does not start the batch.
+    // A kind that can collect a map still refuses when that map was not written.
+    const mapped = prep.coverage !== null && Object.keys(prep.coverage.files).length > 0 && hasLineMap(prep.spec.kind)
+    const scale = scaleStop({ kind: mapped ? prep.spec.kind : "unmapped", baselineMs: prep.baselineMs, pending: pending.length })
+    if (scale.action === "stop") {
+      const ids = pending.map((file) => path.basename(file, ".patch"))
+      return failReport(options.outDir, run.id, commit, scale.summary, undefined, scale.next, prep.spec.command, prep.baselineMs, ids)
+    }
     let budgetHit = false
     let startedMutants = 0
     const queue = [...pending]
@@ -246,7 +259,6 @@ type Prepared = {
   ok: true
   tests: string[]
   affectedMap: Record<string, string[]> | null
-  baselineFailed: string[]
   baselineMs: number | null
   spec: SuiteSpec
   coverage: CoverageMap | null
@@ -309,13 +321,26 @@ async function prepare(
     )
     progress(`suite report tests=${baseline.report.tests}`)
     progress(baselineFailed.length > 0 ? `baseline failing ${baselineFailed.length}` : "baseline pass")
+    if (baselineFailed.length > 0) {
+      return { ok: false, error: "baseline already failing", baselineFailed, suiteCommand: spec.command }
+    }
+    if (collect && !existsSync(mapPath) && (spec.kind === "go" || spec.kind === "maven")) {
+      progress(spec.kind === "go" ? "go line map" : "java line map")
+      const written = spec.kind === "go"
+        ? writeGoCoverage(pkg, baseline.report.names, mapPath)
+        : writeJavaCoverage(pkg, baseline.report.names, mapPath)
+      if (!written.ok) writeFileSync(path.join(options.outDir, "coverage-error.txt"), `${written.detail}\n`)
+    }
   } else {
-    const stored = JSON.parse(readFileSync(baselineFile, "utf8")) as { ok?: boolean; failed?: string[]; durationMs?: number }
-    baselineFailed = stored.ok === false ? stored.failed ?? [] : []
+    const stored = JSON.parse(readFileSync(baselineFile, "utf8")) as { ok?: boolean; failed?: unknown; durationMs?: number }
     baselineMs = typeof stored.durationMs === "number" ? stored.durationMs : null
+    if (stored.ok !== true) {
+      const failed = Array.isArray(stored.failed) ? stored.failed.filter((name): name is string => typeof name === "string") : []
+      return { ok: false, error: "baseline already failing", baselineFailed: failed, suiteCommand: spec.command }
+    }
   }
   const affectedMap = options.affected ? affectedTests(pkg, { testsDir: options.testsDir }) : null
-  return { ok: true, tests, affectedMap, baselineFailed, baselineMs, spec, coverage: readCoverageMap(mapPath) }
+  return { ok: true, tests, affectedMap, baselineMs, spec, coverage: readCoverageMap(mapPath) }
 }
 
 async function runOne(
@@ -395,14 +420,8 @@ async function runOne(
     // A compile error can leave the previous run's report on disk. That report is not this mutant.
     if (main.compileToken) return finishMutant(killed(base, direction, [main.compileToken]), pkg, commands.join(" | "), false, [])
     if (!main.report) return { ...base(), direction, error: "test reporter returned nothing", command: commands.join(" | ") }
-    const now = main.report.failed.map((item) => item.name)
     const whole = main.wholeSuite || forceWhole
     const chosen = main.selectedTests
-    if (prep.baselineFailed.length > 0) {
-      if (sameNames(now, prep.baselineFailed)) return finishMutant({ ...base(), direction, outcome: "survived" }, pkg, commands.join(" | "), whole, chosen)
-      const noticed = [...new Set([...now.filter((name) => !prep.baselineFailed.includes(name)), ...prep.baselineFailed.filter((name) => !now.includes(name))])]
-      return finishMutant(killed(base, direction, noticed.slice(0, 20)), pkg, commands.join(" | "), whole, chosen)
-    }
     if (main.report.failed.length === 0) return finishMutant({ ...base(), direction, outcome: "survived" }, pkg, commands.join(" | "), whole, chosen)
     if (!options.confirm) return finishMutant(killed(base, direction, main.report.failed.map((item) => failureId(pkg, item))), pkg, commands.join(" | "), whole, chosen)
     const confirmed = await confirmFailures(pkg, options, main.report.failed, prep, limit, commands)
@@ -489,10 +508,10 @@ async function rerunGroup(
   const files = file === "*" ? listTestFiles(pkg, options.testsDir, prep.spec) : [testArg(pkg, file, options.testsDir)]
   const isolated = { ...options, concurrency: 1 }
   let wholeSuite = false
-  // Pytest confirms by node id. A regex fed to -k is a usage error, not a second look at the failure.
-  const pytestNames = prep.spec.kind === "pytest" ? failures.map((item) => item.name) : null
+  // Pytest confirms by node id. Maven confirms by class#method. A regex is not a test name for either.
+  const directNames = prep.spec.kind === "pytest" || prep.spec.kind === "maven" ? failures.map((item) => item.name) : null
   for (let attempt = 0; attempt < 2; attempt++) {
-    const rerun = await runSuite(pkg, files, isolated, pytestNames ? null : pattern, pytestNames, prep.spec, timeoutMs, false, null, null)
+    const rerun = await runSuite(pkg, files, isolated, directNames ? null : pattern, directNames, prep.spec, timeoutMs, false, null, null)
     if (rerun.wholeSuite) wholeSuite = true
     if (rerun.command) commands.push(rerun.command)
     if (pattern === null && rerun.timedOut) {
@@ -544,13 +563,6 @@ async function runSuite(
     wholeSuite: result.wholeSuite || forceWhole,
     selectedTests: result.selectedTests,
   }
-}
-
-function sameNames(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false
-  const a = [...left].sort()
-  const b = [...right].sort()
-  return a.every((name, index) => name === b[index])
 }
 
 function isNodeTestFile(file: string): boolean {
@@ -793,15 +805,15 @@ function reportOf(
     return { id: result.id, file, line, ...(known?.op ? { op: known.op } : {}) }
   })
   const budgetHit = context.budgetHit || context.pendingLeft > 0
-  const summary = `${killed} killed, ${survived} survived, ${noCoverage} no coverage, ${flaky} flaky, ${timeouts} timed out, ${errors} errored, of ${results.length} finished.`
+  const summary = campaignSummary({ noCoverage, survived, killed, flaky, timeouts, errors, finished: results.length })
   const notes: string[] = []
-  if (budgetHit) notes.push(resumeNext(context.notStarted))
-  if (timeouts > 0) notes.push(TIMEOUT_NEXT)
   const uncovered = results.find((result) => result.outcome === "no coverage")
   if (uncovered?.next) notes.push(uncovered.next)
+  if (gapResults.length > 0) notes.push(`First gap is ${gaps[0].id} at ${gaps[0].file}:${gaps[0].line}. A survivor is not a pass.`)
+  if (timeouts > 0) notes.push(TIMEOUT_NEXT)
+  if (budgetHit) notes.push(resumeNext(context.notStarted))
   if (results.some((result) => result.wholeSuite)) notes.push(WHOLE_SUITE_NEXT)
-  if (!budgetHit && gapResults.length > 0 && timeouts === 0) notes.push(`First gap is ${gaps[0].id} at ${gaps[0].file}:${gaps[0].line}.`)
-  if (notes.length === 0) notes.push(gapResults.length > 0 ? `First gap is ${gaps[0].id} at ${gaps[0].file}:${gaps[0].line}.` : "No survivor in this batch.")
+  if (notes.length === 0) notes.push("No survivor in this batch.")
   return {
     ok: true,
     summary,
@@ -845,6 +857,8 @@ function failReport(
   baselineFailed?: string[],
   next?: string,
   suiteCommand = "",
+  baselineMs: number | null = null,
+  notStarted: string[] = [],
 ): RunReport {
   const summary = baselineFailed && baselineFailed.length > 0 ? `${error}: ${baselineFailed.join("; ")}` : error
   return {
@@ -860,9 +874,9 @@ function failReport(
     timeouts: 0,
     errors: 0,
     noCoverage: 0,
-    notStarted: [],
+    notStarted,
     suiteCommand,
-    baselineMs: null,
+    baselineMs,
     commands: [],
     gaps: [],
     rest: 0,

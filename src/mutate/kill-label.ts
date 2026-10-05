@@ -32,6 +32,11 @@ export function killLabel(killedBy: string[]): KillLabel | null {
   return { cause: "test", next: `Killed by ${killedBy.join(", ")}.` }
 }
 
+/** True when the id names a compiler, not a test. */
+export function isBuildName(id: string): boolean {
+  return BUILD_NAMES.has(bareName(id))
+}
+
 function bareName(id: string): string {
   const mark = id.lastIndexOf("::")
   return (mark >= 0 ? id.slice(mark + 2) : id).trim().toLowerCase()

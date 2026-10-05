@@ -56,6 +56,7 @@ test("a shell suite labels a compiler error separately from a named test", { tim
       summary: string
       killed: number
       survived: number
+      suiteCommand?: string
       kills?: Array<{ id: string; cause: string; next: string }>
     }
     assert.equal(body.ok, true, body.summary)
@@ -70,8 +71,42 @@ test("a shell suite labels a compiler error separately from a named test", { tim
     assert.match(byTest.next, /Testing stays closed/)
     assert.match(byBuild.next, /build/i)
     assert.doesNotMatch(byBuild.next, /add a test named (javac|compiler|build|cobc|nasm|clang|cargo|tsc|dotnet|swiftc)/i)
-    const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-build.json"), "utf8")) as { killedBy: string[] }
+    const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-build.json"), "utf8")) as { killedBy: string[]; command: string }
     assert.deepEqual(saved.killedBy, ["clang"])
+    assert.equal(body.suiteCommand, "bash run_tests.sh")
+    assert.equal(saved.command, "bash run_tests.sh")
+    assert.doesNotMatch(saved.command, /\bscript\b/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a shell suite that runs docker with a tty is wrapped for both BSD and GNU script", { timeout: 60_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-script-tty-"))
+  mkdirSync(path.join(dir, "tests"))
+  mkdirSync(path.join(dir, "patches"))
+  writeFileSync(path.join(dir, "tests", "main.c"), source)
+  writeFileSync(
+    path.join(dir, "run_tests.sh"),
+    ["#!/bin/bash", "set -euo pipefail", "# tini: docker run -it --rm example", "cc -Werror -Wtautological-unsigned-zero-compare -o suite tests/main.c", "./suite", ""].join("\n"),
+  )
+  writeFileSync(path.join(dir, "patches", "m-test.patch"), forwardDiff("tests/main.c", source, source.replace("closed == 0", "closed == 1")))
+  git(dir, ["init", "-q"])
+  git(dir, ["add", "."])
+  git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "init"])
+  try {
+    const result = spawnSync(
+      tsx,
+      ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, "out"), "--no-confirm", "--workers", "1", "--suite-timeout-ms", "30000"],
+      { cwd: root, encoding: "utf8" },
+    )
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killed: number; commands?: Array<{ id: string; command: string }> }
+    assert.equal(body.ok, true, body.summary)
+    assert.equal(body.killed, 1, body.summary)
+    const command = body.commands?.find((item) => item.id === "m-test")?.command ?? ""
+    assert.match(command, /^script /)
+    assert.match(command, /bash run_tests\.sh/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

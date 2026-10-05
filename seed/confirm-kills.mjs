@@ -15,6 +15,14 @@ const worktrees = argv.slice(sep + 1)
 const patchOf = (id) => patchDirs.map((d) => path.join(d, `${id}.patch`)).find((p) => existsSync(p))
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
+function maybeBuild(pkg) {
+  const raw = process.env.PROBATIO_BUILD
+  if (!raw || !raw.trim()) return
+  const parts = raw.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return
+  spawnSync(parts[0], parts.slice(1), { cwd: pkg })
+}
+
 function run(args, cwd) {
   return new Promise((resolve) => {
     const child = spawn("npx", args, { cwd, env: { ...process.env, SOLARI_API_KEY: "", AUSPEX_LIVE: "" } })
@@ -54,7 +62,7 @@ async function worker(wt) {
     const patch = patchOf(r.id)
     if (!patch) continue
     spawnSync("git", ["-C", wt, "apply", "-R", path.resolve(patch)])
-    spawnSync("npm", ["run", "build:mcp", "--silent"], { cwd: pkg })
+    maybeBuild(pkg)
     const keep = []
     const flaky = []
     // One run per file per round: every failing title of that file, matched exactly.

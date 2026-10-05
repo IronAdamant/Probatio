@@ -2,6 +2,18 @@
 
 Newest first. Start a review by rerunning the commands in the latest section.
 
+## 2026-10-05 — edit size, then stop a slow unmapped batch
+
+`verify-change` runs the discovered suite. It does not require a direct importer. Mutants are still only the changed lines, capped by `--max-mutants` (default 4). The suite timeout passed to the runner is 600000 ms. `ran` is still the direct-importer list. The tests that execute come from the line map, the same way `mutate run` selects them. No suite at all leaves the mutants in `notRun`.
+
+`mutate run`, `verify-change`, and `check-kill` stop before the first mutant when the baseline has any failing test or returns no report. The summary names those tests, or the missing tool. Nothing is killed by a test that was already failing.
+
+`mutate run` also stops before the first mutant when there is no usable line map, the baseline took 5000 ms or more, and more than 30 mutants are still pending. A usable map is a non-empty file for `node`, `pytest`, `c`, `go`, or `maven`. Go and Maven record file, line, and test name. Rust and C# stay name-filtered. A failed or missing map is the same stop. `next` says there is no line map and names the baseline. A faster suite still runs.
+
+`mutate tally --out <run>` reads `results/` and `coverage-map.json`. It lists tests to keep, tests that killed nothing, and one gap per survivor. An unseen line is not a gap. `deletedTests` is 0. It does not delete a file.
+
+The README mutate section matches these commands. A kill is the failing test, not a second failure of that test. Pytest node ids that `-k` cannot express are positional arguments. `tests/scale.test.ts` drives the CLI for the line map, the stop, the fast suite, and tally.
+
 ## 2026-10-04 — fourteen sample clones
 
 `npm test` is 39 pass, 0 fail, exit 0. Each directory in `Sample_Probatio_Separate` was launched once with `mutate generate` and once with `mutate run` from `node dist/cli.js`. Generate used `--src . --max-mutants 4 --max-minutes 1`. Run used `--no-build --workers 1 --max-mutants 4 --max-minutes 1 --suite-timeout-ms 20000`, and its patches were that generate directory. Different clones overlapped in four batches. Two worktrees were never opened on the same clone.

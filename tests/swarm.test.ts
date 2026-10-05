@@ -60,9 +60,12 @@ test("check-kill is done only when the mutant dies and the suite is green", () =
 
     const failing = check(red)
     assert.equal(failing.status, 1, failing.stdout)
-    const failingJson = JSON.parse(failing.stdout) as { done: boolean; suiteGreen: boolean }
+    const failingJson = JSON.parse(failing.stdout) as { done: boolean; suiteGreen: boolean; outcome: string | null; killedBy: string[]; summary: string }
     assert.equal(failingJson.done, false)
     assert.equal(failingJson.suiteGreen, false)
+    assert.equal(failingJson.outcome, null)
+    assert.deepEqual(failingJson.killedBy, [])
+    assert.match(failingJson.summary, /n stays/)
   } finally {
     for (const item of [killed, survived, red]) rmSync(item.dir, { recursive: true, force: true })
   }
@@ -154,7 +157,7 @@ test("check-kill runs only the direct importer and confirms the kill in isolatio
 })
 
 function check(fixture: { dir: string; patches: string }) {
-  return run(["check-kill", "bug", "--package", fixture.dir, "--out", path.join(fixture.dir, "out"), "--patches", fixture.patches, "--no-confirm"])
+  return run(["check-kill", "bug", "--package", fixture.dir, "--out", path.join(fixture.dir, "out"), "--patches", fixture.patches, "--no-confirm", "--no-build"])
 }
 
 function packageWith(before: string, after: string, assertion: string) {

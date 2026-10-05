@@ -39,6 +39,14 @@ function failures(tap) {
   }
   return out
 }
+function maybeBuild(pkg) {
+  const raw = process.env.PROBATIO_BUILD
+  if (!raw || !raw.trim()) return Promise.resolve({ code: 0, out: "" })
+  const parts = raw.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return Promise.resolve({ code: 0, out: "" })
+  return run(parts[0], parts.slice(1), pkg, 120_000)
+}
+
 function run(cmd, args, cwd, timeoutMs) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd, env: { ...process.env, SOLARI_API_KEY: "", AUSPEX_LIVE: "" } })
@@ -73,7 +81,7 @@ async function worker(wt) {
       }
     }
     const started = Date.now()
-    await run("npm", ["run", "build:mcp", "--silent"], pkg, 120_000)
+    await maybeBuild(pkg)
     const res = await run(
       "npx",
       ["tsx", "--test", "--test-reporter=tap", "--test-timeout=60000", "--test-concurrency=3", ...files.map((f) => `tests/${f}`)],

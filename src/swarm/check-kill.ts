@@ -4,7 +4,8 @@ import { SCHEMA_VERSION, type Envelope } from "../contract.js"
 import { directImporters } from "../mutate/affected.js"
 import { filesInDiff } from "../mutate/patch.js"
 import { killLabel } from "../mutate/kill-label.js"
-import { runMutants, type RunOptions } from "../mutate/run.js"
+import { runMutants, type RunOptions, type RunReport } from "../mutate/run.js"
+import { campaignSummary } from "../mutate/suite-decision.js"
 
 /** The gap is done only when this mutant is killed and the baseline suite is green. */
 export async function checkKill(id: string, options: RunOptions): Promise<Envelope> {
@@ -29,6 +30,21 @@ export async function checkKill(id: string, options: RunOptions): Promise<Envelo
     const baseline = JSON.parse(readFileSync(baselineFile, "utf8")) as { ok?: boolean }
     suiteGreen = baseline.ok === true
   }
+  // A red baseline stops inside the run. Do not read a result that names the broken test.
+  if (!report.ok) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "check-kill",
+      summary: `${id} is not done. ${report.summary}`,
+      next: "The task is not done.",
+      nextCall: null,
+      done: false,
+      outcome: null,
+      suiteGreen,
+      killedBy: [],
+    }
+  }
   const resultFile = path.join(options.outDir, "results", `${id}.json`)
   let outcome: string | null = null
   let killedBy: string[] = []
@@ -39,11 +55,12 @@ export async function checkKill(id: string, options: RunOptions): Promise<Envelo
   }
   const done = suiteGreen && outcome === "killed"
   const label = done ? killLabel(killedBy) : null
+  const head = checkHead(report)
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: done,
     command: "check-kill",
-    summary: done ? `${id} is dead and the suite is green.` : `${id} is not done. ${report.summary}`,
+    summary: done ? `${head} ${id} is dead and the suite is green.` : `${head} ${id} is not done.`,
     next: label?.next ?? (done ? "The gap-fixing task is done." : "The task is not done."),
     nextCall: null,
     done,
@@ -60,6 +77,19 @@ function importersOf(id: string, options: RunOptions): string[] {
   if (!patch) return []
   const rels = filesInDiff(readFileSync(patch, "utf8")).map((item) => packageRelative(options.repoDir, options.packageDir, item.file))
   return directImporters(options.packageDir, rels, options.testsDir)
+}
+
+function checkHead(report: RunReport): string {
+  const finished = report.killed + report.survived + report.flaky + report.timeouts + report.errors + report.noCoverage
+  return campaignSummary({
+    noCoverage: report.noCoverage,
+    survived: report.survived,
+    killed: report.killed,
+    flaky: report.flaky,
+    timeouts: report.timeouts,
+    errors: report.errors,
+    finished,
+  })
 }
 
 function packageRelative(repoDir: string, packageDir: string, file: string): string {

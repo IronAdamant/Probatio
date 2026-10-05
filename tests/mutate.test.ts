@@ -110,15 +110,18 @@ test("mutate run confirms kills and reports an untested line as no coverage", as
       agent: "test",
     })
     assert.equal(report.ok, true, report.summary)
+    assert.match(report.summary, new RegExp(`^${report.noCoverage} no coverage, ${report.survived} survived`))
     assert.ok(report.killed >= 1, report.summary)
     assert.ok(report.noCoverage >= 1, report.summary)
     assert.equal(report.errors, 0, report.summary)
     assert.equal(report.flaky, 0, report.summary)
     const untouched = batch.mutants.find((mutant) => mutant.op === "true-to-false" && mutant.line > 4)
     assert.ok(untouched)
-    const saved = JSON.parse(readFileSync(path.join(out, "results", `${untouched.id}.json`), "utf8")) as { outcome: string; next: string }
+    const saved = JSON.parse(readFileSync(path.join(out, "results", `${untouched.id}.json`), "utf8")) as { outcome: string; next: string; command: string }
     assert.equal(saved.outcome, "no coverage")
     assert.match(saved.next, /No coverage/)
+    assert.equal(report.gaps.some((gap) => gap.id === untouched.id), false)
+    assert.equal(report.kills.some((item) => item.id === untouched.id), false)
     const killed = batch.mutants.find((mutant) => mutant.op === "and-to-or")
     assert.ok(killed)
     const kill = JSON.parse(readFileSync(path.join(out, "results", `${killed.id}.json`), "utf8")) as { outcome: string; killedBy: string[] }
