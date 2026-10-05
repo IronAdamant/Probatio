@@ -401,8 +401,10 @@ function runShell(
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
 ): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
+  // A command can be pytest. Baseline writes a .pyc, and a same-size patch in that same second leaves it valid.
+  clearBytecode(pkg)
   const child = /\b(java|javac|mvn)\b/.test(command) ? javaEnv(env) : env
-  return spawnCollected("sh", ["-c", command], pkg, child, timeoutMs)
+  return spawnCollected("sh", ["-c", command], pkg, { ...child, PYTHONDONTWRITEBYTECODE: "1" }, timeoutMs)
 }
 
 async function runNode(
