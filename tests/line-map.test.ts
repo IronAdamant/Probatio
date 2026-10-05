@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -145,6 +145,113 @@ test("a maven line map runs only the tests that hit the line", { timeout: 180_00
   }
 })
 
+test("a junit 5 line map names the test on the line and narrows -Dtest", { timeout: 300_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-jupiter-map-"))
+  try {
+    mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })
+    mkdirSync(path.join(dir, "src", "test", "java", "gate"), { recursive: true })
+    writeFileSync(
+      path.join(dir, "pom.xml"),
+      [
+        "<project>",
+        "  <modelVersion>4.0.0</modelVersion>",
+        "  <groupId>example</groupId>",
+        "  <artifactId>gate</artifactId>",
+        "  <version>1.0</version>",
+        "  <dependencies>",
+        "    <dependency>",
+        "      <groupId>org.junit.jupiter</groupId>",
+        "      <artifactId>junit-jupiter</artifactId>",
+        "      <version>5.11.4</version>",
+        "      <scope>test</scope>",
+        "    </dependency>",
+        "    <dependency>",
+        "      <groupId>org.junit.jupiter</groupId>",
+        "      <artifactId>junit-jupiter-params</artifactId>",
+        "      <version>5.11.4</version>",
+        "      <scope>test</scope>",
+        "    </dependency>",
+        "  </dependencies>",
+        "  <build>",
+        "    <plugins>",
+        "      <plugin>",
+        "        <groupId>org.apache.maven.plugins</groupId>",
+        "        <artifactId>maven-surefire-plugin</artifactId>",
+        "        <version>3.5.2</version>",
+        "      </plugin>",
+        "    </plugins>",
+        "  </build>",
+        "</project>",
+        "",
+      ].join("\n"),
+    )
+    writeFileSync(path.join(dir, "src", "main", "java", "gate", "Gate.java"), "package gate;\npublic class Gate {\n  public static boolean allow(int n) {\n    return n > 0;\n  }\n}\n")
+    writeFileSync(path.join(dir, "src", "main", "java", "gate", "Unused.java"), "package gate;\npublic class Unused {\n  public static boolean dark(int n) {\n    return n > 0;\n  }\n}\n")
+    writeFileSync(
+      path.join(dir, "src", "test", "java", "gate", "GateTest.java"),
+      [
+        "package gate;",
+        "import org.junit.jupiter.api.Test;",
+        "import org.junit.jupiter.params.ParameterizedTest;",
+        "import org.junit.jupiter.params.provider.ValueSource;",
+        "import static org.junit.jupiter.api.Assertions.*;",
+        "class GateTest {",
+        "  @Test void testOpens() { assertTrue(Gate.allow(1)); }",
+        "  @Test void testShut() { assertFalse(Gate.allow(0)); }",
+        "  @Test void testOther() { assertEquals(1, 1); }",
+        "  @ParameterizedTest",
+        "  @ValueSource(ints = {1, 2})",
+        "  void testPositive(int n) { assertTrue(Gate.allow(n)); }",
+        "}",
+        "",
+      ].join("\n"),
+    )
+    commit(dir)
+    const generated = cli(["mutate", "generate", "--package", dir, "--src", "src/main/java", "--out", path.join(dir, "gen")])
+    assert.equal(generated.status, 0, generated.stderr + generated.stdout)
+    const ran = cli(["mutate", "run", "--package", dir, "--patches", path.join(dir, "gen", "mutants"), "--out", path.join(dir, "out"), "--no-build", "--no-confirm", "--suite-timeout-ms", "180000"])
+    assert.equal(ran.status, 0, ran.stderr + ran.stdout)
+    const body = JSON.parse(ran.stdout) as { ok: boolean; summary: string }
+    assert.equal(body.ok, true, `${body.summary}\n${ran.stderr}`)
+    const mapPath = path.join(dir, "out", "coverage-map.json")
+    const errorPath = path.join(dir, "out", "coverage-error.txt")
+    const hitsPath = path.join(dir, "out", "java-cover", "hits.txt")
+    const hits = existsSync(hitsPath) ? readFileSync(hitsPath, "utf8").slice(0, 1500) : "no hits file"
+    assert.equal(existsSync(mapPath), true, `${body.summary}\n${existsSync(errorPath) ? readFileSync(errorPath, "utf8") : ""}\n${hits}`)
+    const map = JSON.parse(readFileSync(mapPath, "utf8")) as { files: Record<string, Record<string, string[]>> }
+    const gateFile = Object.keys(map.files).find((file) => file.endsWith("Gate.java"))
+    assert.ok(gateFile, JSON.stringify(Object.keys(map.files)))
+    const lines = map.files[gateFile]
+    const onReturn = lines["4"] ?? []
+    assert.ok(onReturn.some((name) => name.includes("testOpens")), JSON.stringify(lines))
+    assert.ok(onReturn.some((name) => name.includes("testShut")), JSON.stringify(lines))
+    assert.ok(onReturn.some((name) => name.endsWith("testPositive")), JSON.stringify(lines))
+    assert.equal(onReturn.some((name) => name.includes("testOther")), false, JSON.stringify(lines))
+    const results = readResults(path.join(dir, "out", "results"))
+    const gate = results.find((item) => item.files.some((file) => file.file.endsWith("Gate.java")) && item.command)
+    const unused = results.find((item) => item.files.some((file) => file.file.endsWith("Unused.java")))
+    assert.ok(gate, JSON.stringify(results, null, 2))
+    assert.match(gate.command, /-Dtest=/)
+    assert.match(gate.command, /testOpens/)
+    assert.match(gate.command, /testShut/)
+    assert.match(gate.command, /testPositive/)
+    assert.equal(gate.command.includes("testOther"), false, gate.command)
+    assert.equal(gate.command.includes("[1]"), false, gate.command)
+    assert.equal(gate.command.includes("(int)"), false, gate.command)
+    for (const name of onReturn) {
+      const leaf = name.slice(name.lastIndexOf(".") + 1)
+      assert.match(gate.command, new RegExp(leaf.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    }
+    console.log(`jupiter command: ${gate.command}`)
+    assert.ok(unused)
+    assert.equal(unused.outcome, "no coverage", unused.command)
+    assert.equal(unused.command, "")
+    assert.equal(existsSync(path.join(dir, "out", "coverage-error.txt")), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("maven confirm reruns the failing test by name", { timeout: 300_000 }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-java-confirm-"))
   try {
@@ -211,10 +318,10 @@ test("maven confirm reruns the failing test by name", { timeout: 300_000 }, () =
   }
 })
 
-function readResults(dir: string): Array<{ outcome: string; command: string; files: Array<{ file: string }> }> {
+function readResults(dir: string): Array<{ outcome: string; command: string; files: Array<{ file: string; line: number }> }> {
   return readdirSync(dir)
     .filter((name) => name.endsWith(".json"))
-    .map((name) => JSON.parse(readFileSync(path.join(dir, name), "utf8")) as { outcome: string; command: string; files: Array<{ file: string }> })
+    .map((name) => JSON.parse(readFileSync(path.join(dir, name), "utf8")) as { outcome: string; command: string; files: Array<{ file: string; line: number }> })
 }
 
 function cli(args: string[]) {

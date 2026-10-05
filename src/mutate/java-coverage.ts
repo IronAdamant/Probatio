@@ -30,13 +30,17 @@ export function writeJavaCoverage(pkg: string, testNames: string[], dest: string
   writeFileSync(testsFile, `${tests.join("\n")}\n`)
   const projectCp = buildClasspath(pkg, work)
   if ("error" in projectCp) return { ok: false, detail: projectCp.error }
+  // Surefire brings the platform launcher. A project's test classpath often has the Jupiter engine and not the launcher.
+  const launcher = platformLauncherJar(pkg, work, projectCp.cp)
+  if ("error" in launcher) return { ok: false, detail: launcher.error }
   // Our asm and JaCoCo must win over a project that still ships an older asm. That older reader rejects Java 27 class files.
-  const cp = [work, jars.core, jars.asm, jars.asmCommons, jars.asmTree, jars.junit, ...classDirs, ...testClassDirs(pkg), projectCp.cp].filter(Boolean).join(path.delimiter)
+  const cp = [work, jars.core, jars.asm, jars.asmCommons, jars.asmTree, jars.junit, launcher.jar, ...classDirs, ...testClassDirs(pkg), projectCp.cp].filter(Boolean).join(path.delimiter)
   const dump = path.join(work, "hits.txt")
   const ran = run(
     javaTool("java"),
-    [`-javaagent:${jars.agent}=output=none,excludes=ProbatioJacocoRun`, "-cp", cp, "ProbatioJacocoRun", classDirs.join(path.delimiter), testsFile, dump, pkg],
+    [`-javaagent:${jars.agent}=output=none,excludes=ProbatioJacocoRun:org.junit.*:org.apiguardian.*:org.opentest4j.*`, "-cp", cp, "ProbatioJacocoRun", classDirs.join(path.delimiter), testsFile, dump, pkg],
     pkg,
+    900_000,
   )
   if (ran.error && (ran.error as { code?: string }).code === "ETIMEDOUT") {
     return { ok: false, detail: "java coverage: timed out" }
@@ -144,6 +148,31 @@ function resolveJars(pkg: string, work: string): { agent: string; core: string; 
   }
 }
 
+/** Launcher jar matching the project's junit-platform-engine, or none when this suite is not Jupiter. */
+function platformLauncherJar(pkg: string, work: string, projectCp: string): { jar: string } | { error: string } {
+  const entries = projectCp.split(path.delimiter).filter(Boolean)
+  if (entries.some((item) => path.basename(item).startsWith("junit-platform-launcher"))) return { jar: "" }
+  const engine = entries.find((item) => path.basename(item).startsWith("junit-platform-engine-"))
+  if (!engine) return { jar: "" }
+  const version = path.basename(engine).replace(/^junit-platform-engine-/, "").replace(/\.jar$/, "")
+  if (!version) return { error: "java coverage: junit-platform-engine version missing" }
+  const dest = path.join(work, "launcher.jar")
+  if (!existsSync(dest)) {
+    const artifact = `org.junit.platform:junit-platform-launcher:${version}`
+    const before = new Set(readdirSync(work))
+    const copied = run(
+      "mvn",
+      ["-B", "-q", "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:copy", `-Dartifact=${artifact}`, `-DoutputDirectory=${work}`],
+      pkg,
+    )
+    if (copied.status !== 0) return { error: clip(copied.stderr || copied.stdout || copied.error?.message || `mvn copy ${artifact} failed`) }
+    const created = readdirSync(work).find((item) => !before.has(item) && item.endsWith(".jar"))
+    if (!created) return { error: `java coverage: missing ${artifact}` }
+    writeFileSync(dest, readFileSync(path.join(work, created)))
+  }
+  return { jar: dest }
+}
+
 function buildClasspath(pkg: string, work: string): { cp: string } | { error: string } {
   const file = path.join(work, "classpath.txt")
   const built = run("mvn", ["-B", "-q", "dependency:build-classpath", "-DincludeScope=test", `-Dmdep.outputFile=${file}`], pkg)
@@ -175,8 +204,8 @@ function toolWorks(bin: string): boolean {
   return probed.status === 0 && !/Unable to locate a Java Runtime/i.test(text)
 }
 
-function run(bin: string, args: string[], cwd: string) {
-  return spawnSync(bin, args, { cwd, encoding: "utf8", timeout: 180_000 })
+function run(bin: string, args: string[], cwd: string, timeout = 180_000) {
+  return spawnSync(bin, args, { cwd, encoding: "utf8", timeout })
 }
 
 function clip(text: string): string {
