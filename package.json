@@ -1,0 +1,24 @@
+{
+  "name": "probatio",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "probatio": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && mkdir -p dist/mutate && cp src/mutate/fail-reporter.mjs src/mutate/node-coverage.mjs src/mutate/py-reporter.py src/mutate/py-pytest-reporter.py dist/mutate/",
+    "test": "tsx --test tests/*.test.ts",
+    "probatio": "tsx src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "typescript": "^5.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2"
+  }
+}
