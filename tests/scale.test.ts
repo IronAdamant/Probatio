@@ -11,17 +11,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
 test("line map kinds are not stopped, and the slow unmapped boundary is exact", () => {
-  for (const kind of ["node", "pytest", "c", "go", "maven"]) {
+  for (const kind of ["node", "pytest", "c", "go", "maven", "cargo", "dotnet"]) {
     assert.equal(scaleStop({ kind, baselineMs: 70_000, pending: 400 }).action, "run")
   }
   assert.equal(scaleStop({ kind: "go", baselineMs: 1_052, pending: 251 }).action, "run")
   assert.equal(scaleStop({ kind: "maven", baselineMs: 4_999, pending: 100 }).action, "run")
   assert.equal(scaleStop({ kind: "command", baselineMs: 5_000, pending: 30 }).action, "run")
-  for (const kind of ["cargo", "dotnet"]) {
+  for (const kind of ["swift", "cobol"]) {
     const refused = scaleStop({ kind, baselineMs: 5_000, pending: 31 })
     assert.equal(refused.action, "stop")
   }
-  const stop = scaleStop({ kind: "cargo", baselineMs: 5_000, pending: 31 })
+  const stop = scaleStop({ kind: "swift", baselineMs: 5_000, pending: 31 })
   assert.equal(stop.action, "stop")
   if (stop.action === "stop") {
     assert.match(stop.next, /No line map/)

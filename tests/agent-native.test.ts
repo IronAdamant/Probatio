@@ -219,9 +219,39 @@ test("pytest runs a parametrized node id that contains <", { timeout: 120_000 },
   assert.equal(/-k /.test(killed.command), false, killed.command)
   const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", `${killed.id}.json`), "utf8")) as { outcome: string; killedBy: string[] }
   assert.equal(saved.outcome, "killed")
-  assert.ok(saved.killedBy.some((item) => item.includes("test_simple_reject[<lambda>1]")), JSON.stringify(saved.killedBy))
+  const nodeId = "tests/test_gate.py::test_simple_reject[<lambda>1]"
+  assert.ok(saved.killedBy.includes(nodeId), JSON.stringify(saved.killedBy))
+  assert.equal(saved.killedBy.some((item) => item.includes(`test_gate.py::${nodeId}`)), false, JSON.stringify(saved.killedBy))
   assert.equal(saved.killedBy.includes("::pytest"), false, JSON.stringify(saved.killedBy))
   save("step-pytest-nodeid", `${result.stdout}\ncommand=${killed.command}\nkilledBy=${saved.killedBy.join(",")}\n`)
+})
+
+test("pytest killedBy is the node id once", { timeout: 60_000 }, () => {
+  const dir = fixture()
+  mkdirSync(path.join(dir, "src"))
+  const before = "def gate(n):\n    return n > 0\n"
+  const after = "def gate(n):\n    return n >= 0\n"
+  writeFileSync(path.join(dir, "src", "gate.py"), before)
+  writeFileSync(
+    path.join(dir, "tests", "test_gate.py"),
+    ["import pytest", "from gate import gate", "", "def test_low():", "    assert gate(0) is False", ""].join("\n"),
+  )
+  commit(dir)
+  writeFileSync(path.join(dir, "patches", "m-ge.patch"), forwardDiff("src/gate.py", before, after))
+  const result = run(dir, ["--no-confirm", "--suite-timeout-ms", "60000"])
+  const body = json(result)
+  assert.equal(body.ok, true, result.stdout)
+  const killed = (body.commands ?? []).find((item) => item.outcome === "killed")
+  assert.ok(killed, result.stdout)
+  const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", `${killed.id}.json`), "utf8")) as { killedBy: string[] }
+  const nodeId = "tests/test_gate.py::test_low"
+  assert.deepEqual(saved.killedBy, [nodeId], JSON.stringify(saved.killedBy))
+  assert.equal(saved.killedBy.some((name) => name.includes(`test_gate.py::${nodeId}`)), false, JSON.stringify(saved.killedBy))
+  const tallied = launch(["mutate", "tally", "--out", path.join(dir, "out")])
+  const tally = JSON.parse(tallied.stdout) as { ok: boolean; keep: string[]; pruning: { deletedTests: number } }
+  assert.equal(tally.ok, true, tallied.stdout)
+  assert.deepEqual(tally.keep, [nodeId], JSON.stringify(tally.keep))
+  assert.equal(tally.pruning.deletedTests, 0)
 })
 
 test("node coverage marks an uncovered line and runs only the tests that hit a covered line", { timeout: 120_000 }, () => {

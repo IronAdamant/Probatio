@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { affectedTests } from "./affected.js"
 import { binaryFromCommand, readCoverageMap, selectionFor, writeLlvmCoverage, type CoverageMap } from "./coverage-map.js"
+import { writeCsharpCoverage } from "./csharp-coverage.js"
 import { writeGoCoverage } from "./go-coverage.js"
 import { writeJavaCoverage } from "./java-coverage.js"
+import { writeRustCoverage } from "./rust-coverage.js"
 import { applyPatch, changedLines, chooseDirection, filesInDiff, git, restoreTree, type PatchDirection } from "./patch.js"
 import { killLabel, type KillCause } from "./kill-label.js"
 import {
@@ -62,6 +64,8 @@ export type RunOptions = {
   timeoutFloorMs?: number
   /** Stop after this many milliseconds of mutant work. Null uses maxMinutes. */
   budgetMs?: number | null
+  /** Package-relative paths removed in each worktree before the baseline. Not written into the report. */
+  hide?: string[] | null
   onProgress?: (line: string) => void
 }
 
@@ -96,6 +100,7 @@ export type KillFact = {
   cause: KillCause
   killedBy: string[]
   next: string
+  files: Array<{ file: string; line: number }>
 }
 
 type Failure = { name: string; file: string; line: number; fileTimeout?: boolean }
@@ -183,6 +188,7 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
   const history = loadHistory(options.historyPath)
   const worktrees = await createWorktrees(repo, packageDir, run.id, commit, options.workers, options.outDir)
   if ("error" in worktrees) return failReport(options.outDir, run.id, commit, worktrees.error)
+  hidePaths(worktrees.dirs, repo, packageDir, options.hide ?? [])
   const budgetMs = options.budgetMs ?? (options.maxMinutes == null ? null : options.maxMinutes * 60_000)
   let budgetStarted = 0
   const overBudget = () => budgetMs !== null && budgetStarted !== 0 && Date.now() - budgetStarted > budgetMs
@@ -324,11 +330,9 @@ async function prepare(
     if (baselineFailed.length > 0) {
       return { ok: false, error: "baseline already failing", baselineFailed, suiteCommand: spec.command }
     }
-    if (collect && !existsSync(mapPath) && (spec.kind === "go" || spec.kind === "maven")) {
-      progress(spec.kind === "go" ? "go line map" : "java line map")
-      const written = spec.kind === "go"
-        ? writeGoCoverage(pkg, baseline.report.names, mapPath)
-        : writeJavaCoverage(pkg, baseline.report.names, mapPath)
+    if (collect && !existsSync(mapPath) && languageMapKind(spec.kind)) {
+      progress(languageMapLabel(spec.kind))
+      const written = writeLanguageMap(spec.kind, pkg, baseline.report.names, mapPath, spec.project)
       if (!written.ok) writeFileSync(path.join(options.outDir, "coverage-error.txt"), `${written.detail}\n`)
     }
   } else {
@@ -706,12 +710,27 @@ async function createWorktrees(
     dirs.push(dir)
   }
   writeFileSync(path.join(outDir, "worktrees.json"), `${JSON.stringify(dirs)}\n`)
-  const linked = nodeModulesOf(repo, packageDir)
+  const sources = nodeModuleSources(repo, packageDir)
   for (const dir of dirs) {
-    const dest = path.join(packageIn(dir, repo, packageDir), "node_modules")
-    if (linked && !existsSync(dest)) symlinkSync(linked, dest, "dir")
+    const pkgRoot = packageIn(dir, repo, packageDir)
+    for (const source of sources) {
+      const dest = path.join(pkgRoot, source.rel)
+      if (existsSync(dest)) continue
+      mkdirSync(path.dirname(dest), { recursive: true })
+      symlinkSync(source.abs, dest, "dir")
+    }
   }
   return { dirs }
+}
+
+function hidePaths(dirs: string[], repo: string, packageDir: string, hide: string[]): void {
+  for (const dir of dirs) {
+    const pkg = packageIn(dir, repo, packageDir)
+    for (const rel of hide) {
+      if (!rel || path.isAbsolute(rel)) continue
+      rmSync(path.join(pkg, rel), { force: true })
+    }
+  }
 }
 
 function removeWorktrees(repo: string, dirs: string[], outDir: string): void {
@@ -734,18 +753,66 @@ function recordedWorktrees(outDir: string): string[] {
   }
 }
 
-/** A fresh worktree has no installed dependencies. Use the main checkout's node_modules. */
-function nodeModulesOf(repo: string, packageDir: string): string | null {
-  const local = path.join(packageDir, "node_modules")
-  if (existsSync(local)) return local
+/**
+ * Installed dependency directories to mirror into a fresh worktree.
+ * A package can keep node_modules at its root or under a nested example.
+ * A run that starts from a worktree looks beside the main checkout too.
+ */
+function nodeModuleSources(repo: string, packageDir: string): Array<{ rel: string; abs: string }> {
+  const roots = [packageDir]
+  const main = mainCheckoutPackage(repo, packageDir)
+  if (main && path.resolve(main) !== path.resolve(packageDir)) roots.push(main)
+  const found: Array<{ rel: string; abs: string }> = []
+  const seen = new Set<string>()
+  for (const root of roots) {
+    for (const abs of findNodeModules(root)) {
+      const rel = path.relative(root, abs)
+      if (seen.has(rel)) continue
+      seen.add(rel)
+      found.push({ rel, abs })
+    }
+  }
+  return found
+}
+
+function mainCheckoutPackage(repo: string, packageDir: string): string | null {
   const common = git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
   if (common.status !== 0) return null
   const gitDir = common.stdout.trim()
   if (!gitDir.endsWith(`${path.sep}.git`) && !gitDir.endsWith("/.git")) return null
   const rel = path.relative(repo, packageDir)
   if (rel.startsWith("..")) return null
-  const candidate = path.join(path.dirname(gitDir), rel, "node_modules")
-  return existsSync(candidate) ? candidate : null
+  return path.join(path.dirname(gitDir), rel)
+}
+
+function findNodeModules(root: string): string[] {
+  const out: string[] = []
+  const visit = (dir: string) => {
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === ".git" || name === "target" || name === "dist") continue
+      const full = path.join(dir, name)
+      let info
+      try {
+        info = statSync(full)
+      } catch {
+        continue
+      }
+      if (!info.isDirectory()) continue
+      if (name === "node_modules") {
+        out.push(full)
+        continue
+      }
+      visit(full)
+    }
+  }
+  visit(root)
+  return out
 }
 
 function packageIn(worktree: string, repo: string, packageDir: string): string {
@@ -844,9 +911,34 @@ function reportOf(
     flakyIds: results.filter((result) => result.outcome === "flaky").slice(0, 10).map((result) => result.id),
     kills: results
       .filter((result): result is MutantResult & { cause: KillCause } => result.outcome === "killed" && result.cause !== null)
-      .map((result) => ({ id: result.id, cause: result.cause, killedBy: result.killedBy, next: result.next })),
+      .map((result) => ({ id: result.id, cause: result.cause, killedBy: result.killedBy, next: result.next, files: result.files })),
     full: path.join(context.outDir, "results"),
   }
+}
+
+function languageMapKind(kind: string): boolean {
+  return kind === "go" || kind === "maven" || kind === "cargo" || kind === "dotnet"
+}
+
+function languageMapLabel(kind: string): string {
+  if (kind === "go") return "go line map"
+  if (kind === "maven") return "java line map"
+  if (kind === "cargo") return "rust line map"
+  return "csharp line map"
+}
+
+function writeLanguageMap(
+  kind: string,
+  pkg: string,
+  names: string[],
+  dest: string,
+  project?: string,
+): { ok: boolean; detail: string } {
+  if (kind === "go") return writeGoCoverage(pkg, names, dest)
+  if (kind === "maven") return writeJavaCoverage(pkg, names, dest)
+  if (kind === "cargo") return writeRustCoverage(pkg, names, dest)
+  if (kind === "dotnet") return writeCsharpCoverage(pkg, names, dest, project)
+  return { ok: false, detail: "no line map writer" }
 }
 
 function failReport(
@@ -1035,9 +1127,18 @@ function sha256(text: string | Buffer): string {
 }
 
 function failureId(pkg: string, failure: Failure): string {
+  // Pytest already reports a node id (tests/test_gate.py::test_low). Prepending the
+  // file doubles it, and pytest then exits 4 and collects nothing.
+  if (pytestNodeId(failure.name)) return failure.name
   const rel = failure.file ? path.relative(pkg, failure.file) : ""
   const file = !rel || rel.startsWith("..") ? path.basename(failure.file || "") : rel.split(path.sep).join("/")
   return `${file}::${failure.name}`
+}
+
+function pytestNodeId(name: string): boolean {
+  const mark = name.indexOf("::")
+  if (mark <= 0) return false
+  return name.slice(0, mark).endsWith(".py")
 }
 
 function testArg(pkg: string, file: string, testsDir: string): string {

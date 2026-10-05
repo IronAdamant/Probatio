@@ -160,9 +160,10 @@ function nodeSuite(pkg: string): SuiteSpec | null {
 }
 
 function mochaSuite(pkg: string): SuiteSpec | null {
-  const files = walk(pkg, (rel) => isNodeTest(rel) || (rel.split("/").includes("test") && rel.endsWith(".ts")))
-  if (files.length === 0 || !usesMocha(pkg)) return null
-  return { kind: "mocha", files, command: "mocha --reporter json" }
+  if (!usesMocha(pkg)) return null
+  const files = mochaFiles(pkg)
+  if (files.length === 0) return null
+  return { kind: "mocha", files, command: shown("mocha", buildMochaArgs(pkg, files)) }
 }
 
 /** A Makefile `test` target that links the project's own COBOL tests, instead of one file. */
@@ -208,12 +209,104 @@ export function sourceCandidates(pkg: string): string[] {
 }
 
 function pythonTests(pkg: string, testsDir: string): string[] {
-  const roots = new Set([testsDir, "tests", "test"])
+  const configured = pytestTestPaths(pkg)
+  const roots = new Set(configured ?? [testsDir, "tests", "test"])
   return walk(pkg, (rel) => {
     const base = path.posix.basename(rel)
-    if (!/^test_.*\.py$/.test(base) && !/_test\.py$/.test(base)) return false
+    if (!/^test_.*\.py$/.test(base) && !/_test\.py$/.test(base) && !/^tests_.*\.py$/.test(base)) return false
+    if (configured) return configured.some((root) => rel === root || rel.startsWith(`${root}/`))
     return rel.split("/").some((part) => roots.has(part))
   })
+}
+
+/** Directories pytest itself would collect. A missing setting keeps the broader walk. */
+function pytestTestPaths(pkg: string): string[] | null {
+  const fromPyproject = readPyprojectTestPaths(path.join(pkg, "pyproject.toml"))
+  if (fromPyproject) return fromPyproject
+  for (const file of ["pytest.ini", "tox.ini", "setup.cfg"]) {
+    const found = readIniTestPaths(path.join(pkg, file))
+    if (found) return found
+  }
+  return null
+}
+
+function readPyprojectTestPaths(file: string): string[] | null {
+  if (!existsSync(file)) return null
+  const text = readFileSync(file, "utf8")
+  const section = /\[tool\.pytest\.ini_options\][^\n]*\n([\s\S]*?)(?:\n\[|\s*$)/.exec(text)?.[1]
+  if (!section) return null
+  const key = /testpaths\s*=\s*([\s\S]*?)(?:\n[A-Za-z]|\s*$)/.exec(section)?.[1]
+  if (!key) return null
+  const quoted = [...key.matchAll(/"([^"]+)"|'([^']+)'/g)].map((match) => (match[1] ?? match[2]).trim()).filter(Boolean)
+  return quoted.length > 0 ? quoted : null
+}
+
+function readIniTestPaths(file: string): string[] | null {
+  if (!existsSync(file)) return null
+  const text = readFileSync(file, "utf8")
+  const section = /\[(?:pytest|tool:pytest)\][^\n]*\n([\s\S]*?)(?:\n\[|\s*$)/.exec(text)?.[1]
+  if (!section) return null
+  const key = /testpaths\s*=\s*([\s\S]*?)(?:\n[A-Za-z]|\s*$)/.exec(section)?.[1]
+  if (!key) return null
+  const paths = key
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0 && !item.startsWith("#"))
+  return paths.length > 0 ? paths : null
+}
+
+const MOCHA_SKIP_DIR = new Set(["support", "fixtures", "helpers", "helper"])
+
+/** Mocha files the project would run: node-style names, TypeScript under test/, or describe/it scripts. */
+function mochaFiles(pkg: string): string[] {
+  return walk(pkg, (rel) => {
+    const parts = rel.split("/")
+    if (parts.some((part) => MOCHA_SKIP_DIR.has(part.toLowerCase()))) return false
+    const inTest = parts.some((part) => part === "test" || part === "tests")
+    if (!inTest) return false
+    if (isNodeTest(rel)) return true
+    if (parts.includes("test") && /\.tsx?$/.test(rel)) return true
+    if (!/\.(?:js|mjs|cjs)$/.test(rel)) return false
+    let text = ""
+    try {
+      text = readFileSync(path.join(pkg, rel), "utf8")
+    } catch {
+      return false
+    }
+    return /\bdescribe\s*\(/.test(text) || /\bit\s*\(/.test(text)
+  })
+}
+
+/** Args after the mocha binary: reporter, the project's own --require, and files when package.json has no mocha.spec. */
+export function buildMochaArgs(pkg: string, files: string[]): string[] {
+  const config = readMochaConfig(pkg)
+  const args = ["--reporter", "json", "--timeout", "20000"]
+  const fromConfig = new Set((config?.require ?? []).filter((name) => name !== "esm"))
+  for (const name of scriptRequires(pkg)) {
+    if (name === "esm" || fromConfig.has(name)) continue
+    args.push("--require", name)
+  }
+  const hasSpec = Boolean(config?.spec && config.spec.length > 0)
+  if (!hasSpec) args.push(...files)
+  return args
+}
+
+function scriptRequires(pkg: string): string[] {
+  const file = path.join(pkg, "package.json")
+  if (!existsSync(file)) return []
+  let script = ""
+  try {
+    const body = JSON.parse(readFileSync(file, "utf8")) as { scripts?: { test?: string } }
+    script = body.scripts?.test ?? ""
+  } catch {
+    return []
+  }
+  const found: string[] = []
+  for (const match of script.matchAll(/(?:^|\s)--require(?:=|\s+)(\S+)/g)) {
+    const name = match[1].replace(/^['"]|['"]$/g, "")
+    if (name && name !== "esm" && !found.includes(name)) found.push(name)
+  }
+  return found
 }
 
 function isPytest(pkg: string, testsDir: string, files: string[]): boolean {
@@ -263,6 +356,11 @@ function shown(bin: string, args: string[]): string {
   return [bin, ...args.map((arg) => (/\s/.test(arg) ? JSON.stringify(arg) : arg))].join(" ")
 }
 
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_:.]+$/.test(value)) return value
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
 async function launch(
   pkg: string,
   spec: SuiteSpec,
@@ -304,12 +402,15 @@ async function launch(
     return tag(runPython(pkg, files, k, timeoutMs, env, "py-pytest-reporter.py", plan.nodeIds), command, false, selection)
   }
   if (spec.kind === "cargo") {
-    if (selection.length > 1) {
-      return tag(spawnCollected("cargo", ["test", "--", "--test-threads=1"], pkg, env, timeoutMs), "cargo test -- --test-threads=1", true, selection)
+    if (selection.length === 0) {
+      return tag(spawnCollected("cargo", ["test", "--", "--test-threads=1"], pkg, env, timeoutMs), "cargo test -- --test-threads=1", false, selection)
     }
-    const filter = selection.length === 1 ? selection[0] : null
-    const args = filter ? ["test", filter, "--", "--test-threads=1"] : ["test", "--", "--test-threads=1"]
-    return tag(spawnCollected("cargo", args, pkg, env, timeoutMs), shown("cargo", args), false, selection)
+    if (selection.length === 1) {
+      const args = ["test", selection[0], "--", "--exact", "--test-threads=1"]
+      return tag(spawnCollected("cargo", args, pkg, env, timeoutMs), shown("cargo", args), false, selection)
+    }
+    const script = selection.map((name) => `cargo test ${shellQuote(name)} -- --exact --test-threads=1`).join(" && ")
+    return tag(spawnCollected("sh", ["-c", script], pkg, env, timeoutMs), script, false, selection)
   }
   if (spec.kind === "go") {
     const filter = goRunFilter(names, pattern)
@@ -504,22 +605,18 @@ async function runMocha(
   const prepared = await preparePublished(pkg, env, timeoutMs)
   if (prepared && (prepared.code !== 0 || prepared.timedOut)) return prepared
   const config = readMochaConfig(pkg)
-  const args = [mocha, "--reporter", "json", "--timeout", "20000"]
-  if (config) {
+  const args = [mocha, ...buildMochaArgs(pkg, files)]
+  if (config && config.require.includes("esm")) {
     // The `esm` loader throws on current Node before any test runs. Drop that one require and keep the rest of the project's mocha config.
     const requires = config.require.filter((name) => name !== "esm")
-    if (requires.length !== config.require.length) {
-      const dir = path.join(pkg, ".probatio-suite")
-      mkdirSync(dir, { recursive: true })
-      const override = path.join(dir, "mocha-package.json")
-      writeFileSync(
-        override,
-        `${JSON.stringify({ mocha: { extension: config.extension, require: requires, spec: config.spec } }, null, 2)}\n`,
-      )
-      args.push("--package", override)
-    }
-  } else {
-    args.push(...files)
+    const dir = path.join(pkg, ".probatio-suite")
+    mkdirSync(dir, { recursive: true })
+    const override = path.join(dir, "mocha-package.json")
+    writeFileSync(
+      override,
+      `${JSON.stringify({ mocha: { extension: config.extension, require: requires, spec: config.spec } }, null, 2)}\n`,
+    )
+    args.push("--package", override)
   }
   return spawnCollected(process.execPath, args, pkg, env, timeoutMs)
 }

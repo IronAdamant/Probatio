@@ -25,6 +25,7 @@ import {
 import { git } from "./mutate/patch.js"
 import { generateMutants } from "./mutate/generate.js"
 import { runMutants } from "./mutate/run.js"
+import { LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel } from "./mutate/sealed.js"
 import { generateNext } from "./mutate/suite-decision.js"
 import { discoverSuite } from "./mutate/suites.js"
 import { tallyRun } from "./mutate/tally.js"
@@ -38,6 +39,7 @@ const [group, action] = parsed.command
 try {
   if (group === "mutate" && action === "generate") finish(await generateCommand(parsed.flags), parsed.human)
   if (group === "mutate" && action === "run") finish(await runCommand(parsed.flags), parsed.human)
+  if (group === "mutate" && action === "sealed") finish(await sealedCommand(parsed.flags), parsed.human)
   if (group === "mutate" && action === "tally") finish(tallyCommand(parsed.flags), parsed.human)
   if (group === "ledger" && action === "build") finish(await ledgerCommand(parsed.flags), parsed.human)
   if (group === "matrix" && action === "report") finish(matrixCommand(parsed.flags), parsed.human)
@@ -75,7 +77,7 @@ function usage(ok: boolean, summary: string): Envelope {
     ok,
     command: "mutate.help",
     summary,
-    next: "probatio mutate generate writes operator mutants. probatio mutate run confirms each kill twice. probatio mutate tally reads a finished run and does not delete a test. probatio ledger build reverts fix commits. probatio matrix report reads a recorded score table.",
+    next: "probatio mutate generate writes operator mutants. probatio mutate run confirms each kill twice. probatio mutate sealed runs one forward bug and keeps the label file out of the report. probatio mutate tally reads a finished run and does not delete a test. probatio ledger build reverts fix commits. probatio matrix report reads a recorded score table.",
     nextCall: null,
   }
 }
@@ -135,7 +137,7 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
   }
 }
 
-async function runCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
+async function runCommand(flags: ReturnType<typeof parseArgs>["flags"], hide: string[] | null = null): Promise<Envelope> {
   const packageDir = path.resolve(requireText(flags, "package"))
   const patchDirs = texts(flags, "patches").map((dir) => path.resolve(dir))
   if (patchDirs.length === 0) throw new Error("--patches is required")
@@ -172,6 +174,7 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise
     timeoutMultiple: int(flags, "timeout-multiple") ?? 5,
     timeoutFloorMs: int(flags, "timeout-floor-ms") ?? 20_000,
     budgetMs: int(flags, "budget-ms") ?? null,
+    hide,
     onProgress: (line) => process.stderr.write(`${line}\n`),
   })
   const resume: Envelope["nextCall"] = report.budgetHit
@@ -207,6 +210,22 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise
 
 function tallyCommand(flags: ReturnType<typeof parseArgs>["flags"]): Envelope {
   return tallyRun(path.resolve(requireText(flags, "out")))
+}
+
+async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
+  const label = readSealedLabel(path.resolve(requireText(flags, "label")))
+  const hide = texts(flags, "hide")
+  const report = await runCommand(flags, hide)
+  const body = JSON.stringify(report)
+  if (!labelLeaked(body, label)) return report
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    ok: false,
+    command: "mutate.sealed",
+    summary: LABEL_LEAK_SUMMARY,
+    next: "Keep the label in its own file. Run the same command again.",
+    nextCall: null,
+  }
 }
 
 async function ledgerCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {

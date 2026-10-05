@@ -303,6 +303,64 @@ test("mutate run uses the main checkout node_modules when the worktree has none"
   }
 })
 
+test("mutate run links node_modules that live under a nested package", () => {
+  const pkg = mkdtempSync(path.join(tmpdir(), "probatio-nested-deps-"))
+  const out = mkdtempSync(path.join(tmpdir(), "probatio-nested-out-"))
+  try {
+    const nested = path.join(pkg, "examples", "pkg")
+    mkdirSync(path.join(nested, "src"), { recursive: true })
+    mkdirSync(path.join(nested, "tests"), { recursive: true })
+    writeFileSync(path.join(pkg, "package.json"), '{"type":"module"}\n')
+    writeFileSync(path.join(pkg, ".gitignore"), "node_modules\n")
+    writeFileSync(path.join(nested, "src", "gate.js"), "export function gate(n) {\n  return n > 0\n}\n")
+    writeFileSync(
+      path.join(nested, "tests", "gate.test.js"),
+      'import test from "node:test"\nimport assert from "node:assert/strict"\nimport { value } from "fixture-dep"\nimport { gate } from "../src/gate.js"\ntest("dep loads", () => {\n  assert.equal(value, 1)\n  assert.equal(gate(1), true)\n})\n',
+    )
+    git(pkg, ["init", "-q"])
+    commit(pkg, "init")
+    const dep = path.join(nested, "node_modules", "fixture-dep")
+    mkdirSync(dep, { recursive: true })
+    writeFileSync(path.join(dep, "package.json"), '{"type":"module"}\n')
+    writeFileSync(path.join(dep, "index.js"), "export const value = 1\n")
+    const patches = path.join(out, "patches")
+    mkdirSync(patches)
+    writeFileSync(
+      path.join(patches, "m-dep.patch"),
+      "--- a/examples/pkg/src/gate.js\n+++ b/examples/pkg/src/gate.js\n@@ -1,3 +1,3 @@\n export function gate(n) {\n-  return n > 0\n+  return n >= 0\n }\n",
+    )
+    const tsx = path.join(root, "node_modules", ".bin", "tsx")
+    const result = spawnSync(
+      tsx,
+      [
+        "src/cli.ts",
+        "mutate",
+        "run",
+        "--package",
+        pkg,
+        "--patches",
+        patches,
+        "--out",
+        path.join(out, "run"),
+        "--no-build",
+        "--no-confirm",
+        "--max-mutants",
+        "1",
+        "--suite-timeout-ms",
+        "20000",
+      ],
+      { cwd: root, encoding: "utf8" },
+    )
+    const parsed = JSON.parse(result.stdout) as { ok: boolean; summary: string }
+    assert.equal(parsed.summary.includes("baseline already failing"), false, parsed.summary)
+    assert.equal(parsed.ok, true, parsed.summary)
+    assert.match(parsed.summary, /1 survived/)
+  } finally {
+    rmSync(pkg, { recursive: true, force: true })
+    rmSync(out, { recursive: true, force: true })
+  }
+})
+
 test("cli mutate run does not check out a tree when the package has no tests", () => {
   const pkg = mkdtempSync(path.join(tmpdir(), "probatio-norun-"))
   const patches = path.join(pkg, "patches")
