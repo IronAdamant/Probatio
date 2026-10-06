@@ -189,7 +189,8 @@ test("junit parametrized keep id keeps the invocation Surefire recorded", { time
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })
     mkdirSync(path.join(dir, "src", "test", "java", "gate"), { recursive: true })
     mkdirSync(path.join(dir, "patches"))
-    writeFileSync(path.join(dir, "pom.xml"), "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>gate</artifactId>\n  <version>1.0</version>\n  <properties>\n    <maven.compiler.source>17</maven.compiler.source>\n    <maven.compiler.target>17</maven.compiler.target>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>junit</groupId>\n      <artifactId>junit</artifactId>\n      <version>4.13.2</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n</project>\n")
+    // Surefire 2.12.4 cannot select a parameterized method. 3.5.4 runs testShut*.
+    writeFileSync(path.join(dir, "pom.xml"), "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>gate</artifactId>\n  <version>1.0</version>\n  <properties>\n    <maven.compiler.source>17</maven.compiler.source>\n    <maven.compiler.target>17</maven.compiler.target>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>junit</groupId>\n      <artifactId>junit</artifactId>\n      <version>4.13.2</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n  <build>\n    <plugins>\n      <plugin>\n        <groupId>org.apache.maven.plugins</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>\n        <version>3.5.4</version>\n      </plugin>\n    </plugins>\n  </build>\n</project>\n")
     writeFileSync(path.join(dir, "src", "main", "java", "gate", "Gate.java"), source)
     writeFileSync(
       path.join(dir, "src", "test", "java", "gate", "GateTest.java"),
@@ -230,7 +231,7 @@ test("junit parametrized keep id keeps the invocation Surefire recorded", { time
     const again = run(dir, path.join(dir, "again"), ["--only-test", id as string, "--suite-timeout-ms", "180000"])
     assert.equal(again.killed, 1, again.summary)
     const command = again.commands?.[0]?.command ?? ""
-    assert.match(command, /#testShut(?:[, ]|$)/)
+    assert.match(command, /#testShut\*(?:[, ]|$)/)
     assert.equal(command.includes("testShut["), false, command)
   } finally {
     rmSync(dir, { recursive: true, force: true })

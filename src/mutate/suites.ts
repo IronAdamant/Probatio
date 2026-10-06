@@ -508,8 +508,11 @@ function surefireTest(name: string): string {
   const leaf = name.split("::").pop() ?? name
   const dot = leaf.lastIndexOf(".")
   const body = dot <= 0 ? leaf : `${leaf.slice(0, dot)}#${leaf.slice(dot + 1)}`
-  // testShut[0] collects nothing. method(Parser)[1] keeps the parameter types.
-  return body.replace(/\[[^\]]*\]$/, "")
+  // testShut[0] matches nothing. A bare testShut matches on Surefire 3.6 and runs
+  // zero tests on 3.5. testShut* matches every invocation on both. method(Parser)[1] keeps the types.
+  const invocation = /\[[^\]]*\]$/.test(body)
+  const method = body.replace(/\[[^\]]*\]$/, "")
+  return invocation ? `${method}*` : method
 }
 
 function escapeRegExp(value: string): string {
@@ -1487,6 +1490,12 @@ function mavenReport(pkg: string, text: string, code: number): TestReport | null
   return parseSurefire(pkg) ?? parseMavenText(text)
 }
 
+/** An attribute on the opening tag. `classname` must not be read as `name`. */
+export function surefireAttr(fragment: string, key: string): string {
+  const open = fragment.slice(0, fragment.indexOf(">") === -1 ? fragment.length : fragment.indexOf(">"))
+  return new RegExp(`(?:^|\\s)${key}="([^"]*)"`).exec(open)?.[1] ?? ""
+}
+
 function parseSurefire(pkg: string): TestReport | null {
   const dir = path.join(pkg, "target", "surefire-reports")
   if (!existsSync(dir)) return null
@@ -1496,10 +1505,10 @@ function parseSurefire(pkg: string): TestReport | null {
     if (!name.endsWith(".xml")) continue
     const xml = readFileSync(path.join(dir, name), "utf8")
     for (const part of xml.split("<testcase ").slice(1)) {
-      const test = /name="([^"]+)"/.exec(part)?.[1]
-      const klass = /classname="([^"]+)"/.exec(part)?.[1] ?? ""
+      const test = surefireAttr(part, "name")
+      const klass = surefireAttr(part, "classname")
       if (!test) continue
-      const id = `${klass}.${test}`
+      const id = klass ? `${klass}.${test}` : test
       names.push(id)
       if (part.includes("<failure") || part.includes("<error")) failed.push({ name: id, file: klass, line: 0 })
     }
