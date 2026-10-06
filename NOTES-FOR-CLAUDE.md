@@ -49,7 +49,7 @@ probatio mutate sealed \
   --workers 1
 ```
 
-The first new CSV subject, `f9e7d792`, was ineligible. The next, `c15a06ee`, stayed green. The search then stopped on the eligible catch above. BugsInPy, and the small Go or Java fallback, were not opened.
+The first new CSV subject, `f9e7d792`, was ineligible. The next, `c15a06ee`, stayed green. The search then stopped on the eligible catch above. BugsInPy, and the small Go or Java fallback, were not opened. Those two rows stay open. The sealed outcome was a kill, so there is no survived or no-coverage miss to write down, and the README does not say the suite missed. Those miss rows stay open too. `package.json` and `package-lock.json` stay `0.0.5` because those rows are open. An earlier packed check used a `0.1.0` tarball. That number was put back. `npm publish` was not run.
 
 `npm test` passed twice. Each run is 115 tests, 0 fail, exit 0.
 
