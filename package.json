@@ -1,6 +1,6 @@
 {
   "name": "probatio",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "description": "Mutation runner for AI agents. Scores a test suite by the bugs it catches.",
   "type": "module",
   "bin": {
