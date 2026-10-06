@@ -46,7 +46,7 @@ The line map was not written on that run. Coverage reported `selectMethod(Class,
 
 Two earlier CSV subjects were not sealed. `f9e7d792` is ineligible: the revealing test is a method inside `CSVParserTest.java`, and `--hide` deletes a whole file. An older test did fail. `c15a06ee` stayed green (421 tests) after `JiraCsv288Test.java` was removed and `Lexer.java` was reverted. The search stopped at the eligible catch.
 
-A JUnit 4 parameterized keep id such as `testShut[0]` is recorded in full. `-Dtest` asks for `testShut*`: a bare `testShut` runs every invocation on Surefire 3.6 and zero tests on 3.5, and `testShut[0]` matches nothing. A `(Type)` list stays, so `method(Parser)[1]` becomes `method(Parser)*`.
+A JUnit 4 parameterized keep id such as `testShut[0]` is recorded in full. `-Dtest` asks for `testShut*`: a bare `testShut` runs every invocation on Surefire 3.6 and zero tests on 3.5, and `testShut[0]` matches nothing. A `(Type)` list stays, so `method(Parser)[1]` becomes `method(Parser)*`. Methods of one class are joined with `+`. Surefire 2.12 treats a comma as another class, so `Class#testOpens,Class#testShut` runs only `testOpens`.
 
 Patch file `m-271.patch`. The hunk replaces `printRecord(Arrays.asList(values));` with `format.printRecord(out, values);` and `newRecord = true;`. The label file stays beside the run, not in the clone. Confirm stays on. Repeat with a fresh `--out` directory:
 

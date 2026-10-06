@@ -419,8 +419,8 @@ async function launch(
   }
   if (spec.kind === "swift") return tag(runSwift(pkg, timeoutMs, env), spec.command, wantsNames, selection)
   if (spec.kind === "maven") {
-    const tests = uniqueSurefire(selection)
-    const args = ["-B", "test", ...(tests.length > 0 ? [`-Dtest=${tests.join(",")}`] : [])]
+    const tests = surefireArg(uniqueSurefire(selection))
+    const args = ["-B", "test", ...(tests.length > 0 ? [`-Dtest=${tests}`] : [])]
     const whole = wantsNames && tests.length === 0
     // Surefire leaves the previous run's XML in place. A confirm that did not
     // re-execute a class would otherwise read that class as failed again.
@@ -502,6 +502,25 @@ function uniqueSurefire(names: string[]): string[] {
     out.push(selector)
   }
   return out
+}
+
+/** Surefire 2.12 splits `-Dtest` on commas and then reads `#method+method`. `Class#a,Class#b` runs only `a`. */
+export function surefireArg(tests: string[]): string {
+  const groups = new Map<string, string[]>()
+  for (const test of tests) {
+    const hash = test.indexOf("#")
+    const klass = hash === -1 ? test : test.slice(0, hash)
+    const method = hash === -1 ? "" : test.slice(hash + 1)
+    const methods = groups.get(klass)
+    if (methods) {
+      if (method) methods.push(method)
+    } else {
+      groups.set(klass, method ? [method] : [])
+    }
+  }
+  return [...groups.entries()]
+    .map(([klass, methods]) => (methods.length > 0 ? `${klass}#${methods.join("+")}` : klass))
+    .join(",")
 }
 
 function surefireTest(name: string): string {
