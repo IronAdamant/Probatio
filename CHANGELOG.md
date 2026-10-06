@@ -6,7 +6,7 @@ The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, the
 
 ## 0.1.3
 
-- Not on npm. npm latest stays `0.1.2` (`29301bc3839d3012fb2009222cef768bccd27a6b`).
+- Published 2026-10-06. gitHead `760c672914e069d10b6a5a71575a5ad1209f3075`.
 - Actions run `37440425701` on `950dea0` is green: core, pack on Node 22, pack on Node 24, toolchain, and macos.
 - Surefire reads the method name when `classname` comes first, reruns a parameterized method as `method*`, and joins methods of one class with `+`.
 
