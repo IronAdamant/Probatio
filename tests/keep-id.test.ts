@@ -158,7 +158,7 @@ test("junit keep id is the class.method selector, not a doubled name", { timeout
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })
     mkdirSync(path.join(dir, "src", "test", "java", "gate"), { recursive: true })
     mkdirSync(path.join(dir, "patches"))
-    writeFileSync(path.join(dir, "pom.xml"), "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>gate</artifactId>\n  <version>1.0</version>\n  <dependencies>\n    <dependency>\n      <groupId>junit</groupId>\n      <artifactId>junit</artifactId>\n      <version>4.13.2</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n</project>\n")
+    writeFileSync(path.join(dir, "pom.xml"), "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>gate</artifactId>\n  <version>1.0</version>\n  <properties>\n    <maven.compiler.source>17</maven.compiler.source>\n    <maven.compiler.target>17</maven.compiler.target>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>junit</groupId>\n      <artifactId>junit</artifactId>\n      <version>4.13.2</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n</project>\n")
     writeFileSync(path.join(dir, "src", "main", "java", "gate", "Gate.java"), source)
     writeFileSync(path.join(dir, "src", "test", "java", "gate", "GateTest.java"), "package gate;\nimport org.junit.Test;\nimport static org.junit.Assert.*;\npublic class GateTest {\n  @Test public void testShut() { assertFalse(Gate.allow(0)); }\n  @Test public void testOther() { assertEquals(1, 1); }\n}\n")
     commit(dir)
@@ -189,7 +189,7 @@ test("junit parametrized keep id keeps the invocation Surefire recorded", { time
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })
     mkdirSync(path.join(dir, "src", "test", "java", "gate"), { recursive: true })
     mkdirSync(path.join(dir, "patches"))
-    writeFileSync(path.join(dir, "pom.xml"), "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>gate</artifactId>\n  <version>1.0</version>\n  <dependencies>\n    <dependency>\n      <groupId>junit</groupId>\n      <artifactId>junit</artifactId>\n      <version>4.13.2</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n</project>\n")
+    writeFileSync(path.join(dir, "pom.xml"), "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>gate</artifactId>\n  <version>1.0</version>\n  <properties>\n    <maven.compiler.source>17</maven.compiler.source>\n    <maven.compiler.target>17</maven.compiler.target>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>junit</groupId>\n      <artifactId>junit</artifactId>\n      <version>4.13.2</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n</project>\n")
     writeFileSync(path.join(dir, "src", "main", "java", "gate", "Gate.java"), source)
     writeFileSync(
       path.join(dir, "src", "test", "java", "gate", "GateTest.java"),

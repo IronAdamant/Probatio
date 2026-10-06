@@ -101,14 +101,9 @@ export function writeLlvmCoverage(pkg: string, profileDir: string, binary: strin
   const raws = readdirSync(profileDir).filter((name) => name.endsWith(".profraw")).map((name) => path.join(profileDir, name))
   if (raws.length === 0) return { ok: false, detail: "no profraw" }
   if (!binary) return { ok: false, detail: "no instrumented binary" }
-  const llvmCov = findTool("llvm-cov")
-  const llvmProf = findTool("llvm-profdata")
-  if (!llvmCov || !llvmProf) return { ok: false, detail: `llvm tool missing (${llvmCov ? "llvm-profdata" : "llvm-cov"})` }
   const merged = path.join(profileDir, "baseline.profdata")
-  const merge = spawnSync(llvmProf, ["merge", "-sparse", "-o", merged, ...raws], { encoding: "utf8" })
-  if (merge.status !== 0) return { ok: false, detail: (merge.stderr || merge.stdout || "llvm-profdata failed").trim() }
-  const exported = spawnSync(llvmCov, ["export", binary, `-instr-profile=${merged}`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
-  if (exported.status !== 0) return { ok: false, detail: (exported.stderr || exported.stdout || "llvm-cov failed").trim() }
+  const exported = exportLlvmProfile(binary, raws, merged)
+  if (!exported.ok) return exported
   const map = llvmExportToMap(exported.stdout, pkg)
   if (!map) return { ok: false, detail: "llvm-cov export was not a coverage map" }
   writeFileSync(dest, `${JSON.stringify(map, null, 2)}\n`)
@@ -147,12 +142,77 @@ function llvmExportToMap(stdout: string, pkg: string): CoverageMap | null {
   return { files }
 }
 
-function findTool(name: string): string | null {
+/**
+ * clang and rustc write different profraw versions. Each pair is one LLVM install.
+ * The first pair that can merge the profile wins.
+ */
+export function llvmToolsPresent(): boolean {
+  return llvmToolPairs().length > 0
+}
+
+export function exportLlvmProfile(
+  binary: string,
+  raws: string[],
+  merged: string,
+): { ok: true; stdout: string } | { ok: false; detail: string } {
+  const pairs = llvmToolPairs()
+  if (pairs.length === 0) return { ok: false, detail: "llvm tool missing (llvm-cov)" }
+  let detail = "llvm-profdata failed"
+  for (const { cov, prof } of pairs) {
+    const merge = spawnSync(prof, ["merge", "-sparse", "-o", merged, ...raws], { encoding: "utf8" })
+    if (merge.status !== 0) {
+      detail = (merge.stderr || merge.stdout || "llvm-profdata failed").trim()
+      continue
+    }
+    const exported = spawnSync(cov, ["export", binary, `-instr-profile=${merged}`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+    if (exported.status !== 0) {
+      detail = (exported.stderr || exported.stdout || "llvm-cov failed").trim()
+      continue
+    }
+    return { ok: true, stdout: exported.stdout }
+  }
+  return { ok: false, detail }
+}
+
+function llvmToolPairs(): Array<{ cov: string; prof: string }> {
+  const covs = toolCandidates("llvm-cov")
+  const profs = toolCandidates("llvm-profdata")
+  const pairs: Array<{ cov: string; prof: string }> = []
+  const seen = new Set<string>()
+  for (const cov of covs) {
+    const prof = profs.find((item) => path.dirname(item) === path.dirname(cov))
+    if (!prof) continue
+    const key = `${cov}\0${prof}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    pairs.push({ cov, prof })
+  }
+  return pairs
+}
+
+function toolCandidates(name: string): string[] {
+  const out: string[] = []
+  const add = (file: string) => {
+    if (!file || out.includes(file) || !existsSync(file)) return
+    out.push(file)
+  }
   const fromXcrun = spawnSync("xcrun", ["--find", name], { encoding: "utf8" })
-  const xcrunPath = fromXcrun.stdout?.trim() ?? ""
-  if (fromXcrun.status === 0 && xcrunPath && existsSync(xcrunPath)) return xcrunPath
+  if (fromXcrun.status === 0) add((fromXcrun.stdout ?? "").trim())
   const which = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" })
-  const found = which.stdout?.trim() ?? ""
-  if (which.status === 0 && found) return found
-  return null
+  if (which.status === 0) add((which.stdout ?? "").trim())
+  const rustc = spawnSync("rustc", ["--print", "sysroot"], { encoding: "utf8" })
+  if (rustc.status === 0) {
+    const root = path.join(rustc.stdout.trim(), "lib", "rustlib")
+    if (existsSync(root)) {
+      for (const host of readdirSync(root)) add(path.join(root, host, "bin", name))
+    }
+  }
+  const usr = "/usr/lib"
+  if (existsSync(usr)) {
+    for (const dir of readdirSync(usr)) {
+      if (dir.startsWith("llvm-")) add(path.join(usr, dir, "bin", name))
+    }
+  }
+  add(path.join("/usr/bin", name))
+  return out
 }

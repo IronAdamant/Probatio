@@ -52,7 +52,7 @@ jobs:
         run: |
           set -eu
           sudo apt-get update
-          sudo apt-get install -y python3-pytest gnucobol gcc clang llvm make cmake openjdk-21-jdk maven
+          sudo apt-get install -y python3-pytest python3-coverage gnucobol gcc clang llvm make cmake openjdk-21-jdk maven
           curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import type { CoverageMap } from "./coverage-map.js"
+import { exportLlvmProfile, llvmToolsPresent, type CoverageMap } from "./coverage-map.js"
 
 /**
  * One instrumented test binary, then one profile per test name.
@@ -10,9 +10,7 @@ import type { CoverageMap } from "./coverage-map.js"
 export function writeRustCoverage(pkg: string, testNames: string[], dest: string): { ok: boolean; detail: string } {
   const names = [...new Set(testNames.map((name) => name.trim()).filter((name) => name.length > 0 && !/\s/.test(name)))]
   if (names.length === 0) return { ok: false, detail: "rust coverage: no test names" }
-  const llvmCov = findTool("llvm-cov")
-  const llvmProf = findTool("llvm-profdata")
-  if (!llvmCov || !llvmProf) return { ok: false, detail: "rust coverage: llvm tool missing" }
+  if (!llvmToolsPresent()) return { ok: false, detail: "rust coverage: llvm tool missing" }
   const env: NodeJS.ProcessEnv = { ...process.env, RUSTFLAGS: "-C instrument-coverage", CARGO_INCREMENTAL: "0" }
   const built = spawnSync("cargo", ["test", "--no-run", "--message-format=json"], {
     cwd: pkg,
@@ -39,10 +37,8 @@ export function writeRustCoverage(pkg: string, testNames: string[], dest: string
       if (!existsSync(raw)) continue
       if (!new RegExp(`^test ${escapeRegExp(name)} \\.\\.\\. ok`, "m").test(`${ran.stdout}\n${ran.stderr}`)) continue
       const merged = path.join(work, `${safe(name)}-${safe(path.basename(exe))}.profdata`)
-      const merge = spawnSync(llvmProf, ["merge", "-sparse", "-o", merged, raw], { encoding: "utf8" })
-      if (merge.status !== 0) continue
-      const exported = spawnSync(llvmCov, ["export", exe, `-instr-profile=${merged}`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
-      if (exported.status !== 0) continue
+      const exported = exportLlvmProfile(exe, [raw], merged)
+      if (!exported.ok) continue
       for (const hit of llvmHits(exported.stdout, pkg)) addHit(files, hit.file, hit.line, name)
     }
   }
@@ -117,16 +113,6 @@ function addHit(files: CoverageMap["files"], file: string, line: number, test: s
   if (!names.includes(test)) names.push(test)
   lines[key] = names
   files[file] = lines
-}
-
-function findTool(name: string): string | null {
-  const fromXcrun = spawnSync("xcrun", ["--find", name], { encoding: "utf8" })
-  const xcrunPath = fromXcrun.stdout?.trim() ?? ""
-  if (fromXcrun.status === 0 && xcrunPath && existsSync(xcrunPath)) return xcrunPath
-  const which = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" })
-  const found = which.stdout?.trim() ?? ""
-  if (which.status === 0 && found) return found
-  return null
 }
 
 function safe(value: string): string {

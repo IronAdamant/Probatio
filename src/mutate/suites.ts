@@ -814,7 +814,8 @@ function gnuScript(): boolean {
 function scriptInvocation(pkg: string): { bin: string; args: string[]; command: string } {
   if (!suiteNeedsTty(pkg)) return { bin: "bash", args: ["run_tests.sh"], command: "bash run_tests.sh" }
   if (gnuScript()) {
-    const args = ["-q", "-c", "bash run_tests.sh", "/dev/null"]
+    // -e returns the child status. Without it, util-linux script exits 0 and a failing suite looks green.
+    const args = ["-q", "-e", "-c", "bash run_tests.sh", "/dev/null"]
     return { bin: "script", args, command: shown("script", args) }
   }
   const args = ["-q", "/dev/null", "bash", "run_tests.sh"]
