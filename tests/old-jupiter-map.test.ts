@@ -6,11 +6,12 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
-test("an older junit platform still writes a line map and narrows -Dtest", { timeout: 300_000 }, () => {
+test("an older junit platform still writes a line map and narrows -Dtest", { timeout: 300_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-jupiter-17-"))
   try {
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })

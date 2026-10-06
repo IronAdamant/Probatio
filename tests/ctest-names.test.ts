@@ -6,11 +6,12 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { firstSkip, missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
-test("ctest kill names the failing test, not the whole command", { timeout: 90_000 }, () => {
+test("ctest kill names the failing test, not the whole command", { timeout: 90_000, skip: firstSkip(missingTool("cmake"), missingTool("ctest")) }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-ctest-"))
   try {
     mkdirSync(path.join(dir, "patches"))

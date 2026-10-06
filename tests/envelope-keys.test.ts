@@ -48,13 +48,22 @@ test("mutate run and tally keep the envelope keys and scrub a home path", { time
     assert.match(String(body.full ?? ""), /^~/)
     const tally = cli(["mutate", "tally", "--out", out])
     assert.equal(tally.status, 0, tally.stderr + tally.stdout)
-    assert.equal(tally.stdout.includes(homedir()), false)
     const counted = JSON.parse(tally.stdout) as {
+      summary: string
+      next: string
+      nextCall: { argv: string[] } | null
+      full?: string
       keep: string[]
       drop: string[]
       gaps: unknown[]
       pruning: { deletedTests: number; mode: string }
     }
+    // nextCall.argv stays absolute so a resume can be spawned. Everywhere else the home path is ~.
+    const { nextCall, ...shown } = counted
+    assert.equal(JSON.stringify(shown).includes(homedir()), false, tally.stdout)
+    assert.match(String(counted.full ?? ""), /^~/)
+    assert.ok(nextCall && nextCall.argv.includes(out), tally.stdout)
+    assert.equal(nextCall.argv.some((arg) => arg.includes("~")), false)
     assert.ok(Array.isArray(counted.keep))
     assert.ok(Array.isArray(counted.drop))
     assert.ok(Array.isArray(counted.gaps))

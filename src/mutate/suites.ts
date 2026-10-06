@@ -419,7 +419,7 @@ async function launch(
   }
   if (spec.kind === "swift") return tag(runSwift(pkg, timeoutMs, env), spec.command, wantsNames, selection)
   if (spec.kind === "maven") {
-    const tests = selection.map(surefireTest).filter((name) => name.length > 0)
+    const tests = uniqueSurefire(selection)
     const args = ["-B", "test", ...(tests.length > 0 ? [`-Dtest=${tests.join(",")}`] : [])]
     const whole = wantsNames && tests.length === 0
     // Surefire leaves the previous run's XML in place. A confirm that did not
@@ -490,6 +490,18 @@ function goRunFilter(names: string[] | null, pattern: string | null): string | n
   if (pattern) return pattern
   if (!names || names.length === 0) return null
   return `^(${names.map(escapeRegExp).join("|")})$`
+}
+
+function uniqueSurefire(names: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const name of names) {
+    const selector = surefireTest(name)
+    if (!selector || seen.has(selector)) continue
+    seen.add(selector)
+    out.push(selector)
+  }
+  return out
 }
 
 function surefireTest(name: string): string {

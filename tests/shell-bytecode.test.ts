@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { missingPytest } from "./require-tool.ts"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
 
@@ -14,7 +15,7 @@ const tsx = path.join(root, "node_modules", ".bin", "tsx")
 const fresh = ["def open(n):", "    return n >  0", ""].join("\n")
 const mutated = ["def open(n):", "    return n >= 0", ""].join("\n")
 
-test("a shell suite reads the patched source when bytecode was written a moment earlier", { timeout: 60_000 }, () => {
+test("a shell suite reads the patched source when bytecode was written a moment earlier", { timeout: 60_000, skip: missingPytest() }, () => {
   assert.equal(Buffer.byteLength(fresh), Buffer.byteLength(mutated))
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-shell-pyc-"))
   const repo = path.join(dir, "repo")

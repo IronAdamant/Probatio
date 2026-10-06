@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { firstSkip, missingTool } from "./require-tool.ts"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
 
@@ -38,7 +39,7 @@ const source = [
   "",
 ].join("\n")
 
-test("make test names a COBOL failure and a cobc failure differently", { timeout: 60_000 }, () => {
+test("make test names a COBOL failure and a cobc failure differently", { timeout: 60_000, skip: firstSkip(missingTool("make"), missingTool("cobc")) }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-make-cob-"))
   mkdirSync(path.join(dir, "tests"))
   mkdirSync(path.join(dir, "patches"))

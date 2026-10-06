@@ -6,11 +6,12 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
-test("mutate run kills a Python mutant with python3", () => {
+test("mutate run kills a Python mutant with python3", { skip: missingTool("python3") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-py-"))
   const real = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" })
   assert.equal(real.status, 0, real.stderr)
@@ -80,7 +81,7 @@ test("mutate run kills a Python mutant with python3", () => {
   }
 })
 
-test("mutate run keeps a Python traceback out of the baseline summary", () => {
+test("mutate run keeps a Python traceback out of the baseline summary", { skip: missingTool("python3") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-py-trace-"))
   mkdirSync(path.join(dir, "tests"))
   writeFileSync(path.join(dir, "tests", "test_raises.py"), "raise RuntimeError('boom')\n")

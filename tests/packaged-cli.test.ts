@@ -6,10 +6,11 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingPytest } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
-test("the packed binary, not src/cli.ts, prints one JSON object", { timeout: 300_000 }, () => {
+test("the packed binary, not src/cli.ts, prints one JSON object", { timeout: 300_000, skip: missingPytest() }, () => {
   const packDir = mkdtempSync(path.join(tmpdir(), "probatio-pack-"))
   const prefix = mkdtempSync(path.join(tmpdir(), "probatio-prefix-"))
   try {

@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
+import path from "node:path"
 
 export type SealedLabel = {
   bugId: string
@@ -23,6 +24,39 @@ export function readSealedLabel(file: string): SealedLabel {
 
 export function labelLeaked(body: string, label: SealedLabel): boolean {
   return body.includes(label.bugId) || body.includes(label.issueId) || body.includes(label.expectedFail)
+}
+
+/** The envelope can be clean while a result file on disk still repeats the label. */
+export function sealedTreeLeaked(dir: string, label: SealedLabel): boolean {
+  const visit = (current: string): boolean => {
+    let names: string[]
+    try {
+      names = readdirSync(current)
+    } catch {
+      return false
+    }
+    for (const name of names) {
+      const full = path.join(current, name)
+      let info
+      try {
+        info = statSync(full)
+      } catch {
+        continue
+      }
+      if (info.isDirectory()) {
+        if (visit(full)) return true
+        continue
+      }
+      if (!info.isFile() || info.size > 2_000_000) continue
+      try {
+        if (labelLeaked(readFileSync(full, "utf8"), label)) return true
+      } catch {
+        // A binary artifact is not a report.
+      }
+    }
+    return false
+  }
+  return visit(dir)
 }
 
 export const LABEL_LEAK_SUMMARY = "The label was copied into the report."

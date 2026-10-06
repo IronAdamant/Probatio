@@ -40,6 +40,14 @@ export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
   const ranges = parseUnified(diff.stdout)
   const names = git(repo, ["diff", "--name-only", "--no-renames", options.base, options.commit, ...scope])
   const changed = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const status = git(repo, ["status", "--porcelain", ...scope])
+  const dirty = status.stdout.trim().length > 0
+  if (dirty && (options.base === options.commit || changed.length === 0)) {
+    return fail(
+      options.outDir,
+      "The working tree has uncommitted changes. verify-change did not score them. Commit the edit, or pass --base and --commit that name different commits with a diff.",
+    )
+  }
   const goldenContract = goldenDiffs(repo, options.base, options.commit, changed)
   const packageFiles: string[] = []
   const chosen: Array<{ rel: string; label: string; text: string; point: { start: number; end: number; line: number; op: string; replacement: string } }> = []

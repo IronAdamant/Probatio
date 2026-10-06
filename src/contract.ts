@@ -15,15 +15,18 @@ export type Envelope = {
 }
 
 /** Replace the home directory so a result never carries a user's name or home path. */
-export function scrub(value: unknown, home = homedir()): unknown {
+export function scrub(value: unknown, home = homedir(), keepPaths = false): unknown {
   if (typeof value === "string") {
-    if (!home || !value.includes(home)) return value
+    if (keepPaths || !home || !value.includes(home)) return value
     return value.split(home).join("~")
   }
-  if (Array.isArray(value)) return value.map((item) => scrub(item, home))
+  if (Array.isArray(value)) return value.map((item) => scrub(item, home, keepPaths))
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {}
-    for (const [key, item] of Object.entries(value)) out[key] = scrub(item, home)
+    for (const [key, item] of Object.entries(value)) {
+      // nextCall.argv is executed. A tilde is not expanded by spawn or by MCP.
+      out[key] = scrub(item, home, keepPaths || key === "nextCall")
+    }
     return out
   }
   return value

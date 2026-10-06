@@ -91,3 +91,43 @@ function callMcp(argv: string[]): Promise<{ envelope: { schemaVersion: number; o
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "probatio", arguments: { argv } } })}\n`)
   })
 }
+
+test("mcp answers ping and rejects an unknown method", async () => {
+  const child = spawn(tsx, ["src/mcp.ts"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] })
+  const frames: Array<{ id?: number; result?: unknown; error?: { code?: number; message?: string } }> = []
+  const pending = { text: "" }
+  const done = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      reject(new Error(`mcp timed out with ${frames.length} frames`))
+    }, 10_000)
+    child.stdout.on("data", (chunk: Buffer) => {
+      pending.text += chunk.toString("utf8")
+      for (;;) {
+        const nl = pending.text.indexOf("\n")
+        if (nl === -1) return
+        const line = pending.text.slice(0, nl).trim()
+        pending.text = pending.text.slice(nl + 1)
+        if (!line) continue
+        frames.push(JSON.parse(line) as { id?: number; result?: unknown; error?: { code?: number; message?: string } })
+        if (frames.length < 3) continue
+        clearTimeout(timer)
+        child.stdin.end()
+        resolve()
+      }
+    })
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+  })
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`)
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" })}\n`)
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "nope" })}\n`)
+  await done
+  assert.equal(frames[1]?.id, 2)
+  assert.deepEqual(frames[1]?.result, {})
+  assert.equal(frames[2]?.id, 7)
+  assert.equal(frames[2]?.error?.code, -32601)
+  assert.match(frames[2]?.error?.message ?? "", /nope/)
+})

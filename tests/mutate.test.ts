@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -11,6 +11,7 @@ import { mutantId } from "../src/mutate/ids.ts"
 import { runMutants } from "../src/mutate/run.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
 test("ids follow the file, the span, and the operator", () => {
   assert.equal(mutantId("src/gate.ts", 4, 8, "and-to-or"), mutantId("src/gate.ts", 4, 8, "and-to-or"))
@@ -54,6 +55,32 @@ test("generate writes forward patches and no string sentinel", () => {
   }
 })
 
+test("generate reads the commit unless --working-tree is set", () => {
+  const pkg = gitPackage()
+  const committedOut = path.join(pkg, "committed")
+  const dirtyOut = path.join(pkg, "dirty")
+  try {
+    const gate = path.join(pkg, "src", "gate.ts")
+    writeFileSync(gate, readFileSync(gate, "utf8").replace("n > 0 && n < 10", "n > 0 && n < 2"))
+    const committed = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", committedOut, "--max-mutants", "20"], { cwd: root, encoding: "utf8" })
+    assert.equal(committed.status, 0, committed.stderr + committed.stdout)
+    const committedBody = JSON.parse(committed.stdout) as { ok: boolean; summary: string }
+    assert.equal(committedBody.ok, true, committedBody.summary)
+    const committedBlob = readdirSync(path.join(committedOut, "mutants")).filter((name) => name.endsWith(".patch")).map((name) => readFileSync(path.join(committedOut, "mutants", name), "utf8")).join("\n")
+    assert.match(committedBlob, /n < 10/)
+    assert.equal(committedBlob.includes("n < 2"), false, committedBlob)
+    const dirty = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", dirtyOut, "--max-mutants", "20", "--working-tree"], { cwd: root, encoding: "utf8" })
+    assert.equal(dirty.status, 0, dirty.stderr + dirty.stdout)
+    const dirtyBody = JSON.parse(dirty.stdout) as { ok: boolean; next: string }
+    assert.equal(dirtyBody.ok, true, dirty.stdout)
+    assert.match(dirtyBody.next, /working tree/)
+    const dirtyBlob = readdirSync(path.join(dirtyOut, "mutants")).filter((name) => name.endsWith(".patch")).map((name) => readFileSync(path.join(dirtyOut, "mutants", name), "utf8")).join("\n")
+    assert.match(dirtyBlob, /n < 2/)
+  } finally {
+    rmSync(pkg, { recursive: true, force: true })
+  }
+})
+
 test("the cli prints one json object and hides the home directory", () => {
   const home = "/Users/example"
   const text = render(
@@ -61,17 +88,18 @@ test("the cli prints one json object and hides the home directory", () => {
       schemaVersion: 1,
       ok: true,
       command: "mutate.generate",
-      summary: "1 mutant.",
+      summary: `1 mutant in ${home}/pkg.`,
       next: "Run it.",
       nextCall: { argv: ["mutate", "run", "--package", `${home}/pkg`] },
     },
     false,
     home,
   )
-  const parsed = JSON.parse(text) as { schemaVersion: number; nextCall: { argv: string[] } }
+  const parsed = JSON.parse(text) as { schemaVersion: number; summary: string; nextCall: { argv: string[] } }
   assert.equal(parsed.schemaVersion, 1)
-  assert.equal(parsed.nextCall.argv[3], "~/pkg")
-  assert.equal(text.includes(home), false)
+  assert.equal(parsed.summary.includes(home), false)
+  assert.match(parsed.summary, /~\/pkg/)
+  assert.equal(parsed.nextCall.argv[3], `${home}/pkg`)
 })
 
 test("mutate run confirms kills and reports an untested line as no coverage", async () => {

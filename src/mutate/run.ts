@@ -171,7 +171,7 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
   if (sha.status !== 0) return failReport(options.outDir, "", options.commit, "that commit does not resolve")
   const commit = sha.stdout.trim()
   mkdirSync(options.outDir, { recursive: true })
-  const run = loadRun(options.outDir, commit, options.agent)
+  const run = loadRun(options, commit)
   if ("error" in run) return failReport(options.outDir, run.id, commit, run.error)
   const listed = listPatches(options.patchDirs)
   if ("error" in listed) return failReport(options.outDir, run.id, commit, listed.error)
@@ -338,7 +338,7 @@ async function prepare(
     baselineMs = Date.now() - startedAt
     if (baseline.timedOut) return { ok: false, error: "baseline suite timed out" }
     if (baseline.compileToken) return { ok: false, error: `baseline build failed (${baseline.compileToken})` }
-    if (!baseline.report) return { ok: false, error: baselineReportError(baseline.detail) }
+    if (!baseline.report) return { ok: false, error: baselineReportError(baseline.detail, baseline.command || spec.command) }
     baselineFailed = baseline.report.failed.map((item) => item.name)
     if (collect && !existsSync(mapPath)) {
       const binary = binaryFromCommand(baseline.command || spec.command, pkg)
@@ -354,6 +354,9 @@ async function prepare(
     progress(`suite report tests=${baseline.report.tests}`)
     progress(baselineFailed.length > 0 ? `baseline failing ${baselineFailed.length}` : "baseline pass")
     if (baselineFailed.length > 0) {
+      const tool = missingToolFrom(baseline.detail, baseline.command || spec.command)
+      const unnamed = baselineFailed.every((name) => name === "command" || name === "::command")
+      if (tool && unnamed) return { ok: false, error: `missing tool: ${tool}. baseline suite did not return a test report` }
       return { ok: false, error: "baseline already failing", baselineFailed, suiteCommand: spec.command }
     }
     if (collect && !existsSync(mapPath) && languageMapKind(spec.kind)) {
@@ -399,12 +402,13 @@ async function runOne(
   const raw = readFileSync(patchPath, "utf8")
   const files = filesInDiff(raw)
   const edited = changedLines(raw)
+  const located = edited.length > 0 ? edited : files
   const mutantHash = sha256(raw)
   const base = (): MutantResult => ({
     id,
     outcome: "error",
     direction: null,
-    files,
+    files: located,
     killedBy: [],
     cause: null,
     next: "",
@@ -474,7 +478,16 @@ async function runOne(
     }
     // A compile error can leave the previous run's report on disk. That report is not this mutant.
     if (main.compileToken) return finishMutant(killed(base, direction, [main.compileToken]), pkg, commands.join(" | "), false, [])
-    if (!main.report) return { ...base(), direction, error: "test reporter returned nothing", command: commands.join(" | ") }
+    if (!main.report) {
+      const detail = main.detail ? clip(main.detail) : ""
+      const tool = missingToolFrom(detail, main.command)
+      const error = tool
+        ? `missing tool: ${tool}`
+        : detail
+          ? `test reporter returned nothing (${detail})`
+          : "test reporter returned nothing"
+      return { ...base(), direction, error, command: commands.join(" | ") }
+    }
     const whole = main.wholeSuite || forceWhole
     const chosen = main.selectedTests
     if (main.report.failed.length === 0) return finishMutant({ ...base(), direction, outcome: "survived" }, pkg, commands.join(" | "), whole, chosen)
@@ -570,15 +583,17 @@ async function rerunGroup(
     if (rerun.wholeSuite) wholeSuite = true
     if (rerun.command) commands.push(rerun.command)
     if (pattern === null && rerun.timedOut) {
-      for (const failure of failures) bump(counts, failureId(pkg, failure))
+      for (const id of new Set(failures.map((item) => failureId(pkg, item)))) bump(counts, id)
       continue
     }
     if (!rerun.report) continue
+    const seen = new Set<string>()
     for (const hit of rerun.report.failed) {
       if (pattern === null && !hit.fileTimeout) continue
       const id = failureId(pkg, hit)
-      if (failures.some((item) => failureId(pkg, item) === id)) bump(counts, id)
+      if (failures.some((item) => failureId(pkg, item) === id)) seen.add(id)
     }
+    for (const id of seen) bump(counts, id)
   }
   return wholeSuite
 }
@@ -885,15 +900,32 @@ function loadMeta(dirs: string[]): Map<string, { file: string; line: number; op?
   return meta
 }
 
-function loadRun(outDir: string, commit: string, agent: string | null): { id: string } | { error: string; id: string } {
-  const file = path.join(outDir, "run.json")
+function loadRun(options: RunOptions, commit: string): { id: string } | { error: string; id: string } {
+  const file = path.join(options.outDir, "run.json")
   if (existsSync(file)) {
     const stored = JSON.parse(readFileSync(file, "utf8")) as { id: string; commit: string }
     if (stored.commit !== commit) return { error: `out dir is for commit ${stored.commit.slice(0, 12)}`, id: stored.id }
     return { id: stored.id }
   }
   const id = randomBytes(4).toString("hex")
-  writeFileSync(file, `${JSON.stringify({ id, commit, agent, started: new Date().toISOString() }, null, 2)}\n`)
+  const record = {
+    id,
+    commit,
+    agent: options.agent,
+    started: new Date().toISOString(),
+    package: options.packageDir,
+    patches: options.patchDirs,
+    out: options.outDir,
+    repo: options.repoDir,
+    workers: options.workers,
+    confirm: options.confirm,
+    testsDir: options.testsDir,
+    suiteTimeoutMs: options.suiteTimeoutMs,
+    testTimeoutMs: options.testTimeoutMs,
+    direction: options.direction,
+    suiteCommand: options.suiteCommand ?? null,
+  }
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`)
   return { id }
 }
 
@@ -909,6 +941,10 @@ async function createWorktrees(
   const dirs: string[] = []
   for (let index = 0; index < workers; index++) {
     const dir = path.join(tmpdir(), `probatio-${runId}-${index}`)
+    if (!probatioWorktreeDir(dir)) {
+      removeWorktrees(repo, dirs, outDir)
+      return { error: "worktree path is outside the probatio temp prefix" }
+    }
     rmSync(dir, { recursive: true, force: true })
     const added = git(repo, ["worktree", "add", "--detach", dir, commit])
     if (added.status !== 0) {
@@ -934,15 +970,38 @@ async function createWorktrees(
 function hidePaths(dirs: string[], repo: string, packageDir: string, hide: string[]): void {
   for (const dir of dirs) {
     const pkg = packageIn(dir, repo, packageDir)
+    const root = path.resolve(pkg)
     for (const rel of hide) {
-      if (!rel || path.isAbsolute(rel)) continue
-      rmSync(path.join(pkg, rel), { force: true })
+      if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) continue
+      const target = path.resolve(root, rel)
+      if (target !== root && !target.startsWith(root + path.sep)) continue
+      rmSync(target, { force: true })
     }
   }
 }
 
+/** A worktree Probatio created: one directory under the OS temp dir, named probatio- plus hex and an index. */
+export function probatioWorktreeDir(dir: string): boolean {
+  let resolved = path.resolve(dir)
+  try {
+    resolved = realpathSync(dir)
+  } catch {
+    // The directory is created on the next line. The unresolved path is still checked.
+  }
+  const roots = new Set<string>([path.resolve(tmpdir())])
+  try {
+    roots.add(realpathSync(tmpdir()))
+  } catch {
+    // tmpdir() itself is enough when realpath is unavailable.
+  }
+  const inside = [...roots].some((root) => resolved === root || resolved.startsWith(root + path.sep))
+  if (!inside) return false
+  return /^probatio-[0-9a-f]+-\d+$/.test(path.basename(resolved))
+}
+
 function removeWorktrees(repo: string, dirs: string[], outDir: string): void {
   for (const dir of dirs) {
+    if (!probatioWorktreeDir(dir)) continue
     git(repo, ["worktree", "remove", "--force", dir])
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1088,6 +1147,8 @@ function reportOf(
   if (timeouts > 0) notes.push(TIMEOUT_NEXT)
   if (budgetHit) notes.push(resumeNext(context.notStarted))
   if (results.some((result) => result.wholeSuite)) notes.push(WHOLE_SUITE_NEXT)
+  const broken = results.find((result) => (result.outcome === "error" || result.outcome === "build-failed") && result.error)
+  if (broken?.error) notes.push(`${broken.id}: ${broken.error}`)
   if (notes.length === 0) notes.push("No survivor in this batch.")
   return {
     ok: true,
@@ -1371,12 +1432,25 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function baselineReportError(detail: string): string {
+function missingToolFrom(detail: string, command: string): string | null {
+  const spawnMiss = /spawn ([^\s]+) ENOENT/.exec(detail)
+  if (spawnMiss) return path.basename(spawnMiss[1])
+  const shellMiss = /(?:^|\s)([A-Za-z0-9_./+-]+): (?:command not found|not found)\b/.exec(detail)
+  if (shellMiss) return path.basename(shellMiss[1])
+  if (/No such file or directory|ENOENT/.test(detail)) {
+    const bin = command.trim().split(/\s+/)[0]
+    if (bin) return path.basename(bin)
+  }
+  return null
+}
+
+function baselineReportError(detail: string, command = ""): string {
+  const tool = missingToolFrom(detail, command)
   const line = detail.trim()
   // The first line of a Python or Node crash is a stack fragment. The summary
   // states the limit and does not carry that fragment.
-  if (!line || isStackFragment(line)) return "baseline suite did not return a test report"
-  return `baseline suite did not return a test report (${line})`
+  const base = !line || isStackFragment(line) ? "baseline suite did not return a test report" : `baseline suite did not return a test report (${line})`
+  return tool ? `missing tool: ${tool}. ${base}` : base
 }
 
 function isStackFragment(line: string): boolean {

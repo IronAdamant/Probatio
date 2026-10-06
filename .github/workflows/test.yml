@@ -4,13 +4,91 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  core:
+    name: core
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  pack:
+    name: pack (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm pack --dry-run
+
+  toolchain:
+    name: toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: install toolchains
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y python3-pytest gnucobol gcc clang llvm make cmake openjdk-21-jdk maven
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup component add llvm-tools-preview
+          mkdir -p "$HOME/.local/bin"
+          bindir=$(echo "$(rustc --print sysroot)"/lib/rustlib/*/bin)
+          ln -sfn "$bindir/llvm-cov" "$HOME/.local/bin/llvm-cov"
+          ln -sfn "$bindir/llvm-profdata" "$HOME/.local/bin/llvm-profdata"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: toolchain-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: toolchain-${{ runner.os }}-
+      - run: npm ci
+      - run: npm test
+
+  macos:
+    name: macos
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: install nasm and rosetta when the runner can
+        run: |
+          set -eu
+          brew install nasm
+          if ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+            softwareupdate --install-rosetta --agree-to-license || true
+          fi
       - run: npm ci
       - run: npm test

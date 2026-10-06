@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
+import { missingTool } from "./require-tool.ts"
 import { forwardDiff } from "../src/mutate/patch.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -13,7 +14,7 @@ const dotnetMajor = dotnetTfm()
 
 const source = ["int n = 0;", "if (n > 0) return 1;", "return 0;", ""].join("\n")
 
-test("dotnet test builds a sibling exe the suite launches by path", { timeout: 180_000 }, () => {
+test("dotnet test builds a sibling exe the suite launches by path", { timeout: 180_000, skip: missingTool("dotnet") }, () => {
   const repo = mkdtempSync(path.join(tmpdir(), "probatio-dotnet-sibling-"))
   const pkg = path.join(repo, "CLI")
   mkdirSync(path.join(pkg, "src"), { recursive: true })

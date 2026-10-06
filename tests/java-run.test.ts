@@ -6,11 +6,12 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
-test("mutate run kills a Java mutant that fails javac", { timeout: 180_000 }, () => {
+test("mutate run kills a Java mutant that fails javac", { timeout: 180_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-java-"))
   const source = "package example;\npublic class Gate {\n  public static boolean open(int n) { return n > 0; }\n}\n"
   const broken = "package example;\npublic class Gate {\n  public static boolean open(int n) { return n > ; }\n}\n"

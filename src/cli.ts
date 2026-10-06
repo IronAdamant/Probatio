@@ -25,18 +25,36 @@ import {
 import { git } from "./mutate/patch.js"
 import { generateMutants } from "./mutate/generate.js"
 import { runMutants } from "./mutate/run.js"
-import { LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel } from "./mutate/sealed.js"
+import { LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel, sealedTreeLeaked } from "./mutate/sealed.js"
 import { generateNext } from "./mutate/suite-decision.js"
 import { discoverSuite } from "./mutate/suites.js"
 import { tallyRun } from "./mutate/tally.js"
 import { checkKill } from "./swarm/check-kill.js"
 import { claimItem, reapClaims, seedQueue } from "./swarm/queue.js"
 import { verifyChange } from "./verify/change.js"
+import { nodeTooOld } from "./node-version.js"
+
+const tooOld = nodeTooOld(process.versions.node)
+if (tooOld) {
+  process.stdout.write(
+    `${JSON.stringify({
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "mutate.help",
+      summary: tooOld,
+      next: "Install Node 22.6 or newer and run the command again.",
+      nextCall: null,
+    })}\n`,
+  )
+  process.exit(1)
+}
 
 const parsed = parseArgs(process.argv.slice(2))
 const [group, action] = parsed.command
 
-try {
+if (group === "mcp" && !action) {
+  await import("./mcp.js")
+} else try {
   if (group === "mutate" && action === "generate") finish(await generateCommand(parsed.flags), parsed.human)
   if (group === "mutate" && action === "run") finish(await runCommand(parsed.flags), parsed.human)
   if (group === "mutate" && action === "sealed") finish(await sealedCommand(parsed.flags), parsed.human)
@@ -96,7 +114,19 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
     maxMutants: int(flags, "max-mutants") ?? null,
     maxMinutes: int(flags, "max-minutes") ?? null,
     skipFiles: texts(flags, "skip-file"),
+    commit: text(flags, "commit") ?? "HEAD",
+    workingTree: bool(flags, "working-tree", false),
   })
+  if (result.error) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "mutate.generate",
+      summary: result.error,
+      next: "Commit the file, or pass --working-tree to mutate the checkout on disk. mutate run scores the commit.",
+      nextCall: null,
+    }
+  }
   if (result.violations.length > 0) {
     const first = result.violations[0]
     return {
@@ -120,9 +150,14 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
     summary: stopped
       ? `Stopped by the time budget after ${result.filesVisited} files. ${result.mutants.length} mutants written.`
       : `${result.mutants.length} mutants in ${result.filesVisited} files. No string-literal mutant.`,
-    next: stopped
-      ? "Narrow --src or raise --max-minutes, then run the same command."
-      : generateNext(result.mutants.length, suite ? { kind: suite.kind, command: suite.command } : null),
+    next: [
+      stopped
+        ? "Narrow --src or raise --max-minutes, then run the same command."
+        : generateNext(result.mutants.length, suite ? { kind: suite.kind, command: suite.command } : null),
+      result.source === "working-tree"
+        ? "These patches match the working tree. mutate run scores the commit, so commit the files before mutate run."
+        : "",
+    ].filter((line) => line.length > 0).join(" "),
     nextCall:
       result.mutants.length === 0
         ? null
@@ -138,6 +173,19 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
 }
 
 async function runCommand(flags: ReturnType<typeof parseArgs>["flags"], hide: string[] | null = null): Promise<Envelope> {
+  const hidden = hide ?? texts(flags, "hide")
+  const escaped = hidden.find((rel) => rel.split(/[\\/]/).includes(".."))
+  if (escaped) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "mutate.run",
+      summary: `--hide stays inside the package. Refused ${escaped}.`,
+      next: "Pass a relative path with no .. segment.",
+      nextCall: null,
+      killed: 0,
+    }
+  }
   const onlyNames = texts(flags, "only-test")
   if (onlyNames.some((id) => id === "::command" || id.endsWith("::command"))) {
     return {
@@ -239,9 +287,10 @@ function tallyCommand(flags: ReturnType<typeof parseArgs>["flags"]): Envelope {
 async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
   const label = readSealedLabel(path.resolve(requireText(flags, "label")))
   const hide = texts(flags, "hide")
+  const outDir = path.resolve(requireText(flags, "out"))
   const report = await runCommand(flags, hide)
   const body = JSON.stringify(report)
-  if (!labelLeaked(body, label)) return report
+  if (!labelLeaked(body, label) && !sealedTreeLeaked(outDir, label)) return report
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: false,

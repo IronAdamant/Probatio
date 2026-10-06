@@ -6,6 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingPytest, missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -24,7 +25,7 @@ type TallyBody = {
   pruning: { deletedTests: number }
 }
 
-test("pytest keep id is rerun through --only-test and a doubled id is not a kill", { timeout: 90_000 }, () => {
+test("pytest keep id is rerun through --only-test and a doubled id is not a kill", { timeout: 90_000, skip: missingPytest() }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-keep-py-"))
   try {
     const before = "def gate(n):\n    return n > 0\n"
@@ -62,7 +63,7 @@ test("pytest keep id is rerun through --only-test and a doubled id is not a kill
   }
 })
 
-test("go keep id is the -run name, not a package prefix", { timeout: 120_000 }, () => {
+test("go keep id is the -run name, not a package prefix", { timeout: 120_000, skip: missingTool("go") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-keep-go-"))
   try {
     const before = "package gate\n\nfunc Gate(n int) bool {\n\treturn n > 0\n}\n"
@@ -90,7 +91,7 @@ test("go keep id is the -run name, not a package prefix", { timeout: 120_000 }, 
   }
 })
 
-test("cargo keep id is the exact test name, not an empty :: prefix", { timeout: 180_000 }, () => {
+test("cargo keep id is the exact test name, not an empty :: prefix", { timeout: 180_000, skip: missingTool("cargo") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-keep-rs-"))
   try {
     const source = "pub fn open(n: i32) -> bool {\n    n > 0\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn stays_closed() {\n        assert!(!open(0));\n    }\n    #[test]\n    fn other() {\n        assert_eq!(2 + 2, 4);\n    }\n}\n"
@@ -118,7 +119,7 @@ test("cargo keep id is the exact test name, not an empty :: prefix", { timeout: 
   }
 })
 
-test("dotnet keep id is the fact name, not an empty :: prefix", { timeout: 240_000 }, () => {
+test("dotnet keep id is the fact name, not an empty :: prefix", { timeout: 240_000, skip: missingTool("dotnet") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-keep-cs-"))
   const major = dotnetTfm()
   try {
@@ -149,7 +150,7 @@ test("dotnet keep id is the fact name, not an empty :: prefix", { timeout: 240_0
   }
 })
 
-test("junit keep id is the class.method selector, not a doubled name", { timeout: 300_000 }, () => {
+test("junit keep id is the class.method selector, not a doubled name", { timeout: 300_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-keep-java-"))
   try {
     const source = "package gate;\npublic class Gate {\n  public static boolean allow(int n) {\n    return n > 0;\n  }\n}\n"
@@ -180,7 +181,7 @@ test("junit keep id is the class.method selector, not a doubled name", { timeout
   }
 })
 
-test("junit parametrized keep id keeps the invocation Surefire recorded", { timeout: 300_000 }, () => {
+test("junit parametrized keep id keeps the invocation Surefire recorded", { timeout: 300_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-keep-junit-param-"))
   try {
     const source = "package gate;\npublic class Gate {\n  public static boolean allow(int n) {\n    return n > 0;\n  }\n}\n"

@@ -5,11 +5,12 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { runDiscoveredSuite } from "../src/mutate/suites.ts"
+import { missingTool } from "./require-tool.ts"
 
 const fresh = ["def open(n):", "    return n >  0", ""].join("\n")
 const mutated = ["def open(n):", "    return n >= 0", ""].join("\n")
 
-test("a python suite reads the patched source when a matching bytecode file is left behind", async () => {
+test("a python suite reads the patched source when a matching bytecode file is left behind", { skip: missingTool("python3") }, async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-pyc-"))
   mkdirSync(path.join(dir, "src"))
   mkdirSync(path.join(dir, "tests"))

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -130,10 +130,16 @@ test("a missing compiler still stops with no gaps", () => {
       path.join(dir, "patches", "m-ge.patch"),
       forwardDiff("gate.go", readFileSync(path.join(dir, "gate.go"), "utf8"), "package gate\n\nfunc Gate(n int) bool {\n  return n >= 0\n}\n"),
     )
+    const bin = path.join(dir, "bin")
+    mkdirSync(bin)
+    symlinkSync(process.execPath, path.join(bin, "node"))
+    const gitBin = spawnSync("which", ["git"], { encoding: "utf8" })
+    assert.equal(gitBin.status, 0, gitBin.stderr)
+    symlinkSync(gitBin.stdout.trim(), path.join(bin, "git"))
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--patches", path.join(dir, "patches"), "--out", out, "--no-build", "--no-confirm", "--max-mutants", "1"],
-      { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}/usr/bin:/bin` } },
+      { cwd: root, encoding: "utf8", env: { ...process.env, PATH: bin } },
     )
     assert.equal(result.status, 1, result.stdout + result.stderr)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; gaps: unknown[] }

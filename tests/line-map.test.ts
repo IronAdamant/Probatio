@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { missingTool } from "./require-tool.ts"
 import { fileURLToPath } from "node:url"
 import { selectionFor } from "../src/mutate/coverage-map.ts"
 import { parseCoverProfile } from "../src/mutate/go-coverage.ts"
@@ -25,7 +26,7 @@ test("the selector keeps the tests on a covered line and skips a line the map do
   assert.deepEqual(hits, [{ file: "gate.go", line: 4 }])
 })
 
-test("a go line map runs only the tests that hit the line", { timeout: 120_000 }, () => {
+test("a go line map runs only the tests that hit the line", { timeout: 120_000, skip: missingTool("go") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-go-map-"))
   try {
     writeFileSync(path.join(dir, "go.mod"), "module example.com/gate\n\ngo 1.22\n")
@@ -80,7 +81,7 @@ test("a go line map runs only the tests that hit the line", { timeout: 120_000 }
   }
 })
 
-test("a maven line map runs only the tests that hit the line", { timeout: 180_000 }, () => {
+test("a maven line map runs only the tests that hit the line", { timeout: 180_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-java-map-"))
   try {
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })
@@ -145,7 +146,7 @@ test("a maven line map runs only the tests that hit the line", { timeout: 180_00
   }
 })
 
-test("a junit 5 line map names the test on the line and narrows -Dtest", { timeout: 300_000 }, () => {
+test("a junit 5 line map names the test on the line and narrows -Dtest", { timeout: 300_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-jupiter-map-"))
   try {
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })
@@ -252,7 +253,7 @@ test("a junit 5 line map names the test on the line and narrows -Dtest", { timeo
   }
 })
 
-test("maven confirm reruns the failing test by name", { timeout: 300_000 }, () => {
+test("maven confirm reruns the failing test by name", { timeout: 300_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-java-confirm-"))
   try {
     mkdirSync(path.join(dir, "src", "main", "java", "gate"), { recursive: true })

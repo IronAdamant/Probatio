@@ -1,21 +1,38 @@
 # Probatio
 
-Probatio (Latin: a testing, a proof) is a free testing toolkit under the MIT license, built for AI agents
-(Claude, Grok, ChatGPT, others), working alone or as swarms. Every claim it makes is checkable.
-It remembers what was fixed so agents with small context do not redo or undo work, and it shows
-which tests already touch a change.
+[![npm version](https://img.shields.io/npm/v/probatio)](https://www.npmjs.com/package/probatio)
 
-Status (2026-10-06): `mutate run` discovers the project suite and scores it. Node, pytest, C (when the binary was built with LLVM coverage), Go, Maven/Java, Rust, C#, and Mocha collect a line map on the baseline. Mocha's map comes from its own root hooks. Loading the node:test collector under Mocha does not name Mocha tests. A line no test executes is `no coverage`, and the suite is not started. A plain Node script can write the lines it ran, and the parent test that reads that dump stores them under its own name. A child the parent does not read stays `no coverage`, and the suite is not started. A suite with no line map, a baseline of 5 seconds or more, and more than 30 mutants stops before the first mutant. `verify-change` names the tests the line map ran. It scores `src/`, a `lib/` file when the package tests import `lib/`, and a Go file beside `go.mod`. Tests, docs, `dist/`, and `node_modules` stay unseen. `ran` stays the direct-importer list. Covered mutants of one Node file run one after another inside the suite process that is already running. `--workers` stays 1. A Node test that sets its own `timeout` keeps that time when `--test-timeout-ms` is shorter. A mutant that crashes or leaves that process dirty ends it, and the next mutant starts clean. An uncovered line still does not start the suite. `mutate tally` does not delete a test. A kill is an assertion the suite already had. A sealed miss means the suite did not see the bug. The kill count is not a merge gate. On Commons CSV (Apache-2.0, commit `2c83a308`), two sealed runs agreed: with the new test file hidden, `CSVFormatTest.testFormatThrowsNullPointerException` failed on the reverted printer. `deletedTests` stayed 0. That older JUnit platform did not write a line map, so the first pass was the whole suite and confirm reran the older test. Auspex, markupsafe, and a hand-planted fixture are not that result. The package version in this repository is 0.1.2. npm latest is 0.1.2 (`29301bc`). The BugsInPy search row is still open, and the rows that apply only when a sealed run misses do not apply, because this catch held. The MCP server speaks one JSON object per line and returns the same JSON as the CLI.
+Probatio scores a test suite by the bugs it already catches. A kill is an assertion the suite had. The kill count is not a merge gate.
 
-Read in this order:
+Node 22.6 or newer:
 
-1. `HANDOFF.md` — why, the evidence from Auspex, the design, and the lessons that cost time.
-2. `FOR-GROK.md` — the builder brief: build order with acceptance tests, the agent contract,
-   memory for agents, anti-gaming, swarm protocol, traps.
-3. `seed/` — code copied from the Auspex experiment to start from (Auspex paths inside).
+```bash
+npm install probatio
+```
 
-Roles: Grok builds most of it; Claude refines and finishes. Grok keeps `NOTES-FOR-CLAUDE.md` here
-(decisions, guesses, shortcuts with file:line, acceptance output actually run).
+```bash
+npx probatio mutate generate --package . --out .probatio/generate
+npx probatio mutate run --package . --patches .probatio/generate/mutants --out .probatio/runs
+npx probatio mutate tally --out .probatio/runs
+```
+
+Each command prints one JSON object and exits 0 only when `ok` is true.
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "summary": "0 no coverage, 0 survived, 1 killed, 0 flaky, 0 timed out, 0 errored, of 1 finished.",
+  "next": "No survivor in this batch.",
+  "nextCall": { "argv": ["mutate", "tally", "--out", ".probatio/runs"] }
+}
+```
+
+Agents changing this repo should read [AGENTS.md](AGENTS.md). The MCP server is `probatio mcp`. Snippets are in the MCP section below. People building Probatio should read [docs/builders.md](docs/builders.md). Small suites live in [examples/](examples/).
+
+## Status
+
+Status (2026-10-06): `mutate run` discovers the project suite and scores it. Node, pytest, C (when the binary was built with LLVM coverage), Go, Maven/Java, Rust, C#, and Mocha collect a line map on the baseline. Mocha's map comes from its own root hooks. Loading the node:test collector under Mocha does not name Mocha tests. A line no test executes is `no coverage`, and the suite is not started. A plain Node script can write the lines it ran, and the parent test that reads that dump stores them under its own name. A child the parent does not read stays `no coverage`, and the suite is not started. A suite with no line map, a baseline of 5 seconds or more, and more than 30 mutants stops before the first mutant. `verify-change` names the tests the line map ran. It scores `src/`, a `lib/` file when the package tests import `lib/`, and a Go file beside `go.mod`. Tests, docs, `dist/`, and `node_modules` stay unseen. `ran` stays the direct-importer list. Covered mutants of one Node file run one after another inside the suite process that is already running. `--workers` stays 1. A Node test that sets its own `timeout` keeps that time when `--test-timeout-ms` is shorter. A mutant that crashes or leaves that process dirty ends it, and the next mutant starts clean. An uncovered line still does not start the suite. `mutate tally` does not delete a test. A kill is an assertion the suite already had. A sealed miss means the suite did not see the bug. The kill count is not a merge gate. On Commons CSV (Apache-2.0, commit `2c83a308`), two sealed runs agreed: with the new test file hidden, `CSVFormatTest.testFormatThrowsNullPointerException` failed on the reverted printer. `deletedTests` stayed 0. That older JUnit platform did not write a line map, so the first pass was the whole suite and confirm reran the older test. Auspex, markupsafe, and a hand-planted fixture are not that result. The package version in this repository is 0.1.2. The BugsInPy search row is still open, and the rows that apply only when a sealed run misses do not apply, because this catch held. The MCP server speaks one JSON object per line and returns the same JSON as the CLI.
 
 ## mutate
 
@@ -81,4 +98,23 @@ Lists the tests that can see the diff, runs mutants on the changed lines, and re
 
 An item is `.probatio/queue/<id>.json`. `queue claim` renames it to `claimed/<agent>-<id>.json` with a lease. `queue reap` moves an expired lease back. `check-kill <id>` runs the tests that directly import the mutated file and confirms the killing test again. It is done only when that mutant dies and that suite is still green. `verify-change` is the edit-sized run: it uses the line map and does not confirm a second time.
 
-The MCP server speaks stdio JSON-RPC. Its one tool runs the CLI and returns that command's JSON.
+## MCP
+
+`probatio mcp` and the `probatio-mcp` bin speak stdio JSON-RPC, one JSON object per line. The tool name is `probatio`. `argv` is the CLI words. `ping` returns `{}`. An unknown method returns JSON-RPC `-32601` with the same id.
+
+```json
+{
+  "mcpServers": {
+    "probatio": {
+      "command": "probatio",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+That block is the Claude, Cursor, and Grok shape. The tool runs the CLI and returns that command's JSON. `nextCall.argv` keeps absolute paths so a later spawn does not have to expand `~`.
+
+`mutate generate` reads the commit (`HEAD` unless you pass `--commit`). `--working-tree` reads the checkout on disk and says so. `mutate run` scores the commit either way.
+
+`verify-change` does not score uncommitted edits when `--base` and `--commit` are the same. A clean empty diff says `No diff-scoped mutant.`

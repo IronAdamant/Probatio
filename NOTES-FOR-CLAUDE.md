@@ -4,13 +4,15 @@ Newest first. Start a review by rerunning the commands in the latest section.
 
 ## 2026-10-06 — four limits and a tracked ledger
 
-The repo version is 0.1.2. npm latest is 0.1.2 (`29301bc`), published 2026-10-06 by `iron_adamant`. The packed 0.1.2 README still says npm latest is 0.1.0, because that was true when the tarball was built. `0.1.0` stays on npm at `4e0bd47`.
+The repo version is 0.1.2. npm latest is 0.1.2 (`29301bc`), published 2026-10-06 by `iron_adamant`. The packed 0.1.2 README still says npm latest is 0.1.0, because that was true when the tarball was built. `0.1.0` stays on npm at `4e0bd47`. There is no npm `0.1.1`. `ea65193` set that version in git and it was not published. `CHANGELOG.md` lists every npm version and its gitHead. Git tags are not created.
+
+GitHub Actions run `37428043384` on `bb0dcc2` was 103 pass and 18 fail. That is the CI signal. Sentences below that say `npm test` passed, including "115 tests, 0 fail", were this Mac, not Ubuntu. The packed-binary test needs pytest. A job without pytest skips it with `missing tool: pytest`. The toolchain job installs pytest and runs it.
 
 `verify-change` scores `src/`, a `lib/` file when that package's tests import `lib/`, and a `*.go` file beside `go.mod`. Tests, docs, `dist/`, and `node_modules` stay unseen. Mocha's line map comes from `mocha-coverage.cjs` (root hooks). Loading `node-coverage.mjs` under Mocha does not name Mocha tests. A plain Node child can write a nameless `{ hits }` dump, and the parent `afterEach` stores it under the parent test. The summary-order line is `parent passes`. A dump the parent never reads stays `no coverage`. Covered mutants of one Node file run one after another in the process that is already running. `--workers` stays 1. A crash or a dirty open handle ends that process only.
 
 Node's `--test-timeout` caps the file, so a test that sets a longer `timeout` was cancelled and the failure name was the file path. `nodeTestTimeoutMs` raises the flag to the longest `timeout` written in the files about to run, and it stays inside the suite cap. The batch job uses the same number. `tests/limits.test.ts` covers a 2.5s test with `{ timeout: 8_000 }` under `--test-timeout-ms 1000`.
 
-`ledger/` is tracked. `ledger build` at `ea65193` scanned 14 commits (`historyBudgetHit` false): clean `922a301` (120 lines) and `93589bf` (4 lines), skipped `746f21c`, `3cb785a`, and `e776699` over the 300 line cap. No hand rows. `mutate run` of `ledger/` with confirm left on and `--workers 1` had a green baseline (115 tests, about 236s). Both patches are `no coverage` (`src/verify/change.ts:235`, `src/mutate/suites.ts:407`). The builder tests spawn the CLI, and that child is not in the line map, so the suite was not started. That is a gap. No test was deleted. The one-row goldens are `ledger/922a301.golden.json` and `ledger/93589bf.golden.json`.
+`ledger/` is tracked. `ledger build` at `ea65193` scanned 14 commits (`historyBudgetHit` false): clean `922a301` (120 lines) and `93589bf` (4 lines), skipped `746f21c`, `3cb785a`, and `e776699` over the 300 line cap. No hand rows. `mutate run` of `ledger/` with confirm left on and `--workers 1` had a green baseline on this Mac (115 tests, about 236s). Both patches are `no coverage` (`src/verify/change.ts:235`, `src/mutate/suites.ts:407`). The builder tests spawn the CLI, and that child is not in the line map, so the suite was not started. That is a gap. No test was deleted. The one-row goldens are `ledger/922a301.golden.json` and `ledger/93589bf.golden.json`.
 
 ## 2026-10-06 — sealed catch, maps, and a packed binary
 
@@ -18,7 +20,7 @@ A usable map is a non-empty file for node, pytest, c, go, maven, cargo, or dotne
 
 C, C++, and COBOL are scored on the project's own suite, or the run refuses. A one-file compiler is not discovery. bugscpp images are not pulled on this Mac. SmartEnum is the small C# example. A few hundred C# tests would still pay one Coverlet process per name, so a repo that size is outside the section 2 timing.
 
-The packed check is `tests/packaged-cli.test.ts`. It builds, packs, and installs outside this repo. The binary resolves to `dist/cli.js`, not `src/cli.ts`. Stdout is one JSON object. A red pytest baseline is `ok: false` and kills nothing. A green kill's id is `tests/test_gate.py::test_low` once. `npm pack --dry-run` lists `dist/cli.js`, `dist/mutate/sealed.js`, `dist/mutate/rust-coverage.js`, and `dist/mutate/csharp-coverage.js`. CI runs `npm test` on Ubuntu and does not skip that file.
+The packed check is `tests/packaged-cli.test.ts`. It builds, packs, and installs outside this repo. The binary resolves to `dist/cli.js`, not `src/cli.ts`. Stdout is one JSON object. A red pytest baseline is `ok: false` and kills nothing. A green kill's id is `tests/test_gate.py::test_low` once. `npm pack --dry-run` lists `dist/cli.js`, `dist/mutate/sealed.js`, `dist/mutate/rust-coverage.js`, and `dist/mutate/csharp-coverage.js`. The test skips with `missing tool: pytest` when pytest is not installed. That skip is named in the log. It is not a pass.
 
 ### Four map runs, then the clones were reset
 
@@ -61,7 +63,7 @@ probatio mutate sealed \
 
 The first new CSV subject, `f9e7d792`, was ineligible. The next, `c15a06ee`, stayed green. The search then stopped on the eligible catch above. BugsInPy, and the small Go or Java fallback, were not opened. Those two rows stay open. The sealed outcome was a kill, so there is no survived or no-coverage miss to write down, and the README does not say the suite missed. Those miss rows stay open too. `package.json` and `package-lock.json` are `0.1.0`. Those open rows are conditional and do not block the version. The maintainer published `0.1.0` from this repo at gitHead `4e0bd47`. That tarball's README still said the npm copy was `0.0.5`. `0.1.1` is the same runner with that sentence corrected. `0.1.0` stays on npm.
 
-`npm test` passed twice on version 0.1.0. Each run is 115 tests, 0 fail, exit 0.
+`npm test` passed twice on version 0.1.0 on this Mac. Each run is 115 tests, 0 fail, exit 0. That count is not a GitHub Actions result.
 
 From a directory that is not this repo, `npx --package probatio-0.1.0.tgz` ran the packed binary on a tiny pytest fixture. Version `0.1.0`. Summary `0 no coverage, 0 survived, 1 killed, 0 flaky, 0 timed out, 0 errored, of 1 finished.` Exit 0. The kill id is `tests/test_gate.py::test_low` once. That local tarball check was before the registry publish. `npm view` now shows `0.1.0` at `4e0bd47`.
 

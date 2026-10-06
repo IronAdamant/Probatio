@@ -3,6 +3,22 @@ import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { nodeTooOld } from "./node-version.js"
+
+const tooOld = nodeTooOld(process.versions.node)
+if (tooOld) {
+  process.stdout.write(
+    `${JSON.stringify({
+      schemaVersion: 1,
+      ok: false,
+      command: "mcp",
+      summary: tooOld,
+      next: "Install Node 22.6 or newer and run the command again.",
+      nextCall: null,
+    })}\n`,
+  )
+  process.exit(1)
+}
 
 type Request = {
   jsonrpc?: string
@@ -71,6 +87,10 @@ function handle(message: Request) {
     send({ jsonrpc: "2.0", id: message.id, result: { tools: [tool] } })
     return
   }
+  if (message.method === "ping") {
+    send({ jsonrpc: "2.0", id: message.id, result: {} })
+    return
+  }
   if (message.method === "tools/call") {
     const argv = message.params?.arguments?.argv
     if (!Array.isArray(argv) || argv.some((item) => typeof item !== "string")) {
@@ -99,7 +119,13 @@ function handle(message: Request) {
         isError: envelope.ok !== true,
       },
     })
+    return
   }
+  send({
+    jsonrpc: "2.0",
+    id: message.id,
+    error: { code: -32601, message: `method not found: ${message.method}` },
+  })
 }
 
 function cliCommand(): { bin: string; args: string[] } {

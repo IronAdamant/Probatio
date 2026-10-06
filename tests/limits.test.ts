@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { missingTool } from "./require-tool.ts"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
 
@@ -65,7 +66,7 @@ test("verify-change scores a lib edit the tests import and ignores tests, docs, 
   }
 })
 
-test("verify-change scores a go file beside go.mod", { timeout: 120_000 }, () => {
+test("verify-change scores a go file beside go.mod", { timeout: 120_000, skip: missingTool("go") }, () => {
   const go = spawnSync("go", ["version"], { encoding: "utf8" })
   assert.equal(go.status, 0, go.stderr || go.stdout)
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-go-"))

@@ -20,6 +20,10 @@ export type GenerateOptions = {
   maxMinutes?: number | null
   /** Basenames excluded before mutation, for prose modules that are not behaviour. */
   skipFiles: string[]
+  /** Commit whose blobs are mutated. Default HEAD. Ignored when `workingTree` is set. */
+  commit?: string
+  /** Read the checkout on disk. mutate run still scores the commit. */
+  workingTree?: boolean
 }
 
 export type GeneratedMutant = {
@@ -35,13 +39,17 @@ export type GenerateResult = {
   violations: MutantPoint[]
   filesVisited: number
   budgetHit: boolean
+  /** `commit` matches the tree mutate run checks out. `working-tree` is the checkout on disk. */
+  source: "commit" | "working-tree"
+  error?: string
 }
 
 export function generateMutants(options: GenerateOptions): GenerateResult {
   const started = Date.now()
   const limit = options.maxMinutes
   const over = () => limit != null && Date.now() - started >= limit * 60_000
-  if (over()) return { mutants: [], violations: [], filesVisited: 0, budgetHit: true }
+  const sourceDefault = options.workingTree ? "working-tree" : "commit"
+  if (over()) return { mutants: [], violations: [], filesVisited: 0, budgetHit: true, source: sourceDefault }
   const srcRoot = path.resolve(options.packageDir, options.srcDir)
   const walked = walkSources(srcRoot, over)
   const files = walked.files.filter((file) => !options.skipFiles.includes(path.basename(file)))
@@ -50,13 +58,17 @@ export function generateMutants(options: GenerateOptions): GenerateResult {
   const chosen: Array<{ rel: string; text: string; point: MutantPoint }> = []
   let filesVisited = 0
   let budgetHit = walked.stopped
+  let source: "commit" | "working-tree" = sourceDefault
   for (const file of files) {
     if (over()) {
       budgetHit = true
       break
     }
     filesVisited += 1
-    const text = readFileSync(file, "utf8")
+    const loaded = fileText(options.packageDir, file, options)
+    if ("error" in loaded) return { mutants: [], violations: [], filesVisited, budgetHit, source: "commit", error: loaded.error }
+    source = loaded.source
+    const text = loaded.text
     const rel = posix(path.relative(options.packageDir, file))
     const found = findInSource(rel, text)
     violations.push(...found.violations)
@@ -64,7 +76,7 @@ export function generateMutants(options: GenerateOptions): GenerateResult {
     const slice = options.perFile === null ? ordered.slice(options.skip) : ordered.slice(options.skip, options.skip + options.perFile)
     for (const point of slice) chosen.push({ rel, text, point })
   }
-  if (violations.length > 0) return { mutants: [], violations, filesVisited, budgetHit }
+  if (violations.length > 0) return { mutants: [], violations, filesVisited, budgetHit, source }
   const capped = options.maxMutants === null ? chosen : chosen.slice(0, options.maxMutants)
   const packageReal = real(options.packageDir)
   const patchRoot = gitRoot(packageReal)
@@ -87,7 +99,25 @@ export function generateMutants(options: GenerateOptions): GenerateResult {
     path.join(mutantsDir, "mutants.json"),
     `${JSON.stringify({ schemaVersion: 1, seed: options.seed, mutants }, null, 2)}\n`,
   )
-  return { mutants, violations, filesVisited, budgetHit }
+  return { mutants, violations, filesVisited, budgetHit, source }
+}
+
+function fileText(
+  packageDir: string,
+  absFile: string,
+  options: GenerateOptions,
+): { text: string; source: "commit" | "working-tree" } | { error: string } {
+  if (options.workingTree) return { text: readFileSync(absFile, "utf8"), source: "working-tree" }
+  const root = gitRoot(packageDir)
+  if (!root) return { text: readFileSync(absFile, "utf8"), source: "working-tree" }
+  const rel = posix(path.relative(root, real(absFile)))
+  const commit = options.commit && options.commit.length > 0 ? options.commit : "HEAD"
+  const shown = spawnSync("git", ["-C", root, "show", `${commit}:${rel}`], { encoding: "utf8" })
+  if (shown.status !== 0) {
+    const shownRel = posix(path.relative(packageDir, absFile))
+    return { error: `${shownRel} is not in ${commit}. Pass --working-tree to read the checkout.` }
+  }
+  return { text: shown.stdout, source: "commit" }
 }
 
 function walkSources(dir: string, over: () => boolean): { files: string[]; stopped: boolean } {

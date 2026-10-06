@@ -6,6 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -13,7 +14,7 @@ const dotnetMajor = dotnetTfm()
 
 const source = ["int n = 0;", "if (n > 0) return 1;", "return 0;", ""].join("\n")
 
-test("dotnet discovers a suite under test/ and scores it", { timeout: 120_000 }, () => {
+test("dotnet discovers a suite under test/ and scores it", { timeout: 120_000, skip: missingTool("dotnet") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-dotnet-test-"))
   mkdirSync(path.join(dir, "test"))
   mkdirSync(path.join(dir, "patches"))

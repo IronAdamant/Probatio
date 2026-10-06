@@ -6,6 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -30,14 +31,14 @@ const source = [
   "",
 ].join("\n")
 
-test("a shell suite labels a compiler error separately from a named test", { timeout: 60_000 }, () => {
+test("a shell suite labels a compiler error separately from a named test", { timeout: 60_000, skip: missingTool("cc") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-script-"))
   mkdirSync(path.join(dir, "tests"))
   mkdirSync(path.join(dir, "patches"))
   writeFileSync(path.join(dir, "tests", "main.c"), source)
   writeFileSync(
     path.join(dir, "run_tests.sh"),
-    ["#!/bin/bash", "set -euo pipefail", "cc -Werror -Wtautological-unsigned-zero-compare -o suite tests/main.c", "./suite", ""].join("\n"),
+    ["#!/bin/bash", "set -euo pipefail", "cc -Werror -Wtype-limits -o suite tests/main.c", "./suite", ""].join("\n"),
   )
   writeFileSync(path.join(dir, "patches", "m-test.patch"), forwardDiff("tests/main.c", source, source.replace("closed == 0", "closed == 1")))
   writeFileSync(path.join(dir, "patches", "m-build.patch"), forwardDiff("tests/main.c", source, source.replace("n > 0", "n >= 0")))
@@ -81,14 +82,14 @@ test("a shell suite labels a compiler error separately from a named test", { tim
   }
 })
 
-test("a shell suite that runs docker with a tty is wrapped for both BSD and GNU script", { timeout: 60_000 }, () => {
+test("a shell suite that runs docker with a tty is wrapped for both BSD and GNU script", { timeout: 60_000, skip: missingTool("cc") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-script-tty-"))
   mkdirSync(path.join(dir, "tests"))
   mkdirSync(path.join(dir, "patches"))
   writeFileSync(path.join(dir, "tests", "main.c"), source)
   writeFileSync(
     path.join(dir, "run_tests.sh"),
-    ["#!/bin/bash", "set -euo pipefail", "# tini: docker run -it --rm example", "cc -Werror -Wtautological-unsigned-zero-compare -o suite tests/main.c", "./suite", ""].join("\n"),
+    ["#!/bin/bash", "set -euo pipefail", "# tini: docker run -it --rm example", "cc -Werror -Wtype-limits -o suite tests/main.c", "./suite", ""].join("\n"),
   )
   writeFileSync(path.join(dir, "patches", "m-test.patch"), forwardDiff("tests/main.c", source, source.replace("closed == 0", "closed == 1")))
   git(dir, ["init", "-q"])

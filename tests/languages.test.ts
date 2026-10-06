@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
+import { darwinOnly, firstSkip, missingAny, missingDarwinArch, missingPytest, missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -12,7 +13,7 @@ const tsx = path.join(root, "node_modules", ".bin", "tsx")
 const dotnetMajor = dotnetTfm()
 
 for (const item of fixtures()) {
-  test(`mutate run scores ${item.language}`, { timeout: 180_000 }, () => {
+  test(`mutate run scores ${item.language}`, { timeout: 180_000, skip: item.skip }, () => {
     const dir = mkdtempSync(path.join(tmpdir(), `probatio-${item.language}-`))
     try {
       item.write(dir)
@@ -62,29 +63,37 @@ type Fixture = {
   write: (dir: string) => void
   /** One-file layouts have no proved runner. The command is the suite. */
   command?: string
+  skip: string | false
 }
 
 function fixtures(): Fixture[] {
   return [
-    { language: "cobol", extension: (file) => file.endsWith(".cob"), write: writeCobol, command: "cobc -x -free -o tests/gate tests/gate.cob && tests/gate" },
-    { language: "rust", extension: (file) => file.endsWith(".rs"), write: writeRust },
-    { language: "c", extension: (file) => file.endsWith(".c"), write: writeC, command: "clang -std=c11 -o tests/gate tests/main.c && tests/gate" },
-    { language: "cpp", extension: (file) => file.endsWith(".cpp"), write: writeCpp, command: "clang++ -std=c++17 -o tests/gate tests/main.cpp && tests/gate" },
-    { language: "java", extension: (file) => file.endsWith(".java"), write: writeJava, command: "javac -d tests tests/Main.java && java -cp tests Main" },
-    { language: "go", extension: (file) => file.endsWith(".go"), write: writeGo },
-    { language: "python", extension: (file) => file.endsWith(".py"), write: writePython },
-    { language: "javascript", extension: (file) => file.endsWith(".js"), write: writeJavaScript },
-    { language: "typescript", extension: (file) => file.endsWith(".ts"), write: writeTypeScript },
-    { language: "csharp", extension: (file) => file.endsWith(".cs"), write: writeCSharp },
-    { language: "swift", extension: (file) => file.endsWith(".swift"), write: writeSwift, command: "swiftc -o tests/gate tests/main.swift && tests/gate" },
+    { language: "cobol", extension: (file) => file.endsWith(".cob"), write: writeCobol, command: "cobc -x -free -o tests/gate tests/gate.cob && tests/gate", skip: missingTool("cobc") },
+    { language: "rust", extension: (file) => file.endsWith(".rs"), write: writeRust, skip: missingTool("cargo") },
+    { language: "c", extension: (file) => file.endsWith(".c"), write: writeC, command: "clang -std=c11 -o tests/gate tests/main.c && tests/gate", skip: missingTool("clang") },
+    { language: "cpp", extension: (file) => file.endsWith(".cpp"), write: writeCpp, command: "clang++ -std=c++17 -o tests/gate tests/main.cpp && tests/gate", skip: missingTool("clang++") },
+    { language: "java", extension: (file) => file.endsWith(".java"), write: writeJava, command: "javac -d tests tests/Main.java && java -cp tests Main", skip: missingTool("javac") },
+    { language: "go", extension: (file) => file.endsWith(".go"), write: writeGo, skip: missingTool("go") },
+    { language: "python", extension: (file) => file.endsWith(".py"), write: writePython, skip: missingPytest() },
+    { language: "javascript", extension: (file) => file.endsWith(".js"), write: writeJavaScript, skip: false },
+    { language: "typescript", extension: (file) => file.endsWith(".ts"), write: writeTypeScript, skip: false },
+    { language: "csharp", extension: (file) => file.endsWith(".cs"), write: writeCSharp, skip: missingTool("dotnet") },
+    { language: "swift", extension: (file) => file.endsWith(".swift"), write: writeSwift, command: "swiftc -o tests/gate tests/main.swift && tests/gate", skip: firstSkip(darwinOnly("swiftc"), missingTool("swiftc")) },
     {
       language: "asm-x86_64",
       extension: (file) => file.endsWith(".asm"),
       write: writeX86,
       command: "nasm -f macho64 -o tests/gate.o tests/gate.asm && clang -arch x86_64 -o tests/gate tests/gate.o && arch -x86_64 tests/gate",
+      skip: firstSkip(missingDarwinArch("x86_64", "nasm macho64"), missingTool("nasm"), missingTool("clang")),
     },
-    { language: "asm-aarch64", extension: (file) => file.endsWith(".s"), write: writeArm, command: "clang -arch arm64 -o tests/gate tests/gate.s && tests/gate" },
-    { language: "asm-riscv", extension: (file) => file.endsWith(".S"), write: writeRiscv, command: "bash tests/run.sh" },
+    { language: "asm-aarch64", extension: (file) => file.endsWith(".s"), write: writeArm, command: "clang -arch arm64 -o tests/gate tests/gate.s && tests/gate", skip: firstSkip(darwinOnly("clang -arch arm64"), missingTool("clang")) },
+    {
+      language: "asm-riscv",
+      extension: (file) => file.endsWith(".S"),
+      write: writeRiscv,
+      command: "bash tests/run.sh",
+      skip: firstSkip(missingAny(["riscv64-elf-as", "riscv64-unknown-elf-as"]), missingAny(["qemu-riscv64", "qemu-riscv64-static", "qemu-system-riscv64"])),
+    },
   ]
 }
 

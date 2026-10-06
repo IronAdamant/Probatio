@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -54,6 +54,28 @@ test("mutate sealed keeps the label out of the report and hides the revealing te
     assert.equal(first.stdout.includes("zero stays shut"), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("--hide with a parent segment is refused and the outside file stays", () => {
+  const parent = mkdtempSync(path.join(tmpdir(), "probatio-hide-"))
+  const secret = path.join(parent, "secret.txt")
+  const dir = path.join(parent, "pkg")
+  writeFileSync(secret, "keep\n")
+  mkdirSync(dir)
+  try {
+    const result = spawnSync(
+      tsx,
+      ["src/cli.ts", "mutate", "run", "--package", dir, "--patches", dir, "--out", path.join(dir, "out"), "--hide", "../secret.txt", "--no-confirm"],
+      { cwd: root, encoding: "utf8" },
+    )
+    assert.equal(existsSync(secret), true)
+    const body = JSON.parse(result.stdout) as { ok: boolean; summary: string }
+    assert.equal(body.ok, false)
+    assert.match(body.summary, /hide/)
+    assert.match(body.summary, /secret\.txt/)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
   }
 })
 

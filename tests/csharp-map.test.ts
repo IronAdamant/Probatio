@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { missingTool } from "./require-tool.ts"
 import { fileURLToPath } from "node:url"
 import { changedLines, forwardDiff } from "../src/mutate/patch.ts"
 
@@ -53,7 +54,7 @@ const tests = [
   "",
 ].join("\n")
 
-test("a csharp line map names the killing test and reports an unexecuted line as no coverage", { timeout: 420_000 }, () => {
+test("a csharp line map names the killing test and reports an unexecuted line as no coverage", { timeout: 420_000, skip: missingTool("dotnet") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-csharp-map-"))
   try {
     mkdirSync(path.join(dir, "tests"))

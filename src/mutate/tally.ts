@@ -106,7 +106,7 @@ export function tallyRun(outDir: string): Envelope {
     command: "mutate.tally",
     summary,
     next,
-    nextCall: keep.length > 0 ? { argv: ["mutate", "run", ...keep.flatMap((id) => ["--only-test", id])] } : null,
+    nextCall: resumeArgv(outDir, keep),
     keep,
     drop,
     gaps,
@@ -117,6 +117,44 @@ export function tallyRun(outDir: string): Envelope {
   mkdirSync(outDir, { recursive: true })
   writeFileSync(fullPath, `${JSON.stringify(complete, null, 2)}\n`)
   return { ...complete, gaps: shown, rest: gaps.length - shown.length }
+}
+
+function resumeArgv(outDir: string, keep: string[]): { argv: string[] } | null {
+  if (keep.length === 0) return null
+  let stored: {
+    package?: string
+    patches?: string[]
+    out?: string
+    repo?: string
+    commit?: string
+    workers?: number
+    confirm?: boolean
+    testsDir?: string
+    suiteTimeoutMs?: number
+    testTimeoutMs?: number
+    direction?: string
+    suiteCommand?: string | null
+  } = {}
+  try {
+    stored = JSON.parse(readFileSync(path.join(outDir, "run.json"), "utf8")) as typeof stored
+  } catch {
+    stored = {}
+  }
+  const argv = ["mutate", "run"]
+  if (stored.package) argv.push("--package", stored.package)
+  for (const dir of stored.patches ?? []) argv.push("--patches", dir)
+  argv.push("--out", stored.out || outDir)
+  if (stored.repo) argv.push("--repo", stored.repo)
+  if (stored.commit) argv.push("--commit", stored.commit)
+  if (typeof stored.workers === "number") argv.push("--workers", String(stored.workers))
+  if (stored.confirm === false) argv.push("--no-confirm")
+  if (stored.testsDir && stored.testsDir !== "tests") argv.push("--tests-dir", stored.testsDir)
+  if (typeof stored.suiteTimeoutMs === "number") argv.push("--suite-timeout-ms", String(stored.suiteTimeoutMs))
+  if (typeof stored.testTimeoutMs === "number") argv.push("--test-timeout-ms", String(stored.testTimeoutMs))
+  if (stored.direction && stored.direction !== "auto") argv.push("--direction", stored.direction)
+  if (stored.suiteCommand) argv.push("--suite-command", stored.suiteCommand)
+  argv.push(...keep.flatMap((id) => ["--only-test", id]))
+  return { argv }
 }
 
 function readResults(dir: string): MutantResult[] {

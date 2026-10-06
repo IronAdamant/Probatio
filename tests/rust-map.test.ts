@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { firstSkip, missingTool } from "./require-tool.ts"
 import { fileURLToPath } from "node:url"
 import { changedLines, forwardDiff } from "../src/mutate/patch.ts"
 
@@ -41,7 +42,7 @@ const source = [
   "",
 ].join("\n")
 
-test("a rust line map names the killing test and reports an unexecuted line as no coverage", { timeout: 300_000 }, () => {
+test("a rust line map names the killing test and reports an unexecuted line as no coverage", { timeout: 300_000, skip: firstSkip(missingTool("cargo"), missingTool("llvm-cov"), missingTool("llvm-profdata")) }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-rust-map-"))
   try {
     mkdirSync(path.join(dir, "src"))

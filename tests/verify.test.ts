@@ -221,6 +221,31 @@ test("verify-change uses the generate finder on a non-TypeScript diff and still 
   }
 })
 
+test("verify-change does not call an uncommitted edit a clean miss", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-verify-dirty-"))
+  const out = path.join(dir, "out")
+  try {
+    mkdirSync(path.join(dir, "src"))
+    mkdirSync(path.join(dir, "tests"))
+    writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
+    writeFileSync(path.join(dir, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n > 0\n}\n")
+    writeFileSync(
+      path.join(dir, "tests", "gate.test.ts"),
+      "import test from \"node:test\"\nimport assert from \"node:assert/strict\"\nimport { gate } from \"../src/gate.ts\"\ntest(\"zero stays shut\", () => { assert.equal(gate(0), false) })\n",
+    )
+    commit(dir, "init")
+    writeFileSync(path.join(dir, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n >= 0\n}\n")
+    const result = spawnSync(tsx, ["src/cli.ts", "verify-change", "--package", dir, "--out", out], { cwd: root, encoding: "utf8" })
+    assert.equal(result.status, 1, result.stdout + result.stderr)
+    const body = JSON.parse(result.stdout) as { ok: boolean; summary: string }
+    assert.equal(body.ok, false)
+    assert.match(body.summary, /uncommitted/)
+    assert.doesNotMatch(body.summary, /0 missed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 type Report = {
   ok: boolean
   summary: string

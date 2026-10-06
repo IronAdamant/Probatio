@@ -6,6 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
+import { firstSkip, missingPytest, missingTool } from "./require-tool.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -32,7 +33,7 @@ type Body = {
   commands?: Array<{ id: string; outcome: string; command: string; cause: string | null; next: string; reused?: boolean; wholeSuite?: boolean }>
 }
 
-test("unknown layout asks for a suite command and an explicit command runs", { timeout: 60_000 }, () => {
+test("unknown layout asks for a suite command and an explicit command runs", { timeout: 60_000, skip: missingTool("clang") }, () => {
   const dir = fixture()
   writeFileSync(path.join(dir, "tests", "main.c"), "int main(void) { int n = 0; if (n > 0) return 1; return 0; }\n")
   const original = readFileSync(path.join(dir, "tests", "main.c"), "utf8")
@@ -156,7 +157,7 @@ test("a stopped campaign keeps finished mutants and lists the ones not started",
   save("step-partial", `${result.stdout}\nnext=${body.next}\nnotStarted=${notStarted.join(",")}\nfinished=${finished.length}\n`)
 })
 
-test("python coverage marks an uncovered line and runs only the tests that hit a covered line", { timeout: 120_000 }, () => {
+test("python coverage marks an uncovered line and runs only the tests that hit a covered line", { timeout: 120_000, skip: missingPytest() }, () => {
   const dir = fixture()
   mkdirSync(path.join(dir, "src"))
   writeFileSync(
@@ -191,7 +192,7 @@ test("python coverage marks an uncovered line and runs only the tests that hit a
   save("step-py-fixture", `${result.stdout}\nnext=${body.next}\nnoCoverage=${body.noCoverage} survived=${body.survived} killed=${body.killed}\n`)
 })
 
-test("pytest runs a parametrized node id that contains <", { timeout: 120_000 }, () => {
+test("pytest runs a parametrized node id that contains <", { timeout: 120_000, skip: missingPytest() }, () => {
   const dir = fixture()
   mkdirSync(path.join(dir, "src"))
   writeFileSync(path.join(dir, "src", "gate.py"), ["def gate(n):", "    return n > 0", ""].join("\n"))
@@ -226,7 +227,7 @@ test("pytest runs a parametrized node id that contains <", { timeout: 120_000 },
   save("step-pytest-nodeid", `${result.stdout}\ncommand=${killed.command}\nkilledBy=${saved.killedBy.join(",")}\n`)
 })
 
-test("pytest killedBy is the node id once", { timeout: 60_000 }, () => {
+test("pytest killedBy is the node id once", { timeout: 60_000, skip: missingPytest() }, () => {
   const dir = fixture()
   mkdirSync(path.join(dir, "src"))
   const before = "def gate(n):\n    return n > 0\n"
@@ -285,7 +286,7 @@ test("node coverage marks an uncovered line and runs only the tests that hit a c
   save("step-node-cov", `${result.stdout}\nnext=${body.next}\nnoCoverage=${body.noCoverage} killed=${body.killed} survived=${body.survived}\n`)
 })
 
-test("C LLVM coverage skips an uncovered line and runs a covered mutant from the map", { timeout: 120_000 }, () => {
+test("C LLVM coverage skips an uncovered line and runs a covered mutant from the map", { timeout: 120_000, skip: firstSkip(missingTool("clang"), missingTool("llvm-cov"), missingTool("llvm-profdata")) }, () => {
   const dir = fixture()
   writeFileSync(
     path.join(dir, "tests", "main.c"),
@@ -320,7 +321,7 @@ test("C LLVM coverage skips an uncovered line and runs a covered mutant from the
   save("step-c-cov", `${result.stdout}\nnext=${body.next}\nnoCoverage=${body.noCoverage}\n`)
 })
 
-test("a name filter is passed and a command that cannot take one runs the whole suite", { timeout: 120_000 }, () => {
+test("a name filter is passed and a command that cannot take one runs the whole suite", { timeout: 120_000, skip: firstSkip(missingTool("go"), missingTool("clang")) }, () => {
   const goDir = fixture()
   writeFileSync(path.join(goDir, "go.mod"), "module example.com/gate\n\ngo 1.22\n")
   writeFileSync(path.join(goDir, "gate.go"), "package gate\n\nfunc Gate(n int) bool { return n > 0 && n < 10 }\n")
