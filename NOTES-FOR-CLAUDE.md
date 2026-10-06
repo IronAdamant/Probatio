@@ -2,6 +2,10 @@
 
 Newest first. Start a review by rerunning the commands in the latest section.
 
+## 2026-10-06 — version 0.1.3, not published yet
+
+The repo version is 0.1.3. npm latest is 0.1.2 (`29301bc`), published 2026-10-06 by `iron_adamant`. Actions run `37440425701` on `950dea0` is green: core, pack on Node 22, pack on Node 24, toolchain, and macos. Publish 0.1.3 from the commit that sets this version. Do not tag. `0.0.0-stage` is still on npm.
+
 ## 2026-10-06 — four limits and a tracked ledger
 
 The repo version is 0.1.2. npm latest is 0.1.2 (`29301bc`), published 2026-10-06 by `iron_adamant`. The packed 0.1.2 README still says npm latest is 0.1.0, because that was true when the tarball was built. `0.1.0` stays on npm at `4e0bd47`. There is no npm `0.1.1`. `ea65193` set that version in git and it was not published. `CHANGELOG.md` lists every npm version and its gitHead. Git tags are not created.
