@@ -4,7 +4,7 @@ Newest first. Start a review by rerunning the commands in the latest section.
 
 ## 2026-10-06 — four limits and a tracked ledger
 
-The repo version is 0.1.2. npm latest stays 0.1.0 until a publish with an OTP succeeds. Do not write that the registry moved.
+The repo version is 0.1.2. npm latest is 0.1.2 (`29301bc`), published 2026-10-06 by `iron_adamant`. The packed 0.1.2 README still says npm latest is 0.1.0, because that was true when the tarball was built. `0.1.0` stays on npm at `4e0bd47`.
 
 `verify-change` scores `src/`, a `lib/` file when that package's tests import `lib/`, and a `*.go` file beside `go.mod`. Tests, docs, `dist/`, and `node_modules` stay unseen. Mocha's line map comes from `mocha-coverage.cjs` (root hooks). Loading `node-coverage.mjs` under Mocha does not name Mocha tests. A plain Node child can write a nameless `{ hits }` dump, and the parent `afterEach` stores it under the parent test. The summary-order line is `parent passes`. A dump the parent never reads stays `no coverage`. Covered mutants of one Node file run one after another in the process that is already running. `--workers` stays 1. A crash or a dirty open handle ends that process only.
 
