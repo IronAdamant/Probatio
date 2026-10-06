@@ -49,7 +49,7 @@ probatio mutate sealed \
   --workers 1
 ```
 
-The first new CSV subject, `f9e7d792`, was ineligible. The next, `c15a06ee`, stayed green. The search then stopped on the eligible catch above. BugsInPy, and the small Go or Java fallback, were not opened. Those two rows stay open. The sealed outcome was a kill, so there is no survived or no-coverage miss to write down, and the README does not say the suite missed. Those miss rows stay open too. `package.json` and `package-lock.json` are `0.1.0`. Those open rows are conditional and do not block the version. The maintainer published from this repo. `npm view probatio` shows version `0.1.0` and gitHead `4e0bd47`.
+The first new CSV subject, `f9e7d792`, was ineligible. The next, `c15a06ee`, stayed green. The search then stopped on the eligible catch above. BugsInPy, and the small Go or Java fallback, were not opened. Those two rows stay open. The sealed outcome was a kill, so there is no survived or no-coverage miss to write down, and the README does not say the suite missed. Those miss rows stay open too. `package.json` and `package-lock.json` are `0.1.0`. Those open rows are conditional and do not block the version. The maintainer published `0.1.0` from this repo at gitHead `4e0bd47`. That tarball's README still said the npm copy was `0.0.5`. `0.1.1` is the same runner with that sentence corrected. `0.1.0` stays on npm.
 
 `npm test` passed twice on version 0.1.0. Each run is 115 tests, 0 fail, exit 0.
 
