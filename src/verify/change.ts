@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { SCHEMA_VERSION, type Envelope } from "../contract.js"
 import { asTable } from "../golden/check.js"
@@ -43,9 +43,10 @@ export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
   const goldenContract = goldenDiffs(repo, options.base, options.commit, changed)
   const packageFiles: string[] = []
   const chosen: Array<{ rel: string; label: string; text: string; point: { start: number; end: number; line: number; op: string; replacement: string } }> = []
+  const libImported = testsImportLib(packageDir)
   for (const [file, lines] of ranges) {
     const rel = toPackage(prefix, file)
-    if (!rel || !rel.startsWith("src/") || rel.endsWith(".d.ts")) continue
+    if (!rel || !isVerifySource(rel, packageDir, libImported)) continue
     packageFiles.push(rel)
     const text = showFile(repo, options.commit, file)
     if (!text) continue
@@ -304,4 +305,59 @@ function toPackage(prefix: string, file: string): string | null {
   if (!prefix) return file
   if (!file.startsWith(`${prefix}/`)) return null
   return file.slice(prefix.length + 1)
+}
+
+const SKIPPED_SOURCE = new Set(["node_modules", "dist", "docs", "tests", "test"])
+
+/** src/, a lib/ tree the tests import, or a Go file beside go.mod. Tests, docs, dist, and node_modules stay out. */
+function isVerifySource(rel: string, packageDir: string, libImported: boolean): boolean {
+  if (rel.endsWith(".d.ts")) return false
+  const parts = rel.split("/")
+  if (parts.some((part) => SKIPPED_SOURCE.has(part))) return false
+  if (rel.startsWith("src/")) return true
+  if (libImported && rel.startsWith("lib/")) return true
+  if (!rel.includes("/") && rel.endsWith(".go") && !rel.endsWith("_test.go") && existsSync(path.join(packageDir, "go.mod"))) return true
+  return false
+}
+
+function testsImportLib(packageDir: string): boolean {
+  const pattern = /(?:require\s*\(\s*|from\s+)['"](?:@[^'"]+\/)?(?:\.\.\/|\.\/)*lib\//
+  for (const dirName of ["tests", "test"]) {
+    const dir = path.join(packageDir, dirName)
+    if (!existsSync(dir)) continue
+    if (walkText(dir).some((text) => pattern.test(text))) return true
+  }
+  return false
+}
+
+function walkText(dir: string): string[] {
+  const out: string[] = []
+  const visit = (current: string) => {
+    let entries: string[]
+    try {
+      entries = readdirSync(current)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === "node_modules" || name === "dist") continue
+      const full = path.join(current, name)
+      let info
+      try {
+        info = statSync(full)
+      } catch {
+        continue
+      }
+      if (info.isDirectory()) visit(full)
+      else if (info.isFile() && info.size < 1_000_000) {
+        try {
+          out.push(readFileSync(full, "utf8"))
+        } catch {
+          // An unreadable test file does not count as an import of lib/.
+        }
+      }
+    }
+  }
+  visit(dir)
+  return out
 }

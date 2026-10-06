@@ -432,7 +432,11 @@ async function launch(
     return tag(runDotnetTest(pkg, spec, timeoutMs, env, selection), command, false, selection)
   }
   if (spec.kind === "dotnet-exe") return tag(runDotnetExe(pkg, spec, files, timeoutMs, env), spec.command, wantsNames, selection)
-  if (spec.kind === "mocha") return tag(runMocha(pkg, files, timeoutMs, env), spec.command, wantsNames, selection)
+  if (spec.kind === "mocha") {
+    const grep = selection.length > 0 ? selection.map(escapeRegExp).join("|") : ""
+    const command = grep ? `${spec.command} --grep ${JSON.stringify(grep)}` : spec.command
+    return tag(runMocha(pkg, files, timeoutMs, env, selection), command, false, selection)
+  }
   // A tty is only for a suite that runs `docker run -it` (tini). Everything else is bash.
   if (spec.kind === "script") {
     const launched = scriptInvocation(pkg)
@@ -512,6 +516,31 @@ function runShell(
   return spawnCollected("sh", ["-c", command], pkg, { ...child, PYTHONDONTWRITEBYTECODE: "1" }, timeoutMs)
 }
 
+/**
+ * Node's `--test-timeout` caps the file, not only a test that left the option unset.
+ * A test that sets a longer `timeout` is cancelled, and the failure name is the file path.
+ * The flag stays at least that long, and it stays inside the suite cap.
+ */
+export function nodeTestTimeoutMs(pkg: string, files: string[], testTimeoutMs: number, suiteTimeoutMs: number): number {
+  let declared = 0
+  for (const rel of files) {
+    let text = ""
+    try {
+      text = readFileSync(path.join(pkg, rel), "utf8")
+    } catch {
+      continue
+    }
+    for (const match of text.matchAll(/timeout\s*:\s*(\d[\d_]*)/g)) {
+      const value = Number(match[1].replaceAll("_", ""))
+      if (Number.isFinite(value) && value > declared) declared = value
+    }
+  }
+  const floor = Number.isFinite(testTimeoutMs) && testTimeoutMs > 0 ? testTimeoutMs : 0
+  let chosen = Math.max(floor, declared)
+  if (Number.isFinite(suiteTimeoutMs) && suiteTimeoutMs > 0 && chosen > suiteTimeoutMs) chosen = suiteTimeoutMs
+  return chosen > 0 ? chosen : floor
+}
+
 async function runNode(
   pkg: string,
   files: string[],
@@ -524,6 +553,7 @@ async function runNode(
   const bin = existsSync(tsx) ? tsx : process.execPath
   const prefix = existsSync(tsx) ? [] : ["--experimental-strip-types"]
   const hook = env.PROBATIO_COVERAGE_MAP ? fileURLToPath(new URL("./node-coverage.mjs", import.meta.url)) : null
+  const fileTimeout = nodeTestTimeoutMs(pkg, files, hooks.testTimeoutMs, timeoutMs)
   const result = await spawnCollected(
     bin,
     [
@@ -532,7 +562,7 @@ async function runNode(
       "--test",
       `--test-reporter=${hooks.reporterPath}`,
       `--test-concurrency=${hooks.concurrency}`,
-      `--test-timeout=${hooks.testTimeoutMs}`,
+      `--test-timeout=${fileTimeout}`,
       ...(pattern ? [`--test-name-pattern=${pattern}`] : []),
       ...files,
     ],
@@ -601,6 +631,7 @@ async function runMocha(
   files: string[],
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
+  names: string[] | null = null,
 ): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   const mocha = ["mocha.js", "mocha"]
     .map((name) => path.join(pkg, "node_modules", "mocha", "bin", name))
@@ -610,6 +641,8 @@ async function runMocha(
   if (prepared && (prepared.code !== 0 || prepared.timedOut)) return prepared
   const config = readMochaConfig(pkg)
   const args = [mocha, ...buildMochaArgs(pkg, files)]
+  if (names && names.length > 0) args.push("--grep", names.map(escapeRegExp).join("|"))
+  if (env.PROBATIO_COVERAGE_MAP) args.push("--require", fileURLToPath(new URL("./mocha-coverage.cjs", import.meta.url)))
   if (config && config.require.includes("esm")) {
     // The `esm` loader throws on current Node before any test runs. Drop that one require and keep the rest of the project's mocha config.
     const requires = config.require.filter((name) => name !== "esm")

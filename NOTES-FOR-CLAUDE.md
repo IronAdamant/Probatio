@@ -2,6 +2,16 @@
 
 Newest first. Start a review by rerunning the commands in the latest section.
 
+## 2026-10-06 — four limits and a tracked ledger
+
+The repo version is 0.1.2. npm latest stays 0.1.0 until a publish with an OTP succeeds. Do not write that the registry moved.
+
+`verify-change` scores `src/`, a `lib/` file when that package's tests import `lib/`, and a `*.go` file beside `go.mod`. Tests, docs, `dist/`, and `node_modules` stay unseen. Mocha's line map comes from `mocha-coverage.cjs` (root hooks). Loading `node-coverage.mjs` under Mocha does not name Mocha tests. A plain Node child can write a nameless `{ hits }` dump, and the parent `afterEach` stores it under the parent test. The summary-order line is `parent passes`. A dump the parent never reads stays `no coverage`. Covered mutants of one Node file run one after another in the process that is already running. `--workers` stays 1. A crash or a dirty open handle ends that process only.
+
+Node's `--test-timeout` caps the file, so a test that sets a longer `timeout` was cancelled and the failure name was the file path. `nodeTestTimeoutMs` raises the flag to the longest `timeout` written in the files about to run, and it stays inside the suite cap. The batch job uses the same number. `tests/limits.test.ts` covers a 2.5s test with `{ timeout: 8_000 }` under `--test-timeout-ms 1000`.
+
+`ledger/` is tracked. `ledger build` at `ea65193` scanned 14 commits (`historyBudgetHit` false): clean `922a301` (120 lines) and `93589bf` (4 lines), skipped `746f21c`, `3cb785a`, and `e776699` over the 300 line cap. No hand rows. `mutate run` of `ledger/` with confirm left on and `--workers 1` had a green baseline (115 tests, about 236s). Both patches are `no coverage` (`src/verify/change.ts:235`, `src/mutate/suites.ts:407`). The builder tests spawn the CLI, and that child is not in the line map, so the suite was not started. That is a gap. No test was deleted. The one-row goldens are `ledger/922a301.golden.json` and `ledger/93589bf.golden.json`.
+
 ## 2026-10-06 — sealed catch, maps, and a packed binary
 
 A usable map is a non-empty file for node, pytest, c, go, maven, cargo, or dotnet. Rust and C# collect a line. A dark line is `no coverage` and does not start the suite. A child process the map cannot see is `no coverage`. `verify-change` puts the map's test names on `executed` and leaves `ran` as the importer list. Confirm stays off for `verify-change`. `deletedTests` stays 0. A keep id is rescored with `--only-test`, not `--suite-command`. `::command` is refused. Default `--workers` is 1.

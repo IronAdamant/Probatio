@@ -1,0 +1,91 @@
+{
+  "commit": "ea651932cb6ddaf02ba0c9a8af319facf4282ad1",
+  "package": ".",
+  "entries": [
+    {
+      "id": "922a301",
+      "commit": "922a3018a66e5e6bb29e417b0ce790499458ad90",
+      "date": "2026-10-06T13:20:47+11:00",
+      "subject": "Set version 0.1.0 for a sealed catch, a map-backed edit, and a packed CLI.",
+      "fixer": "human",
+      "status": "clean",
+      "lines": 120,
+      "files": [
+        {
+          "file": "src/cli.ts",
+          "line": 138
+        },
+        {
+          "file": "src/mutate/probatio-jacoco-run.java",
+          "line": 252
+        },
+        {
+          "file": "src/mutate/run.ts",
+          "line": 52
+        },
+        {
+          "file": "src/mutate/suites.ts",
+          "line": 459
+        },
+        {
+          "file": "src/mutate/tally.ts",
+          "line": 106
+        },
+        {
+          "file": "src/verify/change.ts",
+          "line": 7
+        }
+      ],
+      "patch": "922a301.patch"
+    },
+    {
+      "id": "746f21c",
+      "commit": "746f21c8eb990e9e0fcf601e6e11f6a896fb6299",
+      "date": "2026-10-06T09:47:50+11:00",
+      "subject": "Discover ordinary test layouts, map Rust and C# lines, and keep a pytest kill runnable.",
+      "fixer": "human",
+      "status": "skipped",
+      "lines": 633,
+      "files": [],
+      "reason": "src diff is 633 lines, over the 300 line cap"
+    },
+    {
+      "id": "93589bf",
+      "commit": "93589bf7d3ec3cc544af8c12ac2eb1b0a03ea38a",
+      "date": "2026-10-05T21:31:46+11:00",
+      "subject": "Clear bytecode before a shell suite.",
+      "fixer": "human",
+      "status": "clean",
+      "lines": 4,
+      "files": [
+        {
+          "file": "src/mutate/suites.ts",
+          "line": 401
+        }
+      ],
+      "patch": "93589bf.patch"
+    },
+    {
+      "id": "3cb785a",
+      "commit": "3cb785a319cc67333ebc0f2a3954786bc0aad0d5",
+      "date": "2026-10-05T20:09:06+11:00",
+      "subject": "Run JUnit 5 methods in the Java line map.",
+      "fixer": "human",
+      "status": "skipped",
+      "lines": 535,
+      "files": [],
+      "reason": "src diff is 535 lines, over the 300 line cap"
+    },
+    {
+      "id": "e776699",
+      "commit": "e776699ffb90f146e54c0394e58f96b2e929e94b",
+      "date": "2026-10-05T18:38:53+11:00",
+      "subject": "Stop a red baseline, map Go and Java lines, and speak newline MCP.",
+      "fixer": "human",
+      "status": "skipped",
+      "lines": 934,
+      "files": [],
+      "reason": "src diff is 934 lines, over the 300 line cap"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "probatio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mutation runner for AI agents. Scores a test suite by the bugs it catches.",
   "type": "module",
   "bin": {
@@ -19,7 +19,7 @@
     "url": "https://github.com/IronAdamant/Probatio/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && mkdir -p dist/mutate && cp src/mutate/fail-reporter.mjs src/mutate/node-coverage.mjs src/mutate/py-reporter.py src/mutate/py-pytest-reporter.py src/mutate/probatio-jacoco-run.java dist/mutate/",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/mutate && cp src/mutate/fail-reporter.mjs src/mutate/node-coverage.mjs src/mutate/precise-lines.mjs src/mutate/child-lines.mjs src/mutate/mocha-coverage.cjs src/mutate/node-batch.mjs src/mutate/node-batch-loader.mjs src/mutate/py-reporter.py src/mutate/py-pytest-reporter.py src/mutate/probatio-jacoco-run.java dist/mutate/",
     "test": "tsx --test tests/*.test.ts",
     "probatio": "tsx src/cli.ts"
   },

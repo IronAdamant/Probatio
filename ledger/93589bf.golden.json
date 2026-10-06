@@ -1,0 +1,11 @@
+{
+  "rows": {
+    "93589bf": {
+      "ok": true,
+      "reason": "No coverage for src/mutate/suites.ts:407. No test executed that line.",
+      "summary": "2 no coverage, 0 survived, 0 killed, 0 flaky, 0 timed out, 0 errored, of 2 finished.",
+      "nextCall": null,
+      "next": "No coverage for src/mutate/suites.ts:407. No test executed that line."
+    }
+  }
+}

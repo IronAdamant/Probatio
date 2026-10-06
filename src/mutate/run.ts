@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -26,7 +26,7 @@ import {
   scaleStop,
   timeoutLimitMs,
 } from "./suite-decision.js"
-import { commandSuite, discoverSuite, runDiscoveredSuite, sourceCandidates, type SuiteSpec } from "./suites.js"
+import { commandSuite, discoverSuite, nodeTestTimeoutMs, runDiscoveredSuite, sourceCandidates, type SuiteSpec } from "./suites.js"
 import { duplicateTitles } from "./titles.js"
 
 export const reporterPath = fileURLToPath(new URL("./fail-reporter.mjs", import.meta.url))
@@ -212,33 +212,57 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
     budgetStarted = Date.now()
     const worker = async (worktree: string) => {
       const treePkg = packageIn(worktree, repo, packageDir)
-      for (;;) {
-        if (startedMutants > 0 && overBudget()) {
-          budgetHit = true
-          return
-        }
-        const patch = queue.shift()
-        if (!patch) return
-        if (startedMutants > 0 && overBudget()) {
-          queue.unshift(patch)
-          budgetHit = true
-          return
-        }
-        const id = path.basename(patch, ".patch")
-        const raw = readFileSync(patch, "utf8")
-        const prior = history.get(id)
-        if (prior && reusable(prior, raw, treePkg)) {
+      let batch: NodeBatch | null = null
+      const dropBatch = () => {
+        batch?.stop()
+        batch = null
+      }
+      try {
+        for (;;) {
+          if (startedMutants > 0 && overBudget()) {
+            budgetHit = true
+            return
+          }
+          const patch = queue.shift()
+          if (!patch) return
+          if (startedMutants > 0 && overBudget()) {
+            queue.unshift(patch)
+            budgetHit = true
+            return
+          }
+          const id = path.basename(patch, ".patch")
+          const raw = readFileSync(patch, "utf8")
+          const prior = history.get(id)
+          if (prior && reusable(prior, raw, treePkg)) {
+            startedMutants += 1
+            const reused = reusedResult(prior, commit, run.id, options.agent)
+            writeResult(options.outDir, reused)
+            progress(`reused ${id}`)
+            continue
+          }
           startedMutants += 1
-          const reused = reusedResult(prior, commit, run.id, options.agent)
-          writeResult(options.outDir, reused)
-          progress(`reused ${id}`)
-          continue
+          progress(`${id} start`)
+          const plan = batchPlan(raw, prep, options)
+          if (plan) {
+            if (!batch || batch.dead) {
+              dropBatch()
+              try {
+                batch = await NodeBatch.start(treePkg, options, options.outDir)
+              } catch {
+                batch = null
+              }
+            }
+          }
+          const launch = plan && batch
+            ? (pkg: string, files: string[], names: string[] | null, timeoutMs: number) => batch!.run(pkg, files, names, timeoutMs, id, options.outDir)
+            : undefined
+          const result = await runOne(worktree, treePkg, patch, options, commit, run.id, prep, launch)
+          writeResult(options.outDir, result)
+          if (batch && (batch.dead || result.error === "suite process crashed")) dropBatch()
+          progress(`${id} ${result.outcome}`)
         }
-        startedMutants += 1
-        progress(`${id} start`)
-        const result = await runOne(worktree, treePkg, patch, options, commit, run.id, prep)
-        writeResult(options.outDir, result)
-        progress(`${id} ${result.outcome}`)
+      } finally {
+        dropBatch()
       }
     }
     await Promise.all(worktrees.dirs.map((dir) => worker(dir)))
@@ -349,6 +373,17 @@ async function prepare(
   return { ok: true, tests, affectedMap, baselineMs, spec, coverage: readCoverageMap(mapPath) }
 }
 
+type SuiteCall = {
+  report: TestReport | null
+  timedOut: boolean
+  detail: string
+  compileToken: string | null
+  command: string
+  wholeSuite: boolean
+  selectedTests: string[]
+  crashed?: boolean
+}
+
 async function runOne(
   worktree: string,
   pkg: string,
@@ -357,6 +392,7 @@ async function runOne(
   commit: string,
   runId: string,
   prep: Prepared,
+  launch?: (pkg: string, files: string[], names: string[] | null, timeoutMs: number) => Promise<SuiteCall>,
 ): Promise<MutantResult> {
   const id = path.basename(patchPath, ".patch")
   const started = Date.now()
@@ -413,8 +449,20 @@ async function runOne(
     // node --test loads every file it is given, so a name pattern still pays for the other files.
     const selected = narrowNodeFiles(pkg, selectTests(files, prep.tests, prep.affectedMap), names, prep.spec.kind)
     const commands: string[] = []
-    const main = await runSuite(pkg, selected, options, null, names && names.length > 0 ? names : null, prep.spec, limit, forceWhole, null, null)
+    const named = names && names.length > 0 ? names : null
+    const main: SuiteCall = launch
+      ? await launch(pkg, selected, named, limit)
+      : await runSuite(pkg, selected, options, null, named, prep.spec, limit, forceWhole, null, null)
     if (main.command) commands.push(main.command)
+    if (main.crashed) {
+      return finishMutant(
+        { ...base(), direction, outcome: "error", error: "suite process crashed" },
+        pkg,
+        commands.join(" | "),
+        false,
+        main.selectedTests,
+      )
+    }
     if (main.timedOut) {
       return finishMutant(
         { ...base(), direction, outcome: "timeout", error: "suite timed out", next: TIMEOUT_NEXT },
@@ -570,6 +618,163 @@ async function runSuite(
     wholeSuite: result.wholeSuite || forceWhole,
     selectedTests: result.selectedTests,
   }
+}
+
+function batchPlan(raw: string, prep: Prepared, options: RunOptions): { names: string[] } | null {
+  if (options.workers !== 1 || prep.spec.kind !== "node") return null
+  if (!prep.coverage || Object.keys(prep.coverage.files).length === 0) return null
+  const edited = changedLines(raw)
+  const files = filesInDiff(raw)
+  if (new Set(files.map((item) => item.file)).size !== 1) return null
+  const picked = selectionFor(prep.coverage, edited.length > 0 ? edited : files)
+  if (picked.state !== "covered") return null
+  const names = picked.tests.filter((name) => name !== WHOLE_PROGRAM_TEST && name.length > 0)
+  if (names.length === 0) return null
+  return { names }
+}
+
+type BatchReply = {
+  id: string
+  pid: number
+  failed?: Failure[]
+  names?: string[]
+  command?: string
+  error?: string
+}
+
+/** Covered node mutants of one file share this process. A crash sets dead and the next mutant starts another. */
+class NodeBatch {
+  readonly pid: number
+  dead = false
+  private testTimeoutMs: number
+  private proc: ReturnType<typeof spawn>
+  private constructor(proc: ReturnType<typeof spawn>, pid: number, testTimeoutMs: number) {
+    this.proc = proc
+    this.pid = pid
+    this.testTimeoutMs = testTimeoutMs
+    proc.on("close", () => {
+      this.dead = true
+    })
+  }
+
+  static async start(pkg: string, options: RunOptions, outDir: string): Promise<NodeBatch> {
+    const dir = path.join(outDir, "batch")
+    mkdirSync(dir, { recursive: true })
+    const ready = path.join(dir, `ready-${process.pid}-${Date.now()}.json`)
+    const gen = path.join(dir, `gen-${process.pid}-${Date.now()}.txt`)
+    writeFileSync(gen, "0\n")
+    const script = fileURLToPath(new URL("./node-batch.mjs", import.meta.url))
+    const env = childEnv(options.unset)
+    env.PB_READY = ready
+    env.PB_GEN = gen
+    env.PB_ROOT = pkg
+    const proc = spawn(process.execPath, [script], { cwd: pkg, env, stdio: ["pipe", "ignore", "pipe"] })
+    const started = Date.now()
+    while (!existsSync(ready)) {
+      if (proc.exitCode !== null) throw new Error("batch process exited before ready")
+      if (Date.now() - started > 10_000) {
+        proc.kill("SIGKILL")
+        throw new Error("batch process did not start")
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    const body = JSON.parse(readFileSync(ready, "utf8")) as { pid?: number }
+    return new NodeBatch(proc, body.pid || proc.pid || 0, options.testTimeoutMs)
+  }
+
+  stop(): void {
+    this.dead = true
+    try {
+      this.proc.stdin?.end()
+    } catch {
+      // The pipe is already closed.
+    }
+    try {
+      if (this.proc.pid) process.kill(this.proc.pid, "SIGTERM")
+    } catch {
+      // The process has already exited.
+    }
+  }
+
+  async run(pkg: string, files: string[], names: string[] | null, timeoutMs: number, id: string, outDir: string): Promise<SuiteCall> {
+    const selected = names ?? []
+    const replyFile = path.join(outDir, "batch", `${id}.reply.json`)
+    rmSync(replyFile, { force: true })
+    appendFileSync(path.join(outDir, "batch-processes.jsonl"), `${JSON.stringify({ id, pid: this.pid })}\n`)
+    const job = { id, root: pkg, tests: files, names: selected, timeoutMs, testTimeoutMs: nodeTestTimeoutMs(pkg, files, this.testTimeoutMs, timeoutMs), replyFile }
+    try {
+      this.proc.stdin?.write(`${JSON.stringify(job)}\n`)
+    } catch {
+      this.dead = true
+      return crashedCall(selected)
+    }
+    const waited = await waitForReply(replyFile, this.proc, timeoutMs)
+    if (waited === "timeout") {
+      this.dead = true
+      this.stop()
+      return { report: null, timedOut: true, detail: "suite timed out", compileToken: null, command: "", wholeSuite: false, selectedTests: selected }
+    }
+    if (!waited) return crashedCall(selected)
+    const failed = waited.failed ?? []
+    const seen = waited.names ?? []
+    if (seen.length === 0 && failed.length === 0) {
+      return {
+        report: null,
+        timedOut: false,
+        detail: waited.error || "test reporter returned nothing",
+        compileToken: null,
+        command: waited.command || "",
+        wholeSuite: false,
+        selectedTests: selected,
+      }
+    }
+    return {
+      report: { tests: Math.max(seen.length, failed.length), pass: Math.max(0, seen.length - failed.length), fail: failed.length, failed, names: seen.length > 0 ? seen : selected },
+      timedOut: false,
+      detail: "",
+      compileToken: null,
+      command: waited.command || "",
+      wholeSuite: false,
+      selectedTests: selected,
+    }
+  }
+}
+
+function crashedCall(selected: string[]): SuiteCall {
+  return { report: null, timedOut: false, detail: "suite process crashed", compileToken: null, command: "", wholeSuite: false, selectedTests: selected, crashed: true }
+}
+
+function waitForReply(file: string, proc: ReturnType<typeof spawn>, timeoutMs: number): Promise<BatchReply | null | "timeout"> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: BatchReply | null | "timeout") => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearInterval(poll)
+      proc.removeListener("close", onClose)
+      resolve(value)
+    }
+    const read = (): BatchReply | null => {
+      try {
+        return JSON.parse(readFileSync(file, "utf8")) as BatchReply
+      } catch {
+        return null
+      }
+    }
+    const onClose = () => {
+      const reply = existsSync(file) ? read() : null
+      finish(reply)
+    }
+    const timer = setTimeout(() => finish("timeout"), timeoutMs)
+    const poll = setInterval(() => {
+      if (!existsSync(file)) return
+      const reply = read()
+      if (reply) finish(reply)
+    }, 20)
+    if (proc.exitCode !== null || proc.signalCode !== null) onClose()
+    else proc.once("close", onClose)
+  })
 }
 
 function isNodeTestFile(file: string): boolean {

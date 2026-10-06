@@ -57,7 +57,7 @@ export function timeoutLimitMs(baselineMs: number, multiple: number, floorMs: nu
 }
 
 /** Kinds that collect a per-line map on the baseline. Other kinds pay the whole suite. */
-const LINE_MAP_KINDS = new Set(["node", "pytest", "c", "go", "maven", "cargo", "dotnet"])
+const LINE_MAP_KINDS = new Set(["node", "pytest", "c", "go", "maven", "cargo", "dotnet", "mocha"])
 
 /** A baseline this long, with no line map, is too expensive to repeat for a large batch. */
 export const SLOW_BASELINE_MS = 5_000

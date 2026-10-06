@@ -1,0 +1,18 @@
+# probatio-mutant direction=forward meaning=apply-to-introduce-the-bug
+# probatio-ledger source=history fix=93589bf7d3ec3cc544af8c12ac2eb1b0a03ea38a
+diff --git b/src/mutate/suites.ts a/src/mutate/suites.ts
+index 5e6ab3b..46444aa 100644
+--- b/src/mutate/suites.ts
++++ a/src/mutate/suites.ts
+@@ -401,10 +401,8 @@ function runShell(
+   timeoutMs: number,
+   env: NodeJS.ProcessEnv,
+ ): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
+-  // A command can be pytest. Baseline writes a .pyc, and a same-size patch in that same second leaves it valid.
+-  clearBytecode(pkg)
+   const child = /\b(java|javac|mvn)\b/.test(command) ? javaEnv(env) : env
+-  return spawnCollected("sh", ["-c", command], pkg, { ...child, PYTHONDONTWRITEBYTECODE: "1" }, timeoutMs)
++  return spawnCollected("sh", ["-c", command], pkg, child, timeoutMs)
+ }
+ 
+ async function runNode(
