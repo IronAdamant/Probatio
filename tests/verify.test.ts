@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -79,6 +79,99 @@ test("verify-change lists affected tests, caught and missed mutants, and golden 
     const shown = new Set([...narrow.caught, ...narrow.missed].map((item) => item.id))
     for (const item of narrow.notRun) assert.equal(shown.has(item.id), false)
     assert.equal(narrow.caught.length + narrow.missed.length + narrow.rest, report.caught.length + report.missed.length)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("verify-change runs only the test that executes the edited line", { timeout: 90_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-verify-map-"))
+  const out = path.join(dir, "out")
+  try {
+    mkdirSync(path.join(dir, "src"))
+    mkdirSync(path.join(dir, "tests"))
+    writeFileSync(
+      path.join(dir, "src", "gate.ts"),
+      ["export function open(n: number): boolean {", "  return n > 0", "}", "export function wide(n: number): boolean {", "  return n < 0", "}", ""].join("\n"),
+    )
+    writeFileSync(
+      path.join(dir, "tests", "gate.test.ts"),
+      [
+        "import test from \"node:test\"",
+        "import assert from \"node:assert/strict\"",
+        "import { open, wide } from \"../src/gate.ts\"",
+        "test(\"zero stays shut\", () => { assert.equal(open(0), false) })",
+        "test(\"wide stays open\", () => { assert.equal(wide(1), false) })",
+        "",
+      ].join("\n"),
+    )
+    commit(dir, "init")
+    writeFileSync(
+      path.join(dir, "src", "gate.ts"),
+      ["export function open(n: number): boolean {", "  return n > 0 || n < -1000", "}", "export function wide(n: number): boolean {", "  return n < 0", "}", ""].join("\n"),
+    )
+    commit(dir, "edit open")
+    const result = spawnSync(tsx, ["src/cli.ts", "verify-change", "--package", dir, "--out", out, "--base", "HEAD~1", "--commit", "HEAD", "--max-mutants", "4"], {
+      cwd: root,
+      encoding: "utf8",
+    })
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    const report = JSON.parse(result.stdout) as Report & { executed?: string[]; confirmed?: boolean; other?: unknown[] }
+    assert.equal(report.ok, true, report.summary)
+    assert.deepEqual(report.ran, ["tests/gate.test.ts"])
+    assert.equal(report.confirmed, false)
+    assert.ok(Array.isArray(report.caught))
+    assert.ok(Array.isArray(report.missed))
+    assert.ok(Array.isArray(report.other))
+    assert.ok(Array.isArray(report.notRun))
+    assert.ok(Array.isArray(report.ran))
+    assert.ok(Array.isArray(report.executed), JSON.stringify(report.executed))
+    assert.deepEqual(report.executed, ["zero stays shut"], JSON.stringify(report.executed))
+    const files = readdirSync(path.join(out, "run", "results")).filter((name) => name.endsWith(".json"))
+    assert.ok(files.length > 0)
+    let sawRun = false
+    for (const name of files) {
+      const saved = JSON.parse(readFileSync(path.join(out, "run", "results", name), "utf8")) as { outcome: string; command: string; selectedTests?: string[] }
+      if (saved.outcome === "no coverage") continue
+      sawRun = true
+      assert.match(saved.command, /zero stays shut/)
+      assert.equal(saved.command.includes("wide stays open"), false, saved.command)
+      assert.deepEqual(saved.selectedTests, ["zero stays shut"], JSON.stringify(saved.selectedTests))
+    }
+    assert.equal(sawRun, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("verify-change does not list a kill when the baseline is already red", { timeout: 60_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-verify-red-"))
+  try {
+    mkdirSync(path.join(dir, "src"))
+    mkdirSync(path.join(dir, "tests"))
+    writeFileSync(path.join(dir, "src", "gate.ts"), "export function open(n: number): boolean {\n  return n > 0\n}\n")
+    writeFileSync(
+      path.join(dir, "tests", "gate.test.ts"),
+      [
+        "import test from \"node:test\"",
+        "import assert from \"node:assert/strict\"",
+        "import { open } from \"../src/gate.ts\"",
+        "test(\"already open\", () => { assert.equal(1, 2) })",
+        "",
+      ].join("\n"),
+    )
+    commit(dir, "init")
+    writeFileSync(path.join(dir, "src", "gate.ts"), "export function open(n: number): boolean {\n  return n >= 0\n}\n")
+    commit(dir, "edit open")
+    const result = spawnSync(tsx, ["src/cli.ts", "verify-change", "--package", dir, "--out", path.join(dir, "out"), "--base", "HEAD~1", "--commit", "HEAD", "--max-mutants", "4"], {
+      cwd: root,
+      encoding: "utf8",
+    })
+    assert.equal(result.status, 1, result.stdout)
+    const report = JSON.parse(result.stdout) as Report
+    assert.equal(report.ok, false, report.summary)
+    assert.deepEqual(report.caught, [])
+    assert.match(report.summary, /baseline already failing/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

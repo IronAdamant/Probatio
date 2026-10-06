@@ -106,7 +106,7 @@ export function tallyRun(outDir: string): Envelope {
     command: "mutate.tally",
     summary,
     next,
-    nextCall: null,
+    nextCall: keep.length > 0 ? { argv: ["mutate", "run", ...keep.flatMap((id) => ["--only-test", id])] } : null,
     keep,
     drop,
     gaps,

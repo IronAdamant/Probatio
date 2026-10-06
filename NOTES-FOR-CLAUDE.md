@@ -2,6 +2,63 @@
 
 Newest first. Start a review by rerunning the commands in the latest section.
 
+## 2026-10-06 — sealed catch, maps, and a packed binary
+
+A usable map is a non-empty file for node, pytest, c, go, maven, cargo, or dotnet. Rust and C# collect a line. A dark line is `no coverage` and does not start the suite. A child process the map cannot see is `no coverage`. `verify-change` puts the map's test names on `executed` and leaves `ran` as the importer list. Confirm stays off for `verify-change`. `deletedTests` stays 0. A keep id is rescored with `--only-test`, not `--suite-command`. `::command` is refused. Default `--workers` is 1.
+
+C, C++, and COBOL are scored on the project's own suite, or the run refuses. A one-file compiler is not discovery. bugscpp images are not pulled on this Mac. SmartEnum is the small C# example. A few hundred C# tests would still pay one Coverlet process per name, so a repo that size is outside the section 2 timing.
+
+The packed check is `tests/packaged-cli.test.ts`. It builds, packs, and installs outside this repo. The binary resolves to `dist/cli.js`, not `src/cli.ts`. Stdout is one JSON object. A red pytest baseline is `ok: false` and kills nothing. A green kill's id is `tests/test_gate.py::test_low` once. `npm pack --dry-run` lists `dist/cli.js`, `dist/mutate/sealed.js`, `dist/mutate/rust-coverage.js`, and `dist/mutate/csharp-coverage.js`. CI runs `npm test` on Ubuntu and does not skip that file.
+
+### Four map runs, then the clones were reset
+
+Each probe commit was removed with `git reset --hard` back to the clean upstream HEAD. None of these clones is dirty. The numbers below are from `tsx src/cli.ts`. No `PYTHONPATH` pointed at a scratch directory. No port 8080.
+
+Pytest, Jinja, `~/Documents/coding_projects/Sample_Probatio_Separate/python`, commit `5ef7011`, BSD-3-Clause. `verify-change --package <python> --base HEAD~1 --commit HEAD --max-minutes 20` after a one-line commit. Suite `python3 pytest`, 911 tests, baseline 8297 ms, green. Summary `1 no coverage, 0 missed, 1 caught, 0 not run`. `executed` is `tests/test_api.py::TestExtendedAPI::test_expressions`. `confirmed` is false. The dark line is the uncalled `open_if_exists` helper. Two fresh `--only-test` rescores of that one id both killed the same mutant. Tally `deletedTests` 0. The covered edit was `or False` on a line the suite already runs. The dark edit was the same shape inside a function nothing calls.
+
+Node, Commander.js, `~/Documents/coding_projects/Sample_Probatio_Separate/javascript`, commit `ba6d13d`, MIT. Discovery is `node --test` (no mocha string in package.json). 1373 tests, baseline 10038 ms, green, wall about 12 seconds. No `npm ci`. The harness color variables were unset, because `NO_COLOR` makes two Commander color tests fail before any mutant. A covered edit in `lib/error.js` survived and selected 206 of 1373 tests. A dark line in an uncalled helper was `no coverage`, command empty. The helper was only on the probe commit, which was reset.
+
+Go, httprouter, `~/Documents/coding_projects/Sample_Probatio_Separate/go`, commit `4840180`, BSD-3-Clause. Suite `go test -json ./...`, 33 tests, baseline 2307 ms. Every existing statement was already covered, so the dark line was an uncalled helper added on a probe commit and then reset. The covered edit survived. The command was `go test -json ./... -run` with 6 names, not the full package list. The dark line did not start the suite. Go did not kill, so it was not rescored.
+
+Java, jsoup, `~/Documents/coding_projects/Sample_Probatio_Separate/java`, commit `088614f`, MIT. `verify-change` with the default `--max-mutants` of 4. Suite `mvn -B test`, 2392 tests, baseline 12547 ms, wall about 111 seconds. Summary `0 no coverage, 1 missed, 3 caught, 5 not run`. The 5 not run are the dark `startsWithNewline` line and were not started. `executed` has 1447 names. A separate patch of that dark line was `no coverage` with an empty command. The keep list from the covered kill was rescored twice with `--only-test`. Both runs killed the same mutant. The second tally kept 1318 tests. `deletedTests` 0. Surefire received the long `-Dtest` list, including parameterized names such as `method(Parser)[1]`.
+
+Express was not the Node proof. Mocha is not a line-map kind.
+
+### Sealed catch
+
+Commons CSV, Apache-2.0, worktree `~/Documents/coding_projects/Sample_Probatio_Beyond/commons-csv-271`, commit `2c83a308` (`Fixed CSV-271`). The fixed tree is green: 398 tests. The patch puts `CSVPrinter.printRecord(Object...)` back to `format.printRecord(out, values)` and `newRecord = true`. The label file stays outside the clone. Its three strings are absent from the source, the patch, and both JSON files.
+
+Two `mutate sealed` runs, two `--out` directories, `--workers 1`, confirm left on (no `--no-confirm`), `--hide src/test/java/org/apache/commons/csv/issues/JiraCsv271Test.java`. Both `ok: true`. Same summary: `0 no coverage, 0 survived, 1 killed, 0 flaky, 0 timed out, 0 errored, of 1 finished.` `killedBy` is `org.apache.commons.csv.CSVFormatTest.testFormatThrowsNullPointerException`. `files` names `src/main/java/org/apache/commons/csv/CSVPrinter.java`. Baseline about 8.3 seconds. Each mutant step was about 20 seconds. The hidden test file is still in the clone. Both tallies: `deletedTests` 0, `pruning.mode` `advisory`, keep is that one older test.
+
+The line map was not written on that run. Coverage reported `selectMethod(Class, String, Class[])` missing on JUnit platform 1.7. The first pass was the whole suite. Confirm then reran the older test twice, and it still failed. That is the kill. A later builder test pins `junit-jupiter` 5.7.2, failed on that missing method, and passed after the runner falls back to `selectMethod(Class, String)` only when the three-argument form is absent. JUnit 5.11 still uses the three-argument form.
+
+Two earlier CSV subjects were not sealed. `f9e7d792` is ineligible: the revealing test is a method inside `CSVParserTest.java`, and `--hide` deletes a whole file. An older test did fail. `c15a06ee` stayed green (421 tests) after `JiraCsv288Test.java` was removed and `Lexer.java` was reverted. The search stopped at the eligible catch.
+
+A JUnit 4 parameterized keep id such as `testShut[0]` is recorded in full. `-Dtest` drops the `[0]` index, because Surefire collects nothing for that index form, and keeps a `(Type)` list when the report has one.
+
+Patch file `m-271.patch`. The hunk replaces `printRecord(Arrays.asList(values));` with `format.printRecord(out, values);` and `newRecord = true;`. The label file stays beside the run, not in the clone. Confirm stays on. Repeat with a fresh `--out` directory:
+
+```bash
+probatio mutate sealed \
+  --package ~/Documents/coding_projects/Sample_Probatio_Beyond/commons-csv-271 \
+  --repo ~/Documents/coding_projects/Sample_Probatio_Beyond/commons-csv-271 \
+  --patches <directory that contains m-271.patch> \
+  --label <label file> \
+  --hide src/test/java/org/apache/commons/csv/issues/JiraCsv271Test.java \
+  --out <fresh directory> \
+  --workers 1
+```
+
+The first new CSV subject, `f9e7d792`, was ineligible. The next, `c15a06ee`, stayed green. The search then stopped on the eligible catch above. BugsInPy, and the small Go or Java fallback, were not opened.
+
+`npm test` passed twice. Each run is 115 tests, 0 fail, exit 0.
+
+From a directory that is not this repo, `npx --package probatio-0.1.0.tgz` ran the packed binary on a tiny pytest fixture. Version `0.1.0`. Summary `0 no coverage, 0 survived, 1 killed, 0 flaky, 0 timed out, 0 errored, of 1 finished.` Exit 0. The kill id is `tests/test_gate.py::test_low` once. `npm publish` was not run.
+
+### Five sample roots
+
+Each directory under the five roots was one bounded `mutate run`, an already scored line, or a written refusal. Huge trees under `cloned_sample_projects` were not walked: linux, llvm-project, rust (the compiler), Babylon.js, airflow, dotnet-dotnet, llama_index. redox was not started. bugscpp and defects4j were not initialized and no image was pulled. CobolCraft refused a `make test` that would download `server.jar`. Nothing was fetched. Auspex is one project. Its baseline timed out, so no mutant was scored. A timeout is its own count. No discovered suite is `no tests` or an unknown suite command. The four map repos above were not run again. A probe patch that names a missing file finishes as `1 errored`. That is not a kill.
+
 ## 2026-10-05 — edit size, then stop a slow unmapped batch
 
 `verify-change` runs the discovered suite. It does not require a direct importer. Mutants are still only the changed lines, capped by `--max-mutants` (default 4). The suite timeout passed to the runner is 600000 ms. `ran` is still the direct-importer list. The tests that execute come from the line map, the same way `mutate run` selects them. No suite at all leaves the mutants in `notRun`.

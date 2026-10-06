@@ -52,6 +52,8 @@ export type RunOptions = {
   agent: string | null
   /** Package-relative test files. When set, the baseline and the mutants run only these. */
   onlyTests?: string[] | null
+  /** Test ids to run instead of the line-map selection. The suite kind stays the one discovery found. */
+  onlyNames?: string[] | null
   /** When set, only the patch whose basename is this id is run. */
   onlyPatch?: string | null
   /** Shell command that runs the suite. Overrides discovery. */
@@ -397,7 +399,8 @@ async function runOne(
       if (built.code !== 0) return finishMutant(killed(base, direction, ["build"]), pkg, "", false, [])
     }
     const picked = selectionFor(prep.coverage, edited.length > 0 ? edited : files)
-    if (picked.state === "uncovered") {
+    const forced = options.onlyNames && options.onlyNames.length > 0 ? options.onlyNames : null
+    if (!forced && picked.state === "uncovered") {
       return {
         ...base(),
         direction,
@@ -405,7 +408,7 @@ async function runOne(
         next: noCoverageNext(picked.file, picked.line),
       }
     }
-    const names = picked.state === "covered" ? picked.tests.filter((name) => name !== WHOLE_PROGRAM_TEST) : null
+    const names = forced ?? (picked.state === "covered" ? picked.tests.filter((name) => name !== WHOLE_PROGRAM_TEST) : null)
     const forceWhole = picked.state === "covered" && (names === null || names.length === 0)
     // node --test loads every file it is given, so a name pattern still pays for the other files.
     const selected = narrowNodeFiles(pkg, selectTests(files, prep.tests, prep.affectedMap), names, prep.spec.kind)
@@ -1126,13 +1129,25 @@ function sha256(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex")
 }
 
+const BARE_SUITE = new Set(["command", "suite", "pytest", "unittest", "cobol", "make-test", "c", "cpp"])
+
 function failureId(pkg: string, failure: Failure): string {
   // Pytest already reports a node id (tests/test_gate.py::test_low). Prepending the
   // file doubles it, and pytest then exits 4 and collects nothing.
   if (pytestNodeId(failure.name)) return failure.name
-  const rel = failure.file ? path.relative(pkg, failure.file) : ""
-  const file = !rel || rel.startsWith("..") ? path.basename(failure.file || "") : rel.split(path.sep).join("/")
+  // Cargo and dotnet report a bare test name. Go reports a package path that is
+  // not a file, and JUnit reports a classname. The runnable id is the name itself.
+  // An unnamed shell suite stays ::command so a tally does not treat it as a test.
+  if (!failure.file) return BARE_SUITE.has(failure.name) ? `::${failure.name}` : failure.name
+  if (!testFileOnDisk(pkg, failure.file)) return failure.name
+  const rel = path.relative(pkg, failure.file)
+  const file = !rel || rel.startsWith("..") ? path.basename(failure.file) : rel.split(path.sep).join("/")
   return `${file}::${failure.name}`
+}
+
+function testFileOnDisk(pkg: string, file: string): boolean {
+  if (path.isAbsolute(file)) return existsSync(file)
+  return existsSync(path.join(pkg, file))
 }
 
 function pytestNodeId(name: string): boolean {

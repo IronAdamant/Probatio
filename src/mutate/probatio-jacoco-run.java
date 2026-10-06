@@ -252,11 +252,17 @@ public class ProbatioJacocoRun {
       Class<?> selectorType = Class.forName("org.junit.platform.engine.DiscoverySelector");
       Class<?> selectorsType = Class.forName("org.junit.platform.engine.discovery.DiscoverySelectors");
       java.lang.reflect.Method select = selectMethodWithTypes(selectorsType);
+      boolean typed = select.getParameterCount() == 3;
       Object selectors = Array.newInstance(selectorType, unique.size());
       int index = 0;
       for (JupiterSpec spec : unique.values()) {
         Class<?> type = loadTestClass(spec.className);
-        Object selector = select.invoke(null, new Object[] { type, spec.simple, spec.types });
+        // Platform 1.7 has selectMethod(Class, String) only. 5.14's two-argument
+        // form drops the parameter list and can run nothing, so keep the types
+        // when that overload exists.
+        Object selector = typed
+          ? select.invoke(null, new Object[] { type, spec.simple, spec.types })
+          : select.invoke(null, new Object[] { type, spec.simple });
         Array.set(selectors, index++, selector);
       }
       Class<?> builderType = Class.forName("org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder");
@@ -426,13 +432,16 @@ public class ProbatioJacocoRun {
   }
 
   static java.lang.reflect.Method selectMethodWithTypes(Class<?> selectorsType) throws NoSuchMethodException {
+    java.lang.reflect.Method byName = null;
     for (java.lang.reflect.Method candidate : selectorsType.getMethods()) {
       if (!candidate.getName().equals("selectMethod")) continue;
       Class<?>[] params = candidate.getParameterTypes();
       if (params.length == 3 && params[0] == Class.class && params[1] == String.class && params[2].isArray() && params[2].getComponentType() == Class.class) {
         return candidate;
       }
+      if (params.length == 2 && params[0] == Class.class && params[1] == String.class) byName = candidate;
     }
+    if (byName != null) return byName;
     throw new NoSuchMethodException("selectMethod(Class, String, Class[])");
   }
 

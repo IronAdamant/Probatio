@@ -7,6 +7,8 @@ Probatio scores a test suite. It does not replace the suite, and a kill is not p
 - Do not delete a test. `mutate tally` sets `deletedTests` to 0. A test that never saw a mutant has not earned deletion. You may propose a deletion. You must not delete a file from a score.
 - Do not treat a kill as proof the change is safe. A kill means an assertion failed. Golden and contract checks are what say the expected result is still the expected result.
 - Refuse a slow unmapped suite. When the baseline is at least 5 seconds, there is no line map, and more than 30 mutants are pending, stop before the first mutant.
+- A keep id is a name the suite can collect. Rescore it with `mutate run --only-test`. Do not pass `--suite-command` for that rescore. `::command` is not a test id.
+- Do not restore a hidden test. If a sealed run misses, the suite did not see the bug. Leave the hidden test hidden and record the miss.
 
 A trustworthy loop, after the green baseline:
 

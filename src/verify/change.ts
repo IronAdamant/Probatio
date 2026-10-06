@@ -7,7 +7,7 @@ import { findInSource } from "../mutate/find.js"
 import { mutantId } from "../mutate/ids.js"
 import { forwardDiff, git } from "../mutate/patch.js"
 import { runMutants, type MutantResult } from "../mutate/run.js"
-import { leadSummary } from "../mutate/suite-decision.js"
+import { WHOLE_PROGRAM_TEST, leadSummary } from "../mutate/suite-decision.js"
 import { discoverSuite } from "../mutate/suites.js"
 
 export type VerifyOptions = {
@@ -115,10 +115,13 @@ export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
     other = results
       .filter((item) => item.outcome !== "killed" && item.outcome !== "survived")
       .map((item) => ({ id: item.id, outcome: item.outcome, file: byId.get(item.id)?.file ?? "", line: byId.get(item.id)?.line ?? 0 }))
-  } else {
-    notRun.push(...written)
+    const executed = executedNames(results)
+    const envelope = bodyOf(options.outDir, true, affected, ran, notRan, caught, missed, other, goldenContract, notRun, suiteCommand, executed)
+    writeFileSync(path.join(options.outDir, "verify.json"), `${JSON.stringify(envelope, null, 2)}\n`)
+    return envelope
   }
-  const envelope = bodyOf(options.outDir, true, affected, ran, notRan, caught, missed, other, goldenContract, notRun, suiteCommand)
+  notRun.push(...written)
+  const envelope = bodyOf(options.outDir, true, affected, ran, notRan, caught, missed, other, goldenContract, notRun, suiteCommand, [])
   writeFileSync(path.join(options.outDir, "verify.json"), `${JSON.stringify(envelope, null, 2)}\n`)
   return envelope
 }
@@ -135,6 +138,7 @@ function bodyOf(
   goldenContract: Array<{ file: string; row: string; fields: string[] }>,
   notRun: Located[],
   suiteCommand: string,
+  executed: string[],
 ): Envelope {
   const uncovered = other.filter((item) => item.outcome === "no coverage")
   const summary = ok
@@ -152,6 +156,8 @@ function bodyOf(
     ran,
     notRan,
     suiteCommand,
+    executed,
+    confirmed: false,
     caught,
     missed,
     other,
@@ -197,6 +203,8 @@ function fail(
     ran: extra?.ran ?? [],
     notRan: extra?.notRan ?? [],
     suiteCommand: extra?.suiteCommand ?? "",
+    executed: [],
+    confirmed: false,
     caught: [],
     missed: [],
     other: [],
@@ -207,18 +215,22 @@ function fail(
   }
 }
 
-function readOutcomes(outDir: string, ids: string[]): Array<{ id: string; outcome: string }> {
+function readOutcomes(outDir: string, ids: string[]): Array<{ id: string; outcome: string; selectedTests: string[] }> {
   const file = path.join(outDir, "results")
-  const out: Array<{ id: string; outcome: string }> = []
+  const out: Array<{ id: string; outcome: string; selectedTests: string[] }> = []
   for (const id of ids) {
     try {
       const result = JSON.parse(readFileSync(path.join(file, `${id}.json`), "utf8")) as MutantResult
-      out.push({ id, outcome: result.outcome })
+      out.push({ id, outcome: result.outcome, selectedTests: result.selectedTests ?? [] })
     } catch {
-      out.push({ id, outcome: "missing" })
+      out.push({ id, outcome: "missing", selectedTests: [] })
     }
   }
   return out
+}
+
+function executedNames(results: Array<{ selectedTests: string[] }>): string[] {
+  return [...new Set(results.flatMap((item) => item.selectedTests))].filter((name) => name.length > 0 && name !== WHOLE_PROGRAM_TEST).sort()
 }
 
 function goldenDiffs(repo: string, base: string, commit: string, files: string[]): Array<{ file: string; row: string; fields: string[] }> {

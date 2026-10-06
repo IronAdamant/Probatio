@@ -459,6 +459,9 @@ function pytestLeaf(name: string): string {
 /** Safe leaves stay on -k. Anything else is a node id, passed as an argument. */
 function pytestPlan(selection: string[]): { pattern: string | null; nodeIds: string[] | null } {
   if (selection.length === 0) return { pattern: null, nodeIds: null }
+  // A doubled keep id (file.py::tests/file.py::test_low) has more than one ::.
+  // Reducing it to the leaf would run -k test_low and still kill the mutant.
+  if (selection.some((name) => name.split("::").length > 2)) return { pattern: null, nodeIds: selection }
   const leaves = selection.map(pytestLeaf)
   if (leaves.every((leaf) => PYTEST_KEYWORD.test(leaf))) return { pattern: leaves.join(" or "), nodeIds: null }
   return { pattern: null, nodeIds: selection }
@@ -488,8 +491,9 @@ function goRunFilter(names: string[] | null, pattern: string | null): string | n
 function surefireTest(name: string): string {
   const leaf = name.split("::").pop() ?? name
   const dot = leaf.lastIndexOf(".")
-  if (dot <= 0) return leaf
-  return `${leaf.slice(0, dot)}#${leaf.slice(dot + 1)}`
+  const body = dot <= 0 ? leaf : `${leaf.slice(0, dot)}#${leaf.slice(dot + 1)}`
+  // testShut[0] collects nothing. method(Parser)[1] keeps the parameter types.
+  return body.replace(/\[[^\]]*\]$/, "")
 }
 
 function escapeRegExp(value: string): string {
@@ -1244,6 +1248,8 @@ function adapt(kind: string, pkg: string, stdout: string, stderr: string, code: 
   if (kind === "mocha") return parseMocha(stdout)
   if (kind === "make-test" || kind === "command") {
     const text = `${stdout}\n${stderr}`
+    const ctest = parseCtest(text)
+    if (ctest) return ctest
     if (/Tests run:\s*\d+/.test(text)) return parseMakeTest(text)
     if (kind === "make-test") return parseMakeTest(text)
     return exitReport(kind, code)
@@ -1348,6 +1354,28 @@ function parseMocha(stdout: string): TestReport | null {
   } catch {
     return null
   }
+}
+
+/** CTest prints `Test #N: name` and `N - name (Failed)`. Those names are the kill, not `::command`. */
+function parseCtest(text: string): TestReport | null {
+  if (!/Test #\d+:|The following tests FAILED:/.test(text)) return null
+  const names: string[] = []
+  const failed: TestReport["failed"] = []
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    const ran = /^\d+\/\d+\s+Test\s+#\d+:\s+(\S+)/.exec(line)
+    if (ran && !names.includes(ran[1])) names.push(ran[1])
+    if (ran && /\*\*\*Failed/.test(line) && !failed.some((item) => item.name === ran[1])) {
+      failed.push({ name: ran[1], file: "", line: 0 })
+    }
+    const listed = /^\d+\s+-\s+(\S+)\s+\(Failed\)/.exec(line)
+    if (listed && !failed.some((item) => item.name === listed[1])) failed.push({ name: listed[1], file: "", line: 0 })
+  }
+  if (names.length === 0 && failed.length === 0) return null
+  for (const item of failed) {
+    if (!names.includes(item.name)) names.push(item.name)
+  }
+  return { tests: names.length, pass: Math.max(names.length - failed.length, 0), fail: failed.length, failed, names }
 }
 
 function parseMakeTest(text: string): TestReport | null {

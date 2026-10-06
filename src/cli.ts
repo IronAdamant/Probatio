@@ -138,6 +138,29 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
 }
 
 async function runCommand(flags: ReturnType<typeof parseArgs>["flags"], hide: string[] | null = null): Promise<Envelope> {
+  const onlyNames = texts(flags, "only-test")
+  if (onlyNames.some((id) => id === "::command" || id.endsWith("::command"))) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "mutate.run",
+      summary: "::command is not a test id.",
+      next: "Pass a test name the suite can collect.",
+      nextCall: null,
+      killed: 0,
+    }
+  }
+  if (onlyNames.length > 0 && text(flags, "suite-command")) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "mutate.run",
+      summary: "--only-test cannot be combined with --suite-command.",
+      next: "Drop --suite-command and pass the keep ids with --only-test.",
+      nextCall: null,
+      killed: 0,
+    }
+  }
   const packageDir = path.resolve(requireText(flags, "package"))
   const patchDirs = texts(flags, "patches").map((dir) => path.resolve(dir))
   if (patchDirs.length === 0) throw new Error("--patches is required")
@@ -170,6 +193,7 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"], hide: st
     affected: bool(flags, "affected", false),
     agent: text(flags, "agent") ?? null,
     suiteCommand: text(flags, "suite-command") ?? null,
+    onlyNames: onlyNames.length > 0 ? onlyNames : null,
     historyPath: text(flags, "history") ? path.resolve(text(flags, "history") as string) : null,
     timeoutMultiple: int(flags, "timeout-multiple") ?? 5,
     timeoutFloorMs: int(flags, "timeout-floor-ms") ?? 20_000,
