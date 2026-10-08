@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/matrix.report.schema.json",
+  "title": "probatio matrix.report",
+  "description": "Reads recorded score tables. The headline is the gap list. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "matrix.report"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "rows": {
+      "type": "array"
+    },
+    "collapse": {
+      "type": "object"
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line"
+        ]
+      }
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pruning": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "advisory"
+        },
+        "deletedTests": {
+          "const": 0
+        },
+        "advice": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "deletedTests"
+      ]
+    },
+    "full": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "rows",
+      "gaps",
+      "rest",
+      "pruning",
+      "full"
+    ]
+  }
+}

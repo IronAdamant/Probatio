@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.tally.schema.json",
+  "title": "probatio mutate.tally",
+  "description": "Reads a finished run: tests to keep, tests that saw no kill in this batch, and one gap per survivor. Never deletes a test. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "mutate.tally"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "keep": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "noKillsYet": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "outcome": {
+            "const": "survived"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line",
+          "outcome"
+        ]
+      }
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pruning": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "advisory"
+        },
+        "deletedTests": {
+          "const": 0
+        },
+        "advice": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "deletedTests"
+      ]
+    },
+    "full": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "keep",
+      "noKillsYet",
+      "gaps",
+      "rest",
+      "pruning",
+      "full"
+    ]
+  }
+}

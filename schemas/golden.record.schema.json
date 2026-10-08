@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/golden.record.schema.json",
+  "title": "probatio golden.record",
+  "description": "Records the calls the unit tests make into a golden table and a replay test. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "golden.record"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hidden": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unstable": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "hidden": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unstable": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "functions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "module",
+          "rows",
+          "hidden",
+          "unstable"
+        ]
+      }
+    },
+    "written": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "commit": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "rows",
+      "hidden",
+      "unstable",
+      "modules",
+      "written",
+      "commit"
+    ]
+  }
+}

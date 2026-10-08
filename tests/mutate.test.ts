@@ -256,7 +256,7 @@ test("cli generate is one json object on stdout", () => {
     })
     assert.equal(result.status, 0, result.stderr)
     const parsed = JSON.parse(result.stdout) as { ok: boolean; schemaVersion: number; stringLiteralMutants: number; command: string }
-    assert.equal(parsed.schemaVersion, 1)
+    assert.equal(parsed.schemaVersion, 2)
     assert.equal(parsed.ok, true)
     assert.equal(parsed.command, "mutate.generate")
     assert.equal(parsed.stringLiteralMutants, 0)

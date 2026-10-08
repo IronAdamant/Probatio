@@ -32,7 +32,7 @@ test("mutate generate stops when the time budget is already spent", () => {
       mutantCount: number
       summary: string
     }
-    assert.equal(stopped.schemaVersion, 1)
+    assert.equal(stopped.schemaVersion, 2)
     assert.equal(stopped.ok, true)
     assert.equal(typeof stopped.next, "string")
     assert.equal(stopped.budgetHit, true)

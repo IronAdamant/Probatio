@@ -11,10 +11,25 @@ export type MutantPoint = {
   replacement: string
 }
 
+/**
+ * `core`: conditions, `&&`/`||`, equality, boundaries, booleans, a dropped `!`. Ids and counts are stable.
+ * `wide`: core plus arithmetic swaps, numeric constants, and a dropped call statement.
+ * More mutants per line, so a survivor or a clean batch says more, and a run costs more.
+ */
+export type OperatorSet = "core" | "wide"
+
 export type FoundMutants = {
   points: MutantPoint[]
   /** Points whose whole span sits inside a string or a comment. These are never written. */
   violations: MutantPoint[]
+}
+
+const ARITHMETIC: Record<number, { op: string; replacement: string } | undefined> = {
+  [ts.SyntaxKind.PlusToken]: { op: "add-to-sub", replacement: "-" },
+  [ts.SyntaxKind.MinusToken]: { op: "sub-to-add", replacement: "+" },
+  [ts.SyntaxKind.AsteriskToken]: { op: "mul-to-div", replacement: "/" },
+  [ts.SyntaxKind.SlashToken]: { op: "div-to-mul", replacement: "*" },
+  [ts.SyntaxKind.PercentToken]: { op: "mod-to-mul", replacement: "*" },
 }
 
 const SWAP: Record<number, { op: string; replacement: string } | undefined> = {
@@ -33,7 +48,7 @@ const SWAP: Record<number, { op: string; replacement: string } | undefined> = {
  * A condition that contains a string (`name === "x"`) is still code: the span is not
  * itself inside the string.
  */
-export function findMutants(file: string, text: string): FoundMutants {
+export function findMutants(file: string, text: string, operators: OperatorSet = "core"): FoundMutants {
   const scriptKind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind)
   const raw: MutantPoint[] = []
@@ -41,6 +56,10 @@ export function findMutants(file: string, text: string): FoundMutants {
     if (isTypePosition(node)) return
     const point = pointAt(source, file, text, node)
     if (point) raw.push(point)
+    if (operators === "wide") {
+      const extra = widePointAt(source, file, text, node)
+      if (extra) raw.push(extra)
+    }
     ts.forEachChild(node, visit)
   }
   visit(source)
@@ -100,6 +119,44 @@ function pointAt(source: ts.SourceFile, file: string, text: string, node: ts.Nod
     return make(source, file, text, start, end, "drop-not", "")
   }
   return undefined
+}
+
+/** Arithmetic, constants, and a dropped call. Only in the wide set. */
+function widePointAt(source: ts.SourceFile, file: string, text: string, node: ts.Node): MutantPoint | undefined {
+  if (ts.isBinaryExpression(node)) {
+    const swap = ARITHMETIC[node.operatorToken.kind]
+    if (!swap) return undefined
+    // `"a" + n` builds a string. Swapping it for `-` changes the type, not the arithmetic.
+    if (node.operatorToken.kind === ts.SyntaxKind.PlusToken && (stringish(node.left) || stringish(node.right))) return undefined
+    const start = node.operatorToken.getStart(source)
+    return make(source, file, text, start, node.operatorToken.getEnd(), swap.op, swap.replacement)
+  }
+  if (ts.isNumericLiteral(node) && /^\d+$/.test(node.text) && node.getText(source) === node.text) {
+    // A property name or an enum key written as a number is a name, not a value.
+    if (ts.isPropertyAssignment(node.parent) && node.parent.name === node) return undefined
+    if (ts.isEnumMember(node.parent) && node.parent.name === node) return undefined
+    const start = node.getStart(source)
+    const value = node.text
+    if (value === "0") return make(source, file, text, start, node.getEnd(), "const-zero-to-one", "1")
+    if (value === "1") return make(source, file, text, start, node.getEnd(), "const-one-to-zero", "0")
+    if (value.length <= 15) return make(source, file, text, start, node.getEnd(), "const-inc", String(Number(value) + 1))
+    return undefined
+  }
+  if (ts.isExpressionStatement(node) && ts.isBlock(node.parent)) {
+    const call = ts.isAwaitExpression(node.expression) ? node.expression.expression : node.expression
+    if (!ts.isCallExpression(call) || call.expression.kind === ts.SyntaxKind.SuperKeyword) return undefined
+    // `void 0` keeps the statement valid wherever it stands. The call and its effects are gone.
+    const start = node.expression.getStart(source)
+    return make(source, file, text, start, node.expression.getEnd(), "drop-call", "void 0")
+  }
+  return undefined
+}
+
+function stringish(node: ts.Expression): boolean {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) return true
+  if (ts.isParenthesizedExpression(node)) return stringish(node.expression)
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) return stringish(node.left) || stringish(node.right)
+  return false
 }
 
 function negate(source: ts.SourceFile, file: string, text: string, expr: ts.Expression, op: string): MutantPoint {

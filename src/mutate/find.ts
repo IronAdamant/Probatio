@@ -1,10 +1,10 @@
-import { findMutants, type FoundMutants } from "./operators.js"
+import { findMutants, type FoundMutants, type OperatorSet } from "./operators.js"
 import { findTextMutants, textKind } from "./text-operators.js"
 
 /** TypeScript stays on the TypeScript parser. Every other recognized source uses its own finder. */
-export function findInSource(file: string, text: string): FoundMutants {
-  if (textKind(file)) return findTextMutants(file, text)
-  return findMutants(file, text)
+export function findInSource(file: string, text: string, operators: OperatorSet = "core"): FoundMutants {
+  if (textKind(file)) return findTextMutants(file, text, operators)
+  return findMutants(file, text, operators)
 }
 
 export function isGeneratedSource(name: string): boolean {

@@ -61,7 +61,7 @@ test("matrix report reads the score files, headlines the gap, and does not delet
     assert.equal(second.status, 0, second.stderr)
     assert.equal(first.stdout, second.stdout)
     const report = JSON.parse(first.stdout) as MatrixReport
-    assert.equal(report.schemaVersion, 1)
+    assert.equal(report.schemaVersion, 2)
     assert.equal(report.ok, true)
     assert.equal(report.command, "matrix.report")
     const thin = report.rows.find((row) => row.set === "thin")

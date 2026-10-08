@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/status.schema.json",
+  "title": "probatio status",
+  "description": "The state PROBATIO.md is written from. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "status"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "gaps": {
+      "type": "array"
+    },
+    "decisions": {
+      "type": "array"
+    },
+    "findings": {
+      "type": "array"
+    },
+    "protectedGuards": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recentFixes": {
+      "type": "array"
+    },
+    "regressions": {
+      "type": "array"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sealedCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "gaps",
+      "decisions",
+      "findings",
+      "protectedGuards",
+      "recentFixes",
+      "regressions",
+      "rest"
+    ]
+  }
+}

@@ -8,7 +8,8 @@
     "probatio-mcp": "dist/mcp.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "schemas"
   ],
   "repository": {
     "type": "git",
@@ -20,10 +21,12 @@
     "url": "https://github.com/IronAdamant/Probatio/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && mkdir -p dist/mutate && cp src/mutate/fail-reporter.mjs src/mutate/node-coverage.mjs src/mutate/precise-lines.mjs src/mutate/child-lines.mjs src/mutate/mocha-coverage.cjs src/mutate/node-batch.mjs src/mutate/node-batch-loader.mjs src/mutate/load-failure.mjs src/mutate/py-reporter.py src/mutate/py-pytest-reporter.py src/mutate/probatio-jacoco-run.java dist/mutate/",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/mutate && cp src/mutate/fail-reporter.mjs src/mutate/node-coverage.mjs src/mutate/precise-lines.mjs src/mutate/child-lines.mjs src/mutate/mocha-coverage.cjs src/mutate/node-batch.mjs src/mutate/node-batch-loader.mjs src/mutate/load-failure.mjs src/mutate/py-reporter.py src/mutate/py-pytest-reporter.py src/mutate/probatio-jacoco-run.java dist/mutate/ && mkdir -p dist/golden && cp src/golden/recorder.mjs dist/golden/",
     "prepack": "npm run build",
     "test": "tsx --test tests/*.test.ts",
-    "probatio": "tsx src/cli.ts"
+    "probatio": "tsx src/cli.ts",
+    "prepublishOnly": "node scripts/release-check.mjs",
+    "release:check": "node scripts/release-check.mjs"
   },
   "engines": {
     "node": ">=22.6"
@@ -33,6 +36,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "ajv": "^8.17.1",
     "tsx": "^4.19.2"
   }
 }

@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.run.schema.json",
+  "title": "probatio mutate.run",
+  "description": "Scores a batch of mutants against the project's own suite. mutate sealed prints this shape too, with fixEdited and olderTestCatch. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "mutate.run"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "killed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unviable": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unviableIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "survived": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "flaky": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timeouts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "errors": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "noCoverage": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "notStarted": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "suiteCommand": {
+      "type": "string"
+    },
+    "baselineMs": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "wholeSuite": {
+            "type": "boolean"
+          },
+          "reused": {
+            "type": "boolean"
+          },
+          "cause": {
+            "enum": [
+              null,
+              "test",
+              "build"
+            ]
+          },
+          "next": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "outcome",
+          "command"
+        ]
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line"
+        ]
+      }
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "flakyIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "budgetHit": {
+      "type": "boolean"
+    },
+    "commit": {
+      "type": "string"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "kills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "cause": {
+            "enum": [
+              "test",
+              "build"
+            ]
+          },
+          "killedBy": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "next": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "file",
+                "line"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "killedBy"
+        ]
+      }
+    },
+    "full": {
+      "type": "string"
+    },
+    "fixEdited": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "olderTestCatch": {
+      "type": "boolean"
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "killed",
+      "unviable",
+      "unviableIds",
+      "survived",
+      "flaky",
+      "timeouts",
+      "errors",
+      "noCoverage",
+      "notStarted",
+      "gaps",
+      "rest",
+      "kills",
+      "commit",
+      "runId",
+      "full"
+    ]
+  }
+}

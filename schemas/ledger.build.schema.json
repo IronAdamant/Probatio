@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/ledger.build.schema.json",
+  "title": "probatio ledger.build",
+  "description": "Reverts fix commits into forward patches: the project's own memory of fixed bugs. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "ledger.build"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "clean": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hand": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "handmade": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "skipped": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "handNeeded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "commit"
+        ]
+      }
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "commit": {
+      "type": "string"
+    },
+    "full": {
+      "type": "string"
+    },
+    "historyBudgetHit": {
+      "type": "boolean"
+    },
+    "commitsScanned": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "clean",
+      "hand",
+      "handmade",
+      "skipped",
+      "handNeeded",
+      "rest",
+      "commit",
+      "full",
+      "historyBudgetHit",
+      "commitsScanned"
+    ]
+  }
+}

@@ -4,6 +4,7 @@ import { SCHEMA_VERSION, type Envelope } from "../contract.js"
 import { asTable } from "../golden/check.js"
 import { affectedTests, directImporters } from "../mutate/affected.js"
 import { findInSource } from "../mutate/find.js"
+import type { OperatorSet } from "../mutate/operators.js"
 import { mutantId } from "../mutate/ids.js"
 import { forwardDiff, git } from "../mutate/patch.js"
 import { runMutants, type MutantResult } from "../mutate/run.js"
@@ -20,6 +21,8 @@ export type VerifyOptions = {
   maxMinutes: number
   /** Caps the direct-importer names in the report. The run itself uses the line map. */
   maxTests: number | null
+  /** `core` by default. `wide` adds arithmetic, constants, and dropped calls on the changed lines. */
+  operators?: OperatorSet
   onProgress?: (line: string) => void
 }
 
@@ -58,7 +61,7 @@ export async function verifyChange(options: VerifyOptions): Promise<Envelope> {
     packageFiles.push(rel)
     const text = showFile(repo, options.commit, file)
     if (!text) continue
-    const found = findInSource(rel, text)
+    const found = findInSource(rel, text, options.operators ?? "core")
     const lineSet = new Set(lines)
     for (const point of found.points) {
       if (!lineSet.has(point.line)) continue

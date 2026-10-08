@@ -1,0 +1,66 @@
+name: self-score
+
+# Probatio scores its own suite against its own ledger: every fixed bug in ledger/ must keep the
+# outcome recorded for it in ledger/<id>.golden.json. A bug that was caught and is not caught now
+# fails this workflow. A release waits for this run to be green on the version commit (docs/releasing.md).
+
+on:
+  push:
+    branches: [main, next]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: self-score-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    name: ledger
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: install toolchains
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y python3-pytest python3-coverage gnucobol gcc clang llvm make cmake openjdk-21-jdk maven
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup component add llvm-tools-preview
+          mkdir -p "$HOME/.local/bin"
+          bindir=$(echo "$(rustc --print sysroot)"/lib/rustlib/*/bin)
+          ln -sfn "$bindir/llvm-cov" "$HOME/.local/bin/llvm-cov"
+          ln -sfn "$bindir/llvm-profdata" "$HOME/.local/bin/llvm-profdata"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: toolchain-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: toolchain-${{ runner.os }}-
+      - run: npm ci
+      - name: ledger check
+        run: |
+          set -u
+          npx tsx src/cli.ts ledger check --package . --ledger ledger --out "$RUNNER_TEMP/ledger-check" --concurrency 4 --suite-timeout-ms 5400000 --test-timeout-ms 900000 > ledger-check.json || true
+          cat ledger-check.json
+          node -e 'const body = JSON.parse(require("node:fs").readFileSync("ledger-check.json", "utf8")); if (!body.ok) { console.error(body.next); process.exit(1) }'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ledger-check
+          path: |
+            ledger-check.json
+            ${{ runner.temp }}/ledger-check/run/results
+            ${{ runner.temp }}/ledger-check/run/baseline.json
+          if-no-files-found: ignore

@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, w
 import path from "node:path"
 import { mutantId, makeRng, shuffle } from "./ids.js"
 import { findInSource, isGeneratedSource } from "./find.js"
-import type { MutantPoint } from "./operators.js"
+import type { MutantPoint, OperatorSet } from "./operators.js"
 import { forwardDiff } from "./patch.js"
 
 export type GenerateOptions = {
@@ -24,6 +24,8 @@ export type GenerateOptions = {
   commit?: string
   /** Read the checkout on disk. mutate run still scores the commit. */
   workingTree?: boolean
+  /** `core` keeps ids and counts stable. `wide` adds arithmetic, constants, and dropped calls. */
+  operators?: OperatorSet
 }
 
 export type GeneratedMutant = {
@@ -70,7 +72,7 @@ export function generateMutants(options: GenerateOptions): GenerateResult {
     source = loaded.source
     const text = loaded.text
     const rel = posix(path.relative(options.packageDir, file))
-    const found = findInSource(rel, text)
+    const found = findInSource(rel, text, options.operators ?? "core")
     violations.push(...found.violations)
     const ordered = shuffle(found.points, rng)
     const slice = options.perFile === null ? ordered.slice(options.skip) : ordered.slice(options.skip, options.skip + options.perFile)
@@ -97,7 +99,7 @@ export function generateMutants(options: GenerateOptions): GenerateResult {
   }
   writeFileSync(
     path.join(mutantsDir, "mutants.json"),
-    `${JSON.stringify({ schemaVersion: 1, seed: options.seed, mutants }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: 1, seed: options.seed, operators: options.operators ?? "core", mutants }, null, 2)}\n`,
   )
   return { mutants, violations, filesVisited, budgetHit, source }
 }
@@ -122,6 +124,8 @@ function fileText(
 
 function walkSources(dir: string, over: () => boolean): { files: string[]; stopped: boolean } {
   if (!statExists(dir)) return { files: [], stopped: false }
+  // `--src src/text.ts` mutates that one file.
+  if (statSync(dir).isFile()) return { files: isSource(path.basename(dir)) ? [dir] : [], stopped: false }
   const out: string[] = []
   let stopped = false
   const walk = (current: string) => {

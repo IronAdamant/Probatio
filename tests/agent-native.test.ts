@@ -41,7 +41,7 @@ test("unknown layout asks for a suite command and an explicit command runs", { t
   commit(dir)
   const unknown = run(dir, [])
   const unknownBody = json(unknown)
-  assert.equal(unknownBody.schemaVersion, 1)
+  assert.equal(unknownBody.schemaVersion, 2)
   assert.equal(unknownBody.ok, false)
   assert.equal(unknownBody.command, "mutate.run")
   assert.match(unknownBody.next, /suite command is unknown/i)

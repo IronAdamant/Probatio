@@ -42,8 +42,8 @@ test("mutate sealed keeps the label out of the report and hides the revealing te
     assert.equal(second.status, 0, second.stderr + second.stdout)
     const a = JSON.parse(first.stdout) as { schemaVersion: number; ok: boolean; summary: string; killed: number; survived: number }
     const b = JSON.parse(second.stdout) as { schemaVersion: number; ok: boolean; summary: string; killed: number; survived: number }
-    assert.equal(a.schemaVersion, 1)
-    assert.equal(b.schemaVersion, 1)
+    assert.equal(a.schemaVersion, 2)
+    assert.equal(b.schemaVersion, 2)
     assert.equal(a.ok, true, a.summary)
     assert.equal(a.summary, b.summary)
     assert.equal(a.killed, 0, a.summary)
@@ -114,12 +114,20 @@ test("a sealed kill by a test the fix commit edited is not called a catch by old
     assert.equal(body.olderTestCatch, false, run.stdout)
     assert.match(body.summary, /edited by the fix commit/)
     assert.equal(labelLeaked(run.stdout, readSealedLabel(labelFile)), false)
+    // Later work lands on top of the fix. --fix names the fix commit, so the check still reads its diff.
+    writeFileSync(path.join(dir, "NOTES.md"), "later work\n")
+    git(dir, ["add", "."])
+    git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "later"])
+    const later = sealed(dir, labelFile, path.join(dir, "out-later"), ["--fix", "HEAD~1"])
+    const laterBody = JSON.parse(later.stdout) as { fixEdited?: string[]; olderTestCatch?: boolean; summary: string }
+    assert.deepEqual(laterBody.fixEdited, ["tests/open.test.ts"], later.stdout)
+    assert.equal(laterBody.olderTestCatch, false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-function sealed(dir: string, label: string, out: string) {
+function sealed(dir: string, label: string, out: string, extra: string[] = []) {
   return spawnSync(
     tsx,
     [
@@ -142,6 +150,7 @@ function sealed(dir: string, label: string, out: string) {
       "--no-confirm",
       "--workers",
       "1",
+      ...extra,
     ],
     { cwd: root, encoding: "utf8" },
   )

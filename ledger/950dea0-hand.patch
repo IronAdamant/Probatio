@@ -1,0 +1,14 @@
+# probatio-mutant direction=forward meaning=apply-to-introduce-the-bug
+# probatio-ledger source=hand fix=950dea0b7f51c98144ad9cd0625391948858e001
+# Puts back comma-joined Class#method entries, which Surefire 2.12 reads as separate classes. The history revert removes surefireArg, which a test imports, so it does not build.
+--- a/src/mutate/suites.ts
++++ b/src/mutate/suites.ts
+@@ -545,7 +545,7 @@
+     }
+   }
+   return [...groups.entries()]
+-    .map(([klass, methods]) => (methods.length > 0 ? `${klass}#${methods.join("+")}` : klass))
++    .map(([klass, methods]) => (methods.length > 0 ? `${klass}#${methods.join(`,${klass}#`)}` : klass))
+     .join(",")
+ }
+ 

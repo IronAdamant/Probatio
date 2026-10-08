@@ -20,7 +20,7 @@ Each command prints one JSON object and exits 0 only when `ok` is true.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "ok": true,
   "summary": "0 no coverage, 0 survived, 1 killed, 0 flaky, 0 timed out, 0 errored, of 1 finished.",
   "next": "No survivor in this batch.",

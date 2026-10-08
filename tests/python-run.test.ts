@@ -94,7 +94,7 @@ test("mutate run keeps a Python traceback out of the baseline summary", { skip: 
   try {
     const result = launch(dir, patches, path.join(dir, "out"), process.env)
     const body = JSON.parse(result.stdout) as { ok: boolean; schemaVersion: number; summary: string; next: string; nextCall: unknown }
-    assert.equal(body.schemaVersion, 1)
+    assert.equal(body.schemaVersion, 2)
     assert.equal(body.ok, false)
     assert.equal(body.next.length > 0, true)
     assert.equal(body.nextCall, null)

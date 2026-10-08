@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -152,7 +152,7 @@ test("cli ledger build prints one json object", () => {
     })
     assert.equal(result.status, 0, result.stderr)
     const parsed = JSON.parse(result.stdout) as { ok: boolean; command: string; schemaVersion: number; clean: number }
-    assert.equal(parsed.schemaVersion, 1)
+    assert.equal(parsed.schemaVersion, 2)
     assert.equal(parsed.command, "ledger.build")
     assert.equal(parsed.ok, true)
     assert.equal(parsed.clean, 1)
@@ -187,6 +187,99 @@ test("a release commit that bumps the version is not a fix unless it says Fixes-
     const ids = readEntries(out).map((item) => item.id)
     assert.equal(ids.includes(release), false, JSON.stringify(ids))
     assert.equal(ids.includes(named), true, JSON.stringify(ids))
+  } finally {
+    rmSync(pkg, { recursive: true, force: true })
+  }
+})
+
+test("a hand-made mutant that names its fix replaces the history revert, so an unviable revert can still guard the bug", () => {
+  const pkg = repo()
+  const out = path.join(pkg, "ledger")
+  try {
+    writeFileSync(path.join(pkg, "src", "join.ts"), "export function join(a: string[]): string {\n  return a.join(\",\")\n}\n")
+    writeFileSync(path.join(pkg, "tests", "join.test.ts"), "export {}\n")
+    commitIn(pkg, "init")
+    // The fix adds a helper and its test imports it. Reverting the whole fix removes the export, so it does not build.
+    writeFileSync(path.join(pkg, "src", "join.ts"), "export function join(a: string[]): string {\n  return a.join(\"+\")\n}\nexport const SEP = \"+\"\n")
+    writeFileSync(path.join(pkg, "tests", "join.test.ts"), "import { SEP } from \"../src/join.ts\"\nexport const used = SEP\n")
+    commitIn(pkg, "Join with a plus")
+    const fix = shaOf(pkg)
+    const id = fix.slice(0, 7)
+    mkdirSync(out)
+    // The hand mutant keeps the export and puts the old behaviour back.
+    writeFileSync(
+      path.join(out, `${id}-hand.patch`),
+      [
+        "# probatio-mutant direction=forward meaning=apply-to-introduce-the-bug",
+        `# probatio-ledger source=hand fix=${fix}`,
+        "--- a/src/join.ts",
+        "+++ b/src/join.ts",
+        "@@ -1,3 +1,3 @@",
+        " export function join(a: string[]): string {",
+        '-  return a.join("+")',
+        '+  return a.join(",")',
+        " }",
+        "",
+      ].join("\n"),
+    )
+    const tsx = path.join(root, "node_modules", ".bin", "tsx")
+    const result = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300"], { cwd: root, encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    const entryFor = readEntries(out).find((item) => item.id === id)
+    assert.equal(entryFor?.status, "handmade", JSON.stringify(readEntries(out)))
+    assert.equal(entryFor?.patch, `${id}-hand.patch`)
+    assert.equal(existsSync(path.join(out, `${id}.patch`)), false, "the history revert is not written beside the hand mutant")
+  } finally {
+    rmSync(pkg, { recursive: true, force: true })
+  }
+})
+
+test("ledger check fails when a caught ledger bug stops being caught, and re-recording needs a reason", { timeout: 300_000 }, () => {
+  const pkg = repo()
+  const out = path.join(pkg, "ledger")
+  const tsx = path.join(root, "node_modules", ".bin", "tsx")
+  const cli = (args: string[]) => {
+    const result = spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8", timeout: 280_000 })
+    return JSON.parse(result.stdout) as { ok: boolean; summary: string; next: string; regressed?: string[]; unrecorded?: string[]; caught?: number }
+  }
+  try {
+    writeFileSync(path.join(pkg, "package.json"), '{ "type": "module" }\n')
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n >= 0\n}\n")
+    writeFileSync(path.join(pkg, "tests", "gate.test.ts"), 'import test from "node:test"\ntest("placeholder", () => {})\n')
+    commitIn(pkg, "init")
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n > 0\n}\n")
+    const guard = 'import assert from "node:assert/strict"\nimport test from "node:test"\nimport { gate } from "../src/gate.ts"\ntest("zero stays shut", () => {\n  assert.equal(gate(0), false)\n})\n'
+    writeFileSync(path.join(pkg, "tests", "gate.test.ts"), guard)
+    commitIn(pkg, "Keep zero shut\n\nFixes-bug: zero opened the gate")
+    const id = shaOf(pkg).slice(0, 7)
+    const built = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out], { cwd: root, encoding: "utf8" })
+    assert.equal(built.status, 0, built.stdout)
+    commitIn(pkg, "ledger")
+    const check = (extra: string[] = []) => cli(["ledger", "check", "--package", pkg, "--out", path.join(pkg, ".check"), ...extra])
+
+    const first = check()
+    assert.equal(first.ok, false, "an outcome with no golden is not a pass")
+    assert.deepEqual(first.unrecorded, [id])
+    const recorded = check(["--update"])
+    assert.equal(recorded.ok, true, recorded.summary)
+    assert.ok(existsSync(path.join(out, `${id}.golden.json`)))
+    commitIn(pkg, "record ledger goldens")
+    const held = check()
+    assert.equal(held.ok, true, held.summary)
+    assert.equal(held.caught, 1)
+
+    // Someone weakens the guard. The ledger bug is back in reach of the suite.
+    writeFileSync(path.join(pkg, "tests", "gate.test.ts"), 'import test from "node:test"\nimport { gate } from "../src/gate.ts"\ntest("zero stays shut", () => {\n  gate(0)\n})\n')
+    commitIn(pkg, "Simplify a test")
+    const broke = check()
+    assert.equal(broke.ok, false, broke.summary)
+    assert.deepEqual(broke.regressed, [id])
+    assert.match(broke.next, /Find the test that stopped guarding it/)
+    const silent = check(["--update"])
+    assert.equal(silent.ok, false, "a regression is not re-recorded without a reason")
+    assert.match(readFileSync(path.join(out, `${id}.golden.json`), "utf8"), /"outcome": "killed"/)
+    const reasoned = check(["--update", "--message", `Golden-Change: ${id}: the guard moved to an integration test`])
+    assert.equal(reasoned.ok, true, reasoned.summary)
   } finally {
     rmSync(pkg, { recursive: true, force: true })
   }

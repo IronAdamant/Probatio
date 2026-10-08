@@ -79,7 +79,7 @@ function oneObject(stdout: string) {
   for (const key of ["schemaVersion", "ok", "command", "summary", "next", "nextCall"]) {
     assert.equal(Object.prototype.hasOwnProperty.call(body, key), true, key)
   }
-  assert.equal(body.schemaVersion, 1)
+  assert.equal(body.schemaVersion, 2)
   return body
 }
 

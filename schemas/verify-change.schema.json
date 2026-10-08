@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/verify-change.schema.json",
+  "title": "probatio verify-change",
+  "description": "Mutates the changed lines and reports caught, missed, and not run. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "verify-change"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "affected": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ran": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notRan": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "executed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "caught": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line"
+        ]
+      }
+    },
+    "missed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line"
+        ]
+      }
+    },
+    "other": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "outcome"
+        ]
+      }
+    },
+    "notRun": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line"
+        ]
+      }
+    },
+    "goldenContract": {
+      "type": "array"
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "suiteCommand": {
+      "type": "string"
+    },
+    "confirmed": {
+      "type": "boolean"
+    },
+    "operators": {
+      "enum": [
+        "core",
+        "wide"
+      ]
+    },
+    "full": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "affected",
+      "ran",
+      "caught",
+      "missed",
+      "other",
+      "notRun",
+      "goldenContract",
+      "rest",
+      "operators"
+    ]
+  }
+}

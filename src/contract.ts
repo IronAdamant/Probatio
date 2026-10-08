@@ -1,6 +1,7 @@
 import { homedir } from "node:os"
 
-export const SCHEMA_VERSION = 1
+/** Bumped when a field is renamed, removed, or changes meaning. 2: `drop` became `noKillsYet`, and a compile or link failure became `unviable`, not `killed`. */
+export const SCHEMA_VERSION = 2
 
 export type NextCall = { argv: string[] } | null
 

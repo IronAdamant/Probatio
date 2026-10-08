@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.generate.schema.json",
+  "title": "probatio mutate.generate",
+  "description": "Writes operator mutants as forward patches. Strings and comments are never mutated. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "mutate.generate"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "mutantCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "operators": {
+      "enum": [
+        "core",
+        "wide"
+      ]
+    },
+    "stringLiteralMutants": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "filesVisited": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "budgetHit": {
+      "type": "boolean"
+    },
+    "mutants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "line",
+          "op"
+        ]
+      }
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "full": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "mutantCount",
+      "operators",
+      "stringLiteralMutants",
+      "filesVisited",
+      "budgetHit",
+      "mutants",
+      "rest",
+      "full"
+    ]
+  }
+}

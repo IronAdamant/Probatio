@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import path from "node:path"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { SCHEMA_VERSION, render, type Envelope } from "./contract.js"
 import { bool, int, parseArgs, requireText, text, texts, type FlagValue } from "./flags.js"
 import { asTable, checkGolden, goldenShape, readGolden, writeGolden } from "./golden/check.js"
+import { compareGoldens, recordGoldens } from "./golden/record.js"
 import { buildLedger } from "./ledger/build.js"
+import { checkLedger } from "./ledger/check.js"
 import { readKills, reportMatrix } from "./matrix/report.js"
 import {
   appendFinding,
@@ -24,6 +27,7 @@ import {
 } from "./memory/state.js"
 import { git } from "./mutate/patch.js"
 import { generateMutants } from "./mutate/generate.js"
+import type { OperatorSet } from "./mutate/operators.js"
 import { runMutants } from "./mutate/run.js"
 import { fixEditedKillers, LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel, sealedTreeLeaked } from "./mutate/sealed.js"
 import { generateNext } from "./mutate/suite-decision.js"
@@ -60,8 +64,11 @@ if (group === "mcp" && !action) {
   if (group === "mutate" && action === "sealed") finish(await sealedCommand(parsed.flags), parsed.human)
   if (group === "mutate" && action === "tally") finish(tallyCommand(parsed.flags), parsed.human)
   if (group === "ledger" && action === "build") finish(await ledgerCommand(parsed.flags), parsed.human)
+  if (group === "ledger" && action === "check") finish(await ledgerCheckCommand(parsed.flags), parsed.human)
   if (group === "matrix" && action === "report") finish(matrixCommand(parsed.flags), parsed.human)
   if (group === "golden" && action === "check") finish(goldenCommand(parsed.flags), parsed.human)
+  if (group === "golden" && action === "record") finish(await goldenRecordCommand(parsed.flags), parsed.human)
+  if (group === "golden" && action === "compare") finish(await goldenCompareCommand(parsed.flags), parsed.human)
   if (group === "gap" && action === "fix") finish(gapFixCommand(parsed.flags), parsed.human)
   if (group === "gap" && action === "revert") finish(gapRevertCommand(parsed.flags), parsed.human)
   if (group === "guard" && action === "check") finish(guardCommand(parsed.flags), parsed.human)
@@ -73,7 +80,8 @@ if (group === "mcp" && !action) {
   if (group === "queue" && action === "reap") finish(queueReapCommand(parsed.flags), parsed.human)
   if (group === "check-kill") finish(await checkKillCommand(parsed.flags, action), parsed.human)
   if (group === "verify-change") finish(await verifyCommand(parsed.flags), parsed.human)
-  finish(usage(false, "Use mutate, ledger, matrix, golden, gap, guard, findings, status, queue, check-kill, or verify-change."), parsed.human)
+  if (group === "schema") finish(schemaCommand(action), parsed.human)
+  finish(usage(false, "Use mutate, ledger, matrix, golden, gap, guard, findings, status, queue, check-kill, verify-change, or schema."), parsed.human)
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
   finish(
@@ -116,6 +124,7 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
     skipFiles: texts(flags, "skip-file"),
     commit: text(flags, "commit") ?? "HEAD",
     workingTree: bool(flags, "working-tree", false),
+    operators: operatorSet(flags),
   })
   if (result.error) {
     return {
@@ -163,6 +172,7 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
         ? null
         : { argv: ["mutate", "run", "--package", packageDir, "--patches", patches, "--out", path.join(outDir, "runs")] },
     mutantCount: result.mutants.length,
+    operators: operatorSet(flags),
     stringLiteralMutants: 0,
     filesVisited: result.filesVisited,
     budgetHit: result.budgetHit,
@@ -294,7 +304,12 @@ async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
   const packageDir = path.resolve(requireText(flags, "package"))
   const repoDir = path.resolve(text(flags, "repo") ?? gitRoot(packageDir))
   const kills = Array.isArray(report.kills) ? (report.kills as Array<{ killedBy: string[] }>) : []
-  const commit = typeof report.commit === "string" ? report.commit : ""
+  // The fix commit is the scored commit unless --fix names an earlier one (new tests landed on top of it).
+  const scored = typeof report.commit === "string" ? report.commit : ""
+  const fixRef = text(flags, "fix")
+  const fixSha = fixRef ? git(repoDir, ["rev-parse", "--verify", `${fixRef}^{commit}`]) : null
+  if (fixSha && fixSha.status !== 0) throw new Error(`--fix ${fixRef} does not resolve`)
+  const commit = fixSha ? fixSha.stdout.trim() : scored
   const edited = report.ok && commit ? fixEditedKillers(repoDir, packageDir, commit, hide, kills) : { files: [], olderTestCatch: false }
   const fromFix = kills.length > 0 && !edited.olderTestCatch
   const judged: Envelope = {
@@ -584,9 +599,56 @@ async function checkKillCommand(flags: ReturnType<typeof parseArgs>["flags"], id
   })
 }
 
+async function ledgerCheckCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
+  const packageDir = path.resolve(requireText(flags, "package"))
+  return checkLedger({
+    packageDir,
+    repoDir: path.resolve(text(flags, "repo") ?? gitRoot(packageDir)),
+    commit: text(flags, "commit") ?? "HEAD",
+    ledgerDir: path.resolve(packageDir, text(flags, "ledger") ?? "ledger"),
+    outDir: path.resolve(requireText(flags, "out")),
+    update: bool(flags, "update", false),
+    message: text(flags, "message") ?? "",
+    concurrency: int(flags, "concurrency") ?? 3,
+    suiteTimeoutMs: int(flags, "suite-timeout-ms") ?? 600_000,
+    testTimeoutMs: int(flags, "test-timeout-ms") ?? 60_000,
+    onProgress: (line) => process.stderr.write(`${line}\n`),
+  })
+}
+
+async function goldenRecordCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
+  const packageDir = path.resolve(requireText(flags, "package"))
+  return recordGoldens({
+    packageDir,
+    repoDir: path.resolve(text(flags, "repo") ?? gitRoot(packageDir)),
+    commit: text(flags, "commit") ?? "HEAD",
+    modules: texts(flags, "module"),
+    tests: texts(flags, "tests"),
+    outDir: text(flags, "dir") ?? "tests/golden",
+    timeoutMs: int(flags, "suite-timeout-ms") ?? 600_000,
+  })
+}
+
+async function goldenCompareCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
+  const packageDir = path.resolve(requireText(flags, "package"))
+  return compareGoldens({
+    packageDir,
+    repoDir: path.resolve(text(flags, "repo") ?? gitRoot(packageDir)),
+    commit: text(flags, "commit") ?? "HEAD",
+    modules: texts(flags, "module"),
+    tests: texts(flags, "tests"),
+    golden: texts(flags, "golden"),
+    outDir: path.resolve(requireText(flags, "out")),
+    operators: operatorSet(flags),
+    timeoutMs: int(flags, "suite-timeout-ms") ?? 600_000,
+    onProgress: (line) => process.stderr.write(`${line}\n`),
+  })
+}
+
 async function verifyCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
   const packageDir = path.resolve(requireText(flags, "package"))
-  return verifyChange({
+  const operators = operatorSet(flags)
+  const envelope = await verifyChange({
     packageDir,
     repoDir: path.resolve(text(flags, "repo") ?? gitRoot(packageDir)),
     outDir: path.resolve(requireText(flags, "out")),
@@ -595,8 +657,57 @@ async function verifyCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
     maxMutants: int(flags, "max-mutants") ?? 4,
     maxMinutes: int(flags, "max-minutes") ?? 3,
     maxTests: int(flags, "max-tests") ?? null,
+    operators,
     onProgress: (line) => process.stderr.write(`${line}\n`),
   })
+  return { ...envelope, operators }
+}
+
+/** `--operators core` (default) or `--operators wide`. Anything else is a usage error, not a silent default. */
+function operatorSet(flags: ReturnType<typeof parseArgs>["flags"]): OperatorSet {
+  const value = text(flags, "operators") ?? "core"
+  if (value !== "core" && value !== "wide") throw new Error("--operators must be core or wide")
+  return value
+}
+
+/** The published JSON Schema of one command's output. MCP-only agents read the contract this way. */
+function schemaCommand(name: string | undefined): Envelope {
+  const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "schemas")
+  const commands = existsSync(dir)
+    ? readdirSync(dir).filter((file) => file.endsWith(".schema.json")).map((file) => file.slice(0, -".schema.json".length)).sort()
+    : []
+  if (!name) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: commands.length > 0,
+      command: "schema",
+      summary: `${commands.length} commands have a published schema.`,
+      next: "Pass one name, for example: probatio schema mutate.run",
+      nextCall: null,
+      commands,
+    }
+  }
+  if (!commands.includes(name)) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "schema",
+      summary: `No schema named ${name}.`,
+      next: `Use one of: ${commands.join(", ")}.`,
+      nextCall: null,
+      commands,
+    }
+  }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    ok: true,
+    command: "schema",
+    summary: `JSON Schema for ${name}, schemaVersion ${SCHEMA_VERSION}.`,
+    next: "Validate a command's stdout against it. A new field does not change schemaVersion. A renamed or removed one does.",
+    nextCall: null,
+    commands,
+    schema: JSON.parse(readFileSync(path.join(dir, `${name}.schema.json`), "utf8")) as unknown,
+  }
 }
 
 function gitRoot(cwd: string): string {

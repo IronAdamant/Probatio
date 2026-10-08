@@ -997,7 +997,7 @@ function loadRun(options: RunOptions, commit: string): { id: string } | { error:
   return { id }
 }
 
-async function createWorktrees(
+export async function createWorktrees(
   repo: string,
   packageDir: string,
   runId: string,
@@ -1070,7 +1070,7 @@ export function probatioWorktreeDir(dir: string): boolean {
   return /^probatio-[0-9a-f]+-\d+$/.test(path.basename(resolved))
 }
 
-function removeWorktrees(repo: string, dirs: string[], outDir: string): void {
+export function removeWorktrees(repo: string, dirs: string[], outDir: string): void {
   for (const dir of dirs) {
     if (!probatioWorktreeDir(dir)) continue
     git(repo, ["worktree", "remove", "--force", dir])
@@ -1153,7 +1153,7 @@ function findNodeModules(root: string): string[] {
   return out
 }
 
-function packageIn(worktree: string, repo: string, packageDir: string): string {
+export function packageIn(worktree: string, repo: string, packageDir: string): string {
   const rel = path.relative(repo, packageDir)
   return rel && !rel.startsWith("..") ? path.join(worktree, rel) : worktree
 }
@@ -1508,7 +1508,9 @@ function pytestNodeId(name: string): boolean {
 }
 
 function testArg(pkg: string, file: string, testsDir: string): string {
-  const rel = path.relative(pkg, file)
+  // Compare real paths. A report can name /private/var while the package is /var on macOS, and the
+  // basename fallback below would then rerun tests/<name> instead of tests/unit/<name>.
+  const rel = path.relative(realOrSame(pkg), realOrSame(path.resolve(pkg, file)))
   if (rel && !rel.startsWith("..")) return rel.split(path.sep).join("/")
   return path.join(testsDir, path.basename(file))
 }

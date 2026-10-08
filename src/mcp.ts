@@ -9,7 +9,7 @@ const tooOld = nodeTooOld(process.versions.node)
 if (tooOld) {
   process.stdout.write(
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       ok: false,
       command: "mcp",
       summary: tooOld,

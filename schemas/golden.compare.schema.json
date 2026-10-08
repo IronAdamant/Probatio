@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/golden.compare.schema.json",
+  "title": "probatio golden.compare",
+  "description": "Scores the same mutants with only the unit tests and with only the golden replay. Nothing is deleted. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "golden.compare"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "operators": {
+      "enum": [
+        "core",
+        "wide"
+      ]
+    },
+    "unitKills": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "goldenKills": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "both": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unitOnly": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "goldenOnly": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rest": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unit": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "full": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "golden": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "full": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "pruning": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "advisory"
+        },
+        "deletedTests": {
+          "const": 0
+        }
+      },
+      "required": [
+        "mode",
+        "deletedTests"
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "operators",
+      "unitKills",
+      "goldenKills",
+      "both",
+      "unitOnly",
+      "goldenOnly",
+      "rest",
+      "unit",
+      "golden",
+      "pruning"
+    ]
+  }
+}

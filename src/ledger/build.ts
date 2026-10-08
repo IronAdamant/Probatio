@@ -86,6 +86,13 @@ export function buildLedger(options: LedgerOptions): LedgerReport {
         if ("error" in work) return fail(outDir, commit, work.error)
         workDir = work.dir
       }
+      // A hand-made mutant that names this fix wins over the history revert. The revert can be
+      // unviable (it removes an export a test imports), and the hand mutant keeps the API.
+      const named = disk.find((item) => item.kind === "hand" && item.fix === candidate.commit)
+      if (named && handmadeApplies(workDir, named.raw)) {
+        entries.push({ ...entry(candidate, id, "handmade", filesInDiff(named.raw)), patch: `${named.id}.patch` })
+        continue
+      }
       const applied = git(workDir, ["apply", "--check", "--whitespace=nowarn", "-"], bugDiff)
       if (applied.status === 0) {
         bodies.set(id, historyPatch(candidate.commit, bugDiff))

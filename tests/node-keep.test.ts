@@ -228,3 +228,28 @@ test("a link or parse error is static, and a SyntaxError thrown by running code 
   assert.equal(staticLoadFailure(running), false)
   assert.equal(staticLoadFailure("Error: boom at load\n    at file:///repo/tests/d.test.ts:2:7\n"), false)
 })
+
+test("a kill in a nested test folder is confirmed against that file, not a flattened path", { timeout: 180_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-node-nested-"))
+  try {
+    const before = "export function gate(n: number): boolean {\n  return n > 0\n}\n"
+    mkdirSync(path.join(dir, "src"))
+    mkdirSync(path.join(dir, "tests", "unit"), { recursive: true })
+    mkdirSync(path.join(dir, "patches"))
+    writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
+    writeFileSync(path.join(dir, "src", "gate.ts"), before)
+    writeFileSync(
+      path.join(dir, "tests", "unit", "gate.test.ts"),
+      'import assert from "node:assert/strict"\nimport test from "node:test"\nimport { gate } from "../../src/gate.ts"\ntest("zero stays shut", () => {\n  assert.equal(gate(0), false)\n})\n',
+    )
+    commit(dir)
+    writeFileSync(path.join(dir, "patches", "m-ge.patch"), forwardDiff("src/gate.ts", before, before.replace("n > 0", "n >= 0")))
+    const body = JSON.parse(
+      cli(["mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, "out"), "--no-build", "--workers", "1"]).stdout,
+    ) as RunBody & { flaky?: number; commands?: Array<{ command: string }> }
+    assert.equal(body.killed, 1, `${body.summary} ${body.commands?.[0]?.command}`)
+    assert.equal(body.flaky ?? 0, 0, body.summary)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

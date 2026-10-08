@@ -39,7 +39,7 @@ test("mutate run and tally keep the envelope keys and scrub a home path", { time
     for (const key of ["schemaVersion", "ok", "command", "summary", "next", "nextCall"]) {
       assert.equal(Object.prototype.hasOwnProperty.call(body, key), true, key)
     }
-    assert.equal(body.schemaVersion, 1)
+    assert.equal(body.schemaVersion, 2)
     assert.equal(body.ok, true, body.summary)
     assert.equal(body.killed, 1, body.summary)
     assert.ok((body.kills?.[0]?.killedBy ?? []).length > 0)

@@ -1,5 +1,5 @@
 import path from "node:path"
-import type { FoundMutants, MutantPoint } from "./operators.js"
+import type { FoundMutants, MutantPoint, OperatorSet } from "./operators.js"
 
 type Kind =
   | "c"
@@ -125,7 +125,7 @@ export function textKind(file: string): Kind | null {
  * Operator mutants for one non-TypeScript source. Strings and comments are skipped
  * before a point is proposed, so a `/*`, `*>`, or `#` inside a string cannot hide later code.
  */
-export function findTextMutants(file: string, text: string): FoundMutants {
+export function findTextMutants(file: string, text: string, operators: OperatorSet = "core"): FoundMutants {
   const kind = resolveKind(file, text)
   if (!kind) return { points: [], violations: [] }
   const code = codeMask(text, kind)
@@ -138,7 +138,7 @@ export function findTextMutants(file: string, text: string): FoundMutants {
       index += 1
       continue
     }
-    const match = code[index] ? matchAt(text, index, code, kind) : null
+    const match = code[index] ? matchAt(text, index, code, kind) ?? (operators === "wide" ? wideAt(text, index, code, kind) : null) : null
     if (!match) {
       index += 1
       continue
@@ -167,6 +167,43 @@ function matchAt(text: string, index: number, code: Uint8Array, kind: Kind): Op 
     return op
   }
   return null
+}
+
+const ARITHMETIC: Op[] = [
+  { original: "+", op: "add-to-sub", replacement: "-" },
+  { original: "-", op: "sub-to-add", replacement: "+" },
+  { original: "*", op: "mul-to-div", replacement: "/" },
+  { original: "/", op: "div-to-mul", replacement: "*" },
+  { original: "%", op: "mod-to-mul", replacement: "*" },
+]
+
+/**
+ * Wide set for text languages: spaced arithmetic and integer constants. No statement deletion here:
+ * without a parser, a removed line can be half of a statement. COBOL and assembly are left out,
+ * because a COBOL level number or an assembler immediate is not a value the program computes.
+ */
+function wideAt(text: string, index: number, code: Uint8Array, kind: Kind): Op | null {
+  if (kind === "cobol" || kind.startsWith("asm-")) return null
+  const prev = text[index - 1] ?? ""
+  const next = text[index + 1] ?? ""
+  for (const op of ARITHMETIC) {
+    if (text[index] !== op.original) continue
+    // Spaced on both sides, the way a binary operator is written. That leaves `++`, `+=`, `->`,
+    // `//`, `**`, unary minus, and most pointer stars alone.
+    if (!(/[ \t]/.test(prev) && /[ \t]/.test(next))) return null
+    const before = text.slice(0, index).trimEnd().slice(-1)
+    if (before === "" || /[=(,[{:?!<>&|+\-*/%^~]/.test(before)) return null
+    return spanIsCode(code, index, 1) ? op : null
+  }
+  if (!/[0-9]/.test(text[index]) || /[A-Za-z0-9_.$#]/.test(prev)) return null
+  const digits = /^[0-9]+/.exec(text.slice(index, index + 20))?.[0] ?? ""
+  // A hex, binary, float, exponent, or suffixed literal (`0x10`, `1.5`, `1e5`, `1u32`) is left alone.
+  if (!digits || /[A-Za-z0-9_.]/.test(text[index + digits.length] ?? "")) return null
+  if (!spanIsCode(code, index, digits.length)) return null
+  if (digits === "0") return { original: "0", op: "const-zero-to-one", replacement: "1" }
+  if (digits === "1") return { original: "1", op: "const-one-to-zero", replacement: "0" }
+  if (digits.length > 15 || digits.startsWith("0")) return null
+  return { original: digits, op: "const-inc", replacement: String(Number(digits) + 1) }
 }
 
 function resolveKind(file: string, text: string): Kind | null {
