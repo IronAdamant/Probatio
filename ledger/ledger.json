@@ -1,7 +1,18 @@
 {
-  "commit": "4c5f205a35a847871d66976c865d41673473955d",
+  "commit": "bc1228d8d02d07ec26b36f6b7b16febd71b9a5da",
   "package": ".",
   "entries": [
+    {
+      "id": "bc1228d",
+      "commit": "bc1228d8d02d07ec26b36f6b7b16febd71b9a5da",
+      "date": "2026-10-08T16:31:34+11:00",
+      "subject": "Add ledger check, golden record and compare, wide operators, published schemas, and a release gate.",
+      "fixer": "human",
+      "status": "skipped",
+      "lines": 921,
+      "files": [],
+      "reason": "src diff is 921 lines, over the 300 line cap"
+    },
     {
       "id": "4c5f205",
       "commit": "4c5f205a35a847871d66976c865d41673473955d",
@@ -19,15 +30,15 @@
       "date": "2026-10-06T20:04:17+11:00",
       "subject": "Join Surefire methods of one class with a plus.",
       "fixer": "human",
-      "status": "clean",
+      "status": "handmade",
       "lines": 23,
       "files": [
         {
           "file": "src/mutate/suites.ts",
-          "line": 419
+          "line": 545
         }
       ],
-      "patch": "950dea0.patch"
+      "patch": "950dea0-hand.patch"
     },
     {
       "id": "38c6f42",
