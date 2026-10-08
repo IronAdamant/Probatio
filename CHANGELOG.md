@@ -4,6 +4,27 @@ Versions on npm, newest first. `0.1.1` was committed and was not published. Git 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## Unreleased
+
+Not on npm. Read before upgrading an agent:
+
+- `schemaVersion` is 2. 0.2.0 renamed `drop` to `noKillsYet` and moved compile and link failures from `killed` to `unviable` without bumping it. Every envelope now says 2.
+- `schemas/` has one JSON Schema per command, shipped in the package, and `probatio schema <command>` prints one. A new field does not change `schemaVersion`. A renamed or removed one does.
+
+Added:
+
+- `ledger check`: runs every ledger bug against the suite and compares each outcome with `ledger/<id>.golden.json`. A caught bug that is no longer caught fails it. Re-recording a changed outcome needs `Golden-Change: <id>: <why>`.
+- `.github/workflows/self-score.yml`: Probatio runs `ledger check` on its own ledger on every push to `main` and nightly.
+- A hand-made ledger mutant whose header names its fix (`source=hand fix=<commit>`) replaces that fix's history revert. Probatio's own `950dea0` revert did not build, and its hand-made mutant keeps `surefireArg`.
+- `golden record`: records the plain-data calls a module's unit tests make into a golden table and a self-contained replay test. `golden compare`: scores the same mutants with only the unit tests and with only the replay. Nothing is deleted.
+- `--operators wide` on `generate`, `verify-change`, and `golden compare`: arithmetic, integer constants, and in TypeScript a dropped call. `core` stays the default, so earlier ids and counts do not move.
+- `mutate sealed --fix <commit>`: the fix commit whose diff the fix-edited check reads, when later commits sit on top of it.
+- `scripts/release-check.mjs` runs as `prepublishOnly`. `npm publish` needs a clean `main`, a CHANGELOG entry, a pushed `v<version>` tag on HEAD, and green `test` and `self-score` runs on that commit. See `docs/releasing.md`.
+
+Fixed:
+
+- A kill in a nested test folder (`tests/unit/x.test.ts`) was confirmed against `tests/x.test.ts` on macOS, because `/var` and `/private/var` did not compare equal, so it read as flaky. Confirm now compares real paths.
+
 ## 0.2.0
 
 - Published 2026-10-08. gitHead `405d15bb2ab1421cebc2295c828916f3c48d4f94`.

@@ -2,11 +2,9 @@
   "rows": {
     "950dea0": {
       "ok": true,
-      "outcome": "unviable",
-      "reason": "Did not build: the reverted fix removes surefireArg, which tests/surefire-attr.test.ts imports. No test checks the behaviour; the next step is a hand-made mutant that keeps the export.",
-      "summary": "0 no coverage, 1 survived, 1 killed, 1 did not build, 0 flaky, 0 timed out, 0 errored, of 3 finished.",
-      "nextCall": null,
-      "next": "The mutant did not build. No test saw it, so it is not a kill and not a gap. No test is needed."
+      "outcome": "killed",
+      "reason": "A test the suite already had caught this ledger bug.",
+      "next": "Killed by tests/surefire-attr.test.ts::surefire joins methods of one class with a plus."
     }
   }
 }

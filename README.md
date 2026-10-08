@@ -28,6 +28,8 @@ Each command prints one JSON object and exits 0 only when `ok` is true.
 }
 ```
 
+Every command's output has a JSON Schema in [schemas/](schemas/), and `probatio schema <command>` prints it. `schemaVersion` is 2. It changes when a field is renamed, removed, or changes meaning, and a new field does not change it.
+
 Agents changing this repo should read [AGENTS.md](AGENTS.md). The MCP server is `probatio mcp`. Snippets are in the MCP section below. People building Probatio should read [docs/builders.md](docs/builders.md). Small suites live in [examples/](examples/).
 
 ## Status
@@ -66,9 +68,9 @@ The CSV-271 kill came from `CSVFormatTest.testFormatThrowsNullPointerException`.
 Known limits:
 
 - The sealed list (`seal`) is a plain id list in the state dir. An agent that can read that directory can see it. Keep the state dir and every `mutate sealed` label file outside the workspace of the agents being scored.
-- `mutate sealed` checks whether the fix commit edited the killing test (`fixEdited`, `olderTestCatch`). It matches a kill to a file by path, class name, or a test name written in that file. A test renamed by the fix can slip past that match.
+- `mutate sealed` checks whether the fix commit edited the killing test (`fixEdited`, `olderTestCatch`). The fix commit is the scored commit, or `--fix <commit>` when later work sits on top of it. It matches a kill to a file by path, class name, or a test name written in that file. A test renamed by the fix can slip past that match.
 - The Java line map comes from JaCoCo, which does not count a line as executed when a call on that line throws. A test that reaches a line only through an exception is not selected for it, so a mutant there can survive a test that would fail. On Commons CSV-271 the map leaves out `testFormatThrowsNullPointerException` at `CSVPrinter.java:284`, and the sealed run reports survived.
-- The operator set is small: condition swaps, relational swaps, booleans, a dropped `!`. No arithmetic, statement deletion, or constants.
+- The default operator set (`core`) is small: condition swaps, relational swaps, booleans, a dropped `!`. `--operators wide` adds arithmetic, integer constants, and (TypeScript only) a dropped call statement, so a clean batch means more. A summary says which set ran.
 
 The package version in this repository is in `package.json`. The npm badge above is the published version.
 
@@ -81,6 +83,8 @@ npx probatio mutate generate --package . --out .probatio/generate
 npx probatio mutate run --package . --patches .probatio/generate/mutants --out .probatio/runs
 npx probatio mutate tally --out .probatio/runs
 ```
+
+`--operators wide` (on `generate`, `verify-change`, and `golden compare`) adds arithmetic swaps (`+`/`-`, `*`/`/`, `%`), integer constants (`0`→`1`, `1`→`0`, `n`→`n+1`), and in TypeScript a dropped call statement (`log(x)` becomes `void 0`). Text languages need the operator spaced on both sides, so `++`, `+=`, `->`, `//`, `**`, unary minus, and pointer stars are left alone, and hex, float, and suffixed literals are not constants. COBOL and assembly get no wide operators. `core` is the default, so ids and counts from earlier runs do not move. `mutants.json` records the set.
 
 `generate` writes operator mutants (conditions, `&&`/`||`, `===`/`!==`, boundaries, booleans, a dropped `!`). The same class is written for COBOL (`.cob`, `.cbl`), Rust, C, C++, Java, Go, Python, JavaScript, and C#. Strings and comments are not mutated. A COBOL `*>` comment and a fixed-format line whose column 7 is `*` or `/` are comments. Each patch is forward: apply it to introduce the bug, and the file says so. When mutants were written, `next` states the count, the suite command if one was discovered, and whether the first run collects a line map.
 
@@ -118,6 +122,14 @@ npx probatio ledger build --package . --commit HEAD --out .probatio/ledger
 
 A fix commit has a `Fixes-bug:` trailer, or it changes both `src` and a test. A commit that changes the version in `package.json`, `Cargo.toml`, `pyproject.toml`, or `setup.cfg` is a release, and it is not a fix unless it has the trailer: reverting it would put back several changes, not one bug. `ledger build` reverts that commit's src diff onto the tree you name. A diff that applies is written as a forward patch (`source=history`): apply it to put the bug back. A diff that does not apply is reported, and left for a hand-made patch in the same directory (`source=hand`, `fix=<commit>`). A rebuild keeps those hand-made files. Nothing is fuzzy-applied. A src diff over `--max-lines` (default 300) is skipped. `--max-commits N` reads only the newest N non-merge commits and says when older history was not scanned. The default reads the whole history. A tree is checked out only when a fix inside that cap has to be applied.
 
+### ledger check
+
+```bash
+npx probatio ledger check --package . --ledger ledger --out .probatio/ledger-check
+```
+
+Runs every ledger bug that applies (history reverts and hand-made mutants) against the suite, with confirm on, and compares each outcome with `ledger/<id>.golden.json`. A bug that was caught and is not caught now is a regression: `ok` is false and `next` says to find the test that stopped guarding it. Any other change (a survivor now caught, a patch that no longer applies) also fails until it is re-recorded with `--update`, and a changed row needs `Golden-Change: <id>: <why>` in `--message`. A bug with no golden yet is recorded by `--update`. A hand-made mutant whose header says `source=hand fix=<commit>` replaces that fix's history revert, which is how a revert that does not build still guards its bug. Run it where the toolchain is complete: a test that skips for a missing tool can turn a kill into a survivor. This repository runs it on every push to `main` and nightly (`.github/workflows/self-score.yml`).
+
 ## matrix
 
 ```bash
@@ -133,6 +145,17 @@ npx probatio golden check --recorded table.json --actual now.json --update wordi
 ```
 
 `next` and `nextLead` are wording. `ok`, `reason`, `status`, `hostChanged`, and `nextCall` are the contract. `--update wording` re-records a changed `next` or `nextLead` and leaves the contract fields alone. A file whose case names are the top-level keys is written back in that shape. A changed `ok` or `reason` also needs `Golden-Change: <row>: <why>` in `--message`. A home path, or `ok` without a reason, fails and nothing is written.
+
+### golden record and golden compare
+
+```bash
+npx probatio golden record --package . --module src/text.ts --tests tests/text.test.ts
+npx probatio golden compare --package . --module src/text.ts --tests tests/text.test.ts --golden tests/golden/text.golden.test.ts --out .probatio/golden-compare --operators wide
+```
+
+`golden record` runs those unit tests once, in a throwaway worktree, with every exported function of the module wrapped. Each call whose arguments and result are plain data becomes a row in `tests/golden/<module>.golden.json`: the function, the arguments, and what it returned, resolved, or threw. A module that reads the clock gets the recorded instant on each row, and the replay pins it. A call with a callback, a class instance, or another hidden input is counted and left out: the tests built on it stay as code. A call that answered two ways for the same arguments is left out as unstable. Recording from a red run is refused. It also writes `tests/golden/<module>.golden.test.ts`, a node:test file that replays every row and does not import Probatio. A changed row fails. That is a behaviour change: fix the code, or re-record and review the JSON diff.
+
+`golden compare` mutates the module and scores the same mutants twice, once with only the unit tests and once with only the replay, with confirm on. It reports how many of the unit tests' kills the table also makes, and lists the mutants only the unit tests kill. When that list is empty, the table catches what those tests catch on these mutants. Replacing them is still a decision: keep any test with hidden inputs, run a sealed or ledger check, and give the reason in the commit. Nothing is deleted. Node and TypeScript ESM modules only for now.
 
 ## status
 
@@ -174,3 +197,7 @@ That block is the Claude, Cursor, and Grok shape. The tool runs the CLI and retu
 `mutate generate` reads the commit (`HEAD` unless you pass `--commit`). `--working-tree` reads the checkout on disk and says so. `mutate run` scores the commit either way.
 
 `verify-change` does not score uncommitted edits when `--base` and `--commit` are the same. A clean empty diff says `No diff-scoped mutant.`
+
+## Releases
+
+[docs/releasing.md](docs/releasing.md): green `test` and `self-score` on the version commit, a pushed `v<version>` tag, then `npm publish`. `prepublishOnly` refuses anything else.

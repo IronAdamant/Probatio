@@ -125,6 +125,7 @@ export async function checkLedger(options: LedgerCheckOptions): Promise<Envelope
   let next = "Every ledger bug has the outcome recorded for it."
   if (regressed.length > 0) next = `A fixed bug is back in reach of the suite: ${regressed[0]} was caught and is not now. Find the test that stopped guarding it.`
   else if (unauthorized.length > 0 && options.update) next = `Not written: ${unauthorized.join(", ")} changed outcome. Add Golden-Change: <id>: <why> to --message for each.`
+  else if (options.update) next = "Re-recorded. Commit the goldens with the reason for each changed outcome."
   else if (changed.length > 0 || unrecorded.length > 0) next = "Review the changed outcomes, then re-record with --update and a Golden-Change line for each changed id."
   return {
     schemaVersion: SCHEMA_VERSION,
