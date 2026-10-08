@@ -2,9 +2,9 @@
   "rows": {
     "4eda582": {
       "ok": true,
-      "outcome": "survived",
-      "reason": "The suite ran the line and did not catch this ledger bug.",
-      "next": "The suite ran the line and did not catch this ledger bug."
+      "outcome": "killed",
+      "reason": "A test the suite already had caught this ledger bug.",
+      "next": "Killed by tests/agent-native.test.ts::C LLVM coverage skips an uncovered line and runs a covered mutant from the map, tests/script-compile.test.ts::a shell suite that runs docker with a tty is wrapped for both BSD and GNU script."
     }
   }
 }
