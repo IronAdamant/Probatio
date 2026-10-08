@@ -25,7 +25,7 @@ import {
 import { git } from "./mutate/patch.js"
 import { generateMutants } from "./mutate/generate.js"
 import { runMutants } from "./mutate/run.js"
-import { LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel, sealedTreeLeaked } from "./mutate/sealed.js"
+import { fixEditedKillers, LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel, sealedTreeLeaked } from "./mutate/sealed.js"
 import { generateNext } from "./mutate/suite-decision.js"
 import { discoverSuite } from "./mutate/suites.js"
 import { tallyRun } from "./mutate/tally.js"
@@ -260,6 +260,8 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"], hide: st
     next: report.next,
     nextCall: report.ok ? resume : null,
     killed: report.killed,
+    unviable: report.unviable,
+    unviableIds: report.unviableIds,
     survived: report.survived,
     flaky: report.flaky,
     timeouts: report.timeouts,
@@ -289,8 +291,25 @@ async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
   const hide = texts(flags, "hide")
   const outDir = path.resolve(requireText(flags, "out"))
   const report = await runCommand(flags, hide)
-  const body = JSON.stringify(report)
-  if (!labelLeaked(body, label) && !sealedTreeLeaked(outDir, label)) return report
+  const packageDir = path.resolve(requireText(flags, "package"))
+  const repoDir = path.resolve(text(flags, "repo") ?? gitRoot(packageDir))
+  const kills = Array.isArray(report.kills) ? (report.kills as Array<{ killedBy: string[] }>) : []
+  const commit = typeof report.commit === "string" ? report.commit : ""
+  const edited = report.ok && commit ? fixEditedKillers(repoDir, packageDir, commit, hide, kills) : { files: [], olderTestCatch: false }
+  const fromFix = kills.length > 0 && !edited.olderTestCatch
+  const judged: Envelope = {
+    ...report,
+    ...(fromFix
+      ? {
+          summary: `${report.summary} Every kill came from a test edited by the fix commit (${edited.files.join(", ")}). That is the fix's own test, so no older test caught the bug.`,
+          next: "Record this as a miss. Do not restore the hidden test.",
+        }
+      : {}),
+    fixEdited: edited.files,
+    olderTestCatch: edited.olderTestCatch,
+  }
+  const body = JSON.stringify(judged)
+  if (!labelLeaked(body, label) && !sealedTreeLeaked(outDir, label)) return judged
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: false,

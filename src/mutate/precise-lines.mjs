@@ -1,5 +1,7 @@
 // Inspector line samples shared by the node:test collector, the Mocha collector,
 // and a plain-script child. This file has no test hooks and writes no shard.
+import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs"
+import { Session as SyncSession } from "node:inspector"
 import { Session } from "node:inspector/promises"
 import { findSourceMap } from "node:module"
 import path from "node:path"
@@ -31,31 +33,13 @@ function decodeSegments(row) {
 }
 
 /**
+ * Offsets to source lines, shared by the async sampler (test processes) and the sync one (children).
+ * Paths are relative to `root`. node_modules and paths outside root are left out.
  * @param {(rel: string) => boolean} [skipRel]
- * @returns {Promise<{ positiveLines: () => Promise<Array<{ file: string, line: number }>>, reset: () => Promise<void> }>}
+ * @param {string} [root]
  */
-export async function openLineSampler(skipRel) {
-  const session = new Session()
-  session.connect()
-  await session.post("Profiler.enable")
-  await session.post("Debugger.enable")
-  await session.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true })
-
-  const textCache = new Map()
+function lineConverter(skipRel, root = process.cwd()) {
   const indexCache = new Map()
-
-  async function scriptText(script) {
-    if (textCache.has(script.scriptId)) return textCache.get(script.scriptId)
-    let text = ""
-    try {
-      const got = await session.post("Debugger.getScriptSource", { scriptId: script.scriptId })
-      text = got.scriptSource || ""
-    } catch {
-      text = ""
-    }
-    textCache.set(script.scriptId, text)
-    return text
-  }
 
   function relPath(url) {
     if (!url || url.startsWith("node:")) return null
@@ -65,7 +49,7 @@ export async function openLineSampler(skipRel) {
     } catch {
       return null
     }
-    const rel = path.relative(process.cwd(), abs).split(path.sep).join("/")
+    const rel = path.relative(root, abs).split(path.sep).join("/")
     if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null
     if (rel.split("/").includes("node_modules")) return null
     if (skipRel && skipRel(rel)) return null
@@ -163,18 +147,55 @@ export async function openLineSampler(skipRel) {
     return counts
   }
 
+  /** Lines with a positive count in one script, or null when the script is not ours. */
+  function scriptLines(script, text) {
+    const file = relPath(script.url)
+    if (!file || !text) return null
+    const counts = applyRanges(text, script, indexFor(script.scriptId, text, findSourceMap(script.url)))
+    const found = []
+    for (const [line, count] of counts) {
+      if (count > 0) found.push({ file, line })
+    }
+    return found
+  }
+
+  return { relPath, scriptLines }
+}
+
+/**
+ * @param {(rel: string) => boolean} [skipRel]
+ * @returns {Promise<{ positiveLines: () => Promise<Array<{ file: string, line: number }>>, reset: () => Promise<void> }>}
+ */
+export async function openLineSampler(skipRel) {
+  const session = new Session()
+  session.connect()
+  await session.post("Profiler.enable")
+  await session.post("Debugger.enable")
+  await session.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true })
+
+  const textCache = new Map()
+  const convert = lineConverter(skipRel)
+
+  async function scriptText(script) {
+    if (textCache.has(script.scriptId)) return textCache.get(script.scriptId)
+    let text = ""
+    try {
+      const got = await session.post("Debugger.getScriptSource", { scriptId: script.scriptId })
+      text = got.scriptSource || ""
+    } catch {
+      text = ""
+    }
+    textCache.set(script.scriptId, text)
+    return text
+  }
+
   async function positiveLines() {
     const cov = await session.post("Profiler.takePreciseCoverage")
     const found = []
     for (const script of cov.result || []) {
-      const file = relPath(script.url)
-      if (!file) continue
-      const text = await scriptText(script)
-      if (!text) continue
-      const counts = applyRanges(text, script, indexFor(script.scriptId, text, findSourceMap(script.url)))
-      for (const [line, count] of counts) {
-        if (count > 0) found.push({ file, line })
-      }
+      if (!convert.relPath(script.url)) continue
+      const lines = convert.scriptLines(script, await scriptText(script))
+      if (lines) found.push(...lines)
     }
     return found
   }
@@ -185,4 +206,99 @@ export async function openLineSampler(skipRel) {
       await session.post("Profiler.takePreciseCoverage")
     },
   }
+}
+
+/**
+ * The same sampler with synchronous calls, so an `exit` handler can read it.
+ * `exit` runs after process.exit(), where a promise never settles.
+ * @param {(rel: string) => boolean} [skipRel]
+ * @param {string} [root]
+ */
+export function openSyncLineSampler(skipRel, root) {
+  const session = new SyncSession()
+  session.connect()
+  const post = (method, params) => {
+    let result
+    let failure = null
+    let done = false
+    session.post(method, params, (err, value) => {
+      failure = err
+      result = value
+      done = true
+    })
+    if (!done) throw new Error(`inspector ${method} did not answer synchronously`)
+    if (failure) throw failure
+    return result
+  }
+  post("Profiler.enable")
+  post("Debugger.enable")
+  post("Profiler.startPreciseCoverage", { callCount: true, detailed: true })
+  const convert = lineConverter(skipRel, root)
+  return {
+    positiveLines() {
+      const cov = post("Profiler.takePreciseCoverage")
+      const found = []
+      for (const script of cov.result || []) {
+        if (!convert.relPath(script.url)) continue
+        let text = ""
+        try {
+          text = post("Debugger.getScriptSource", { scriptId: script.scriptId }).scriptSource || ""
+        } catch {
+          text = ""
+        }
+        const lines = convert.scriptLines(script, text)
+        if (lines) found.push(...lines)
+      }
+      return found
+    },
+  }
+}
+
+/**
+ * Called inside a test process that collects a line map. Every node child it starts
+ * loads child-lines.mjs through NODE_OPTIONS, with no import in the child's own code.
+ * The marker tells child-lines that this process already has test hooks.
+ */
+export function exposeChildLines() {
+  globalThis.__probatioTestHooks = true
+  // One dump dir per test process. Test files can run in parallel, and a child's lines
+  // belong to the test in the process that started it, not to a test in another file.
+  const mapPath = process.env.PROBATIO_COVERAGE_MAP
+  if (mapPath) process.env.PROBATIO_CHILD_DIR = childDir(mapPath)
+  const childLines = new URL("./child-lines.mjs", import.meta.url).href
+  const flag = `--import=${childLines}`
+  const current = process.env.NODE_OPTIONS || ""
+  if (!current.includes(flag)) process.env.NODE_OPTIONS = current ? `${current} ${flag}` : flag
+  if (!process.env.PROBATIO_PACKAGE_ROOT) process.env.PROBATIO_PACKAGE_ROOT = process.cwd()
+}
+
+export function childDir(mapPath) {
+  return path.join(`${mapPath}.children`, String(process.pid))
+}
+
+/** Line dumps the children of the current test left. Each one is read once. */
+export function takeChildHits(mapPath) {
+  const dir = childDir(mapPath)
+  if (!existsSync(dir)) return []
+  const hits = []
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue
+    const full = path.join(dir, name)
+    try {
+      const parsed = JSON.parse(readFileSync(full, "utf8"))
+      const list = parsed && Array.isArray(parsed.hits) ? parsed.hits : []
+      for (const hit of list) {
+        if (!hit || typeof hit.file !== "string" || !Number.isInteger(hit.line)) continue
+        hits.push({ file: hit.file, line: hit.line })
+      }
+    } catch {
+      // A torn dump is ignored. The parent does not invent a line.
+    }
+    try {
+      unlinkSync(full)
+    } catch {
+      // The next test must not inherit this dump.
+    }
+  }
+  return hits
 }

@@ -2,3 +2,4 @@ node_modules/
 dist/
 .probatio/
 *.tsbuildinfo
+.stele-context/

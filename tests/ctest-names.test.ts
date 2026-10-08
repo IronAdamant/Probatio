@@ -69,9 +69,9 @@ test("a suite that prints no test names stays ::command and tally keeps nothing"
       encoding: "utf8",
     })
     assert.equal(tally.status, 0, tally.stderr + tally.stdout)
-    const report = JSON.parse(tally.stdout) as { keep: string[]; drop: string[]; pruning: { deletedTests: number } }
+    const report = JSON.parse(tally.stdout) as { keep: string[]; noKillsYet: string[]; pruning: { deletedTests: number } }
     assert.deepEqual(report.keep, [])
-    assert.deepEqual(report.drop, [])
+    assert.deepEqual(report.noKillsYet, [])
     assert.equal(report.pruning.deletedTests, 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })

@@ -67,7 +67,7 @@ test("a plain-script child dump is scored under the parent test", () => {
   }
 })
 
-test("a child that writes no line dump stays no coverage", () => {
+test("a plain node child is mapped under the parent test, and a child with no env stays no coverage", { timeout: 120_000 }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-child-quiet-"))
   try {
     mkdirSync(path.join(dir, "src"))
@@ -75,7 +75,11 @@ test("a child that writes no line dump stays no coverage", () => {
     writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
     writeFileSync(path.join(dir, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n > 0\n}\n")
     writeFileSync(path.join(dir, "src", "seen.ts"), "export function seen(n: number): boolean {\n  return n > 0 || n < -1000\n}\n")
-    writeFileSync(path.join(dir, "child-run.ts"), "import { gate } from \"./src/gate.ts\"\nif (!gate(1)) process.exit(1)\n")
+    writeFileSync(path.join(dir, "src", "dark.ts"), "export function dark(n: number): boolean {\n  return n > 0\n}\n")
+    // No Probatio import, and the child ends with process.exit, the way most CLIs do.
+    writeFileSync(path.join(dir, "child-run.ts"), "import { gate } from \"./src/gate.ts\"\nprocess.exit(gate(1) ? 0 : 1)\n")
+    // An empty env drops what the collector needs. That child cannot be seen.
+    writeFileSync(path.join(dir, "child-bare.ts"), "import { dark } from \"./src/dark.ts\"\nprocess.exit(dark(1) ? 0 : 1)\n")
     writeFileSync(
       path.join(dir, "tests", "parent.test.ts"),
       [
@@ -87,6 +91,8 @@ test("a child that writes no line dump stays no coverage", () => {
         "  assert.equal(seen(1), true)",
         "  const child = spawnSync(process.execPath, [\"--experimental-strip-types\", \"child-run.ts\"], { cwd: process.cwd() })",
         "  assert.equal(child.status, 0, child.stderr?.toString())",
+        "  const bare = spawnSync(process.execPath, [\"--experimental-strip-types\", \"child-bare.ts\"], { cwd: process.cwd(), env: {} })",
+        "  assert.equal(bare.status, 0, bare.stderr?.toString())",
         "})",
         "",
       ].join("\n"),
@@ -101,12 +107,14 @@ test("a child that writes no line dump stays no coverage", () => {
     )
     assert.equal(ran.status, 0, ran.stderr + ran.stdout)
     const results = path.join(dir, "out", "results")
-    const dark = readdirSync(results)
+    const saved = readdirSync(results)
       .filter((name) => name.endsWith(".json"))
-      .map((name) => JSON.parse(readFileSync(path.join(results, name), "utf8")) as { outcome: string; command: string; files?: Array<{ file: string }> })
-      .filter((item) => item.files?.some((file) => file.file.endsWith("gate.ts")))
-    assert.ok(dark.length > 0, ran.stdout)
-    assert.ok(dark.every((item) => item.outcome === "no coverage" && item.command === ""), JSON.stringify(dark))
+      .map((name) => JSON.parse(readFileSync(path.join(results, name), "utf8")) as { outcome: string; command: string; selectedTests?: string[]; files?: Array<{ file: string }> })
+    const gate = saved.filter((item) => item.files?.some((file) => file.file.endsWith("gate.ts")))
+    assert.ok(gate.length > 0, ran.stdout)
+    assert.ok(gate.every((item) => item.outcome !== "no coverage" && item.selectedTests?.includes("parent passes")), JSON.stringify(gate))
+    const dark = saved.filter((item) => item.files?.some((file) => file.file.endsWith("dark.ts")))
+    assert.ok(dark.length > 0 && dark.every((item) => item.outcome === "no coverage" && item.command === ""), JSON.stringify(dark))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

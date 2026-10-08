@@ -1,10 +1,11 @@
 import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
+import { forwardDiff } from "../src/mutate/patch.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -130,4 +131,70 @@ test("mcp answers ping and rejects an unknown method", async () => {
   assert.equal(frames[2]?.id, 7)
   assert.equal(frames[2]?.error?.code, -32601)
   assert.match(frames[2]?.error?.message ?? "", /nope/)
+})
+
+test("mcp answers ping while a tool call runs, and a cancelled call gets no reply", { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-mcp-slow-"))
+  const before = "export function gate(n: number): boolean {\n  return n > 0\n}\n"
+  mkdirSync(path.join(dir, "src"))
+  mkdirSync(path.join(dir, "tests"))
+  mkdirSync(path.join(dir, "patches"))
+  writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
+  writeFileSync(path.join(dir, "src", "gate.ts"), before)
+  writeFileSync(
+    path.join(dir, "tests", "gate.test.ts"),
+    'import assert from "node:assert/strict"\nimport test from "node:test"\nimport { gate } from "../src/gate.ts"\ntest("slow shut", async () => { await new Promise((r) => setTimeout(r, 2500)); assert.equal(gate(0), false) })\n',
+  )
+  writeFileSync(path.join(dir, "patches", "m-ge.patch"), forwardDiff("src/gate.ts", before, before.replace(">", ">=")))
+  for (const args of [["init", "-q"], ["add", "."], ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "init"]]) {
+    spawnSync("git", ["-C", dir, ...args])
+  }
+  const runArgv = (out: string) => ["mutate", "run", "--package", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, out), "--no-build", "--no-confirm"]
+  const child = spawn(tsx, ["src/mcp.ts"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] })
+  const started = Date.now()
+  const seen = new Map<number, number>()
+  const bodies = new Map<number, { result?: { isError?: boolean } }>()
+  try {
+    const finished = new Promise<void>((resolve, reject) => {
+      let pending = ""
+      const timer = setTimeout(() => reject(new Error(`no reply to the tool call: ${JSON.stringify([...seen])}`)), 100_000)
+      child.stdout.on("data", (chunk: Buffer) => {
+        pending += chunk.toString("utf8")
+        for (;;) {
+          const nl = pending.indexOf("\n")
+          if (nl === -1) return
+          const line = pending.slice(0, nl).trim()
+          pending = pending.slice(nl + 1)
+          if (!line) continue
+          const frame = JSON.parse(line) as { id?: number; result?: { isError?: boolean } }
+          if (typeof frame.id === "number") {
+            seen.set(frame.id, Date.now() - started)
+            bodies.set(frame.id, frame)
+          }
+          if (frame.id === 2) {
+            clearTimeout(timer)
+            resolve()
+          }
+        }
+      })
+    })
+    const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`)
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "probatio", arguments: { argv: runArgv("kept") } } })
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "probatio", arguments: { argv: runArgv("cancelled") } } })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 3, reason: "test" } })
+    send({ jsonrpc: "2.0", id: 4, method: "ping" })
+    await finished
+    // Give a late reply to the cancelled call a moment to show up.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    assert.ok(seen.has(4), "ping was answered")
+    assert.ok((seen.get(4) ?? Infinity) < (seen.get(2) ?? 0), `ping waited for the tool call: ${JSON.stringify([...seen])}`)
+    assert.equal(bodies.get(2)?.result?.isError, false, JSON.stringify(bodies.get(2)))
+    assert.equal(seen.has(3), false, "a cancelled request gets no reply")
+  } finally {
+    child.stdin.end()
+    child.kill("SIGKILL")
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

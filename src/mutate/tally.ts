@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { SCHEMA_VERSION, type Envelope } from "../contract.js"
-import { advisePrune } from "../matrix/report.js"
 import { isBuildName } from "./kill-label.js"
-import type { MutantResult } from "./run.js"
+import { normalizeResult, type MutantResult } from "./run.js"
 import { leadSummary, TIMEOUT_NEXT, WHOLE_PROGRAM_TEST } from "./suite-decision.js"
 
 export type TallyGap = {
@@ -31,7 +30,7 @@ export function tallyRun(outDir: string): Envelope {
       next: "Run mutate run, then tally the same --out directory.",
       nextCall: null,
       keep: [],
-      drop: [],
+      noKillsYet: [],
       gaps: [],
       rest: 0,
       pruning: { mode: "advisory", deletedTests: 0, advice: [] },
@@ -48,7 +47,7 @@ export function tallyRun(outDir: string): Envelope {
       next: "Run mutate run, then tally the same --out directory.",
       nextCall: null,
       keep: [],
-      drop: [],
+      noKillsYet: [],
       gaps: [],
       rest: 0,
       pruning: { mode: "advisory", deletedTests: 0, advice: [] },
@@ -63,23 +62,31 @@ export function tallyRun(outDir: string): Envelope {
       killCounts.set(name, (killCounts.get(name) ?? 0) + 1)
     }
   }
-  const seen = new Set<string>(killCounts.keys())
-  for (const name of coverageNames(path.join(outDir, "coverage-map.json"))) {
-    if (isTestName(name)) seen.add(name)
+  // One test can be spelled two ways: the kill names its file, the line map does not.
+  // The first spelling seen wins, and kill spellings are added first.
+  const seen: string[] = []
+  const see = (name: string) => {
+    if (!isTestName(name)) return
+    if (seen.some((known) => namesMatch(known, name))) return
+    seen.push(name)
   }
+  for (const name of killCounts.keys()) see(name)
+  for (const name of coverageNames(path.join(outDir, "coverage-map.json"))) see(name)
   for (const result of results) {
-    for (const name of result.selectedTests ?? []) {
-      if (isTestName(name)) seen.add(name)
-    }
+    for (const name of result.selectedTests ?? []) see(name)
   }
   const counts = new Map<string, number>()
   for (const name of seen) counts.set(name, countFor(name, killCounts))
-  const pruning = advisePrune(counts)
   const keep = [...counts.entries()]
     .filter(([, killed]) => killed > 0)
     .map(([name]) => name)
     .sort()
-  const drop = pruning.advice
+  // One batch is not evidence for a deletion. These tests saw no mutant die in this batch, nothing more.
+  const noKillsYet = [...counts.entries()]
+    .filter(([, killed]) => killed === 0)
+    .map(([name]) => name)
+    .sort()
+  const pruning = { mode: "advisory" as const, deletedTests: 0 as const, advice: [] as string[] }
   const noCoverage = results.filter((result) => result.outcome === "no coverage").length
   const survived = results.filter((result) => result.outcome === "survived").length
   const timeouts = results.filter((result) => result.outcome === "timeout").length
@@ -93,10 +100,12 @@ export function tallyRun(outDir: string): Envelope {
     }))
     .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.id.localeCompare(b.id))
   const shown = gaps.slice(0, 10)
-  const summary = leadSummary(noCoverage, survived, "survived", `${keep.length} tests to keep, ${drop.length} tests killed nothing, ${gaps.length} gaps. No test file was deleted.`)
+  const summary = leadSummary(noCoverage, survived, "survived", `${keep.length} tests to keep, ${noKillsYet.length} tests saw no kill in this batch, ${gaps.length} gaps. No test file was deleted.`)
   const notes: string[] = []
   if (noCoverage > 0) notes.push(`${noCoverage} no coverage. That line was not seen. It is not a pass and not a gap.`)
-  if (gaps.length > 0) notes.push(`First gap is ${gaps[0].id} at ${gaps[0].file}:${gaps[0].line}. A survivor is not a pass.`)
+  if (gaps.length > 0) {
+    notes.push(`First gap is ${gaps[0].id} at ${gaps[0].file}:${gaps[0].line}. A survivor is not a pass. Add one test that fails on that mutant and passes on the code, commit it, then run nextCall.`)
+  }
   if (timeouts > 0) notes.push(TIMEOUT_NEXT)
   if (notes.length === 0) notes.push("No survivor in this run. No test file was deleted.")
   const next = notes.join(" ")
@@ -106,9 +115,9 @@ export function tallyRun(outDir: string): Envelope {
     command: "mutate.tally",
     summary,
     next,
-    nextCall: resumeArgv(outDir, keep),
+    nextCall: nextArgv(outDir, keep, gaps.length > 0),
     keep,
-    drop,
+    noKillsYet,
     gaps,
     rest: 0,
     pruning,
@@ -119,8 +128,13 @@ export function tallyRun(outDir: string): Envelope {
   return { ...complete, gaps: shown, rest: gaps.length - shown.length }
 }
 
-function resumeArgv(outDir: string, keep: string[]): { argv: string[] } | null {
-  if (keep.length === 0) return null
+/**
+ * The command after this tally. A gap reruns the batch on HEAD once the new test is committed.
+ * Otherwise the keep ids are rescored at the same commit. Either way the out dir is fresh:
+ * the stored out dir would skip every finished mutant and echo the old result.
+ */
+function nextArgv(outDir: string, keep: string[], hasGaps: boolean): { argv: string[] } | null {
+  if (!hasGaps && keep.length === 0) return null
   let stored: {
     package?: string
     patches?: string[]
@@ -140,21 +154,31 @@ function resumeArgv(outDir: string, keep: string[]): { argv: string[] } | null {
   } catch {
     stored = {}
   }
+  const base = stored.out || outDir
   const argv = ["mutate", "run"]
   if (stored.package) argv.push("--package", stored.package)
   for (const dir of stored.patches ?? []) argv.push("--patches", dir)
-  argv.push("--out", stored.out || outDir)
+  argv.push("--out", freshDir(base, hasGaps ? "after-gaps" : "rescore"))
   if (stored.repo) argv.push("--repo", stored.repo)
-  if (stored.commit) argv.push("--commit", stored.commit)
+  if (!hasGaps && stored.commit) argv.push("--commit", stored.commit)
   if (typeof stored.workers === "number") argv.push("--workers", String(stored.workers))
   if (stored.confirm === false) argv.push("--no-confirm")
   if (stored.testsDir && stored.testsDir !== "tests") argv.push("--tests-dir", stored.testsDir)
   if (typeof stored.suiteTimeoutMs === "number") argv.push("--suite-timeout-ms", String(stored.suiteTimeoutMs))
   if (typeof stored.testTimeoutMs === "number") argv.push("--test-timeout-ms", String(stored.testTimeoutMs))
   if (stored.direction && stored.direction !== "auto") argv.push("--direction", stored.direction)
-  if (stored.suiteCommand) argv.push("--suite-command", stored.suiteCommand)
-  argv.push(...keep.flatMap((id) => ["--only-test", id]))
+  // --only-test refuses --suite-command, so a keep rescore uses discovery.
+  if (stored.suiteCommand && hasGaps) argv.push("--suite-command", stored.suiteCommand)
+  if (!hasGaps) argv.push(...keep.flatMap((id) => ["--only-test", id]))
   return { argv }
+}
+
+/** First sibling of the out dir that does not exist yet. The same tally prints the same path. */
+function freshDir(base: string, label: string): string {
+  for (let index = 1; ; index++) {
+    const candidate = index === 1 ? `${base}.${label}` : `${base}.${label}-${index}`
+    if (!existsSync(candidate)) return candidate
+  }
 }
 
 function readResults(dir: string): MutantResult[] {
@@ -165,7 +189,7 @@ function readResults(dir: string): MutantResult[] {
       const parsed = JSON.parse(readFileSync(path.join(dir, name), "utf8")) as MutantResult
       if (!parsed || typeof parsed.outcome !== "string") continue
       if (!parsed.id) parsed.id = name.slice(0, -".json".length)
-      out.push(parsed)
+      out.push(normalizeResult(parsed))
     } catch {
       continue
     }

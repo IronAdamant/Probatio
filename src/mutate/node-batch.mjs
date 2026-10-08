@@ -1,10 +1,11 @@
 // One suite process for covered mutants of one file. Jobs arrive on stdin.
 // A mutant that exits this process ends it. The parent starts a clean process for the next mutant.
 import { createInterface } from "node:readline"
-import { realpathSync, writeFileSync } from "node:fs"
+import { readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { register } from "node:module"
 import { run } from "node:test"
 import path from "node:path"
+import { errorText, staticLoadFailure } from "./load-failure.mjs"
 import { openLineSampler } from "./precise-lines.mjs"
 
 const loader = new URL("./node-batch-loader.mjs", import.meta.url).href
@@ -33,6 +34,12 @@ async function runJob(job) {
   const patterns = (job.names || []).filter((name) => name.length > 0).map((name) => new RegExp(`^${escapeRegExp(name)}$`))
   const failed = []
   const names = []
+  // run() with isolation "none" ignores testNamePatterns on Node 22, so every test in the file runs.
+  // Only a requested test, or a subtest of one, is a result. Another test failing is not a kill.
+  const wanted = new Set((job.names || []).filter((name) => name.length > 0))
+  const stack = []
+  const requested = (name, nesting) =>
+    wanted.size === 0 || wanted.has(name) || stack.slice(0, nesting).some((parent) => wanted.has(parent))
   const testTimeout = job.testTimeoutMs > 0 ? job.testTimeoutMs : job.timeoutMs
   const stream = run({
     files,
@@ -47,10 +54,28 @@ async function runJob(job) {
   const collected = (async () => {
     for await (const event of stream) {
       lastEvent = Date.now()
-      if (event.type !== "test:pass" && event.type !== "test:fail") continue
       const data = event.data || {}
+      const nesting = Number.isInteger(data.nesting) ? data.nesting : 0
+      if (event.type === "test:start") {
+        stack.length = nesting
+        stack[nesting] = typeof data.name === "string" ? data.name : ""
+        continue
+      }
+      if (event.type !== "test:pass" && event.type !== "test:fail") continue
       const name = typeof data.name === "string" ? data.name : ""
-      if (!name || files.includes(name)) continue
+      if (!name) continue
+      if (files.includes(name)) {
+        // The file itself failed: it did not load (a removed export, a throw at import time).
+        // No test in it ran. That is a failure of the file, the same as node --test reports it.
+        if (event.type === "test:fail" && fileHasRequested(name, wanted)) {
+          const posix = path.relative(job.root, name).split(path.sep).join("/")
+          const linked = !staticLoadFailure(errorText(data.details && data.details.error))
+          failed.push({ name: posix, file: name, line: 1, fileLoad: true, ...(linked ? {} : { staticLoad: true }) })
+          if (!names.includes(posix)) names.push(posix)
+        }
+        continue
+      }
+      if (!requested(name, nesting)) continue
       if (!names.includes(name)) names.push(name)
       if (event.type === "test:fail") {
         const error = data.details && data.details.error
@@ -99,6 +124,18 @@ async function runJob(job) {
   const pattern = (job.names || []).join("|")
   const command = ["node", "--test", ...(pattern ? [`--test-name-pattern=${pattern}`] : []), ...(job.tests || [])].join(" ")
   return { id: job.id, pid: process.pid, failed, names, command, dirty }
+}
+
+/** A file with no requested test in it does not speak for the requested tests. */
+function fileHasRequested(file, wanted) {
+  if (wanted.size === 0) return true
+  let text = ""
+  try {
+    text = readFileSync(file, "utf8")
+  } catch {
+    return true
+  }
+  return [...wanted].some((name) => text.includes(name))
 }
 
 function fileNameIs(name, file) {

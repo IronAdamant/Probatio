@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -24,8 +24,11 @@ type Request = {
   jsonrpc?: string
   id?: number | string | null
   method?: string
-  params?: { name?: string; arguments?: { argv?: string[] } }
+  params?: { name?: string; arguments?: { argv?: string[] }; requestId?: number | string; protocolVersion?: string }
 }
+
+/** Protocol versions this server speaks. The client's choice wins when it is one of these. */
+const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18"]
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const version = readVersion()
@@ -40,6 +43,9 @@ const tool = {
 }
 
 let buffer = ""
+let closing = false
+/** Tool calls still running, by request id. A cancel kills the child and drops the reply. */
+const running = new Map<string, ChildProcess>()
 
 process.stdin.setEncoding("utf8")
 process.stdin.on("data", (chunk: string) => {
@@ -48,7 +54,9 @@ process.stdin.on("data", (chunk: string) => {
 })
 process.stdin.on("end", () => {
   drain(true)
-  process.exit(0)
+  closing = true
+  // A call already running still gets its reply before the server exits.
+  if (running.size === 0) process.exit(0)
 })
 
 function drain(flush = false) {
@@ -69,13 +77,27 @@ function drain(flush = false) {
 
 function handle(message: Request) {
   if (!message.method) return
+  if (message.method === "notifications/cancelled") {
+    const key = message.params?.requestId
+    if (key === undefined) return
+    const child = running.get(String(key))
+    running.delete(String(key))
+    if (child?.pid) {
+      try {
+        process.kill(-child.pid, "SIGTERM")
+      } catch {
+        child.kill("SIGTERM")
+      }
+    }
+    return
+  }
   if (message.id === undefined || message.id === null) return
   if (message.method === "initialize") {
     send({
       jsonrpc: "2.0",
       id: message.id,
       result: {
-        protocolVersion: "2024-11-05",
+        protocolVersion: PROTOCOLS.includes(message.params?.protocolVersion ?? "") ? message.params?.protocolVersion : PROTOCOLS[0],
         capabilities: { tools: {} },
         serverInfo: { name: "probatio", version },
         tools: [tool],
@@ -97,34 +119,59 @@ function handle(message: Request) {
       send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "argv must be an array of strings" } })
       return
     }
-    const cli = cliCommand()
-    const child = spawnSync(cli.bin, [...cli.args, ...argv], { encoding: "utf8" })
-    const text = child.stdout ?? ""
-    let envelope: { ok?: boolean } | null = null
-    try {
-      envelope = JSON.parse(text) as { ok?: boolean }
-    } catch {
-      envelope = null
-    }
-    if (!envelope || typeof envelope !== "object") {
-      send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "the command did not return one JSON object" } })
-      return
-    }
-    send({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: {
-        content: [{ type: "text", text: text.trim() }],
-        structuredContent: envelope,
-        isError: envelope.ok !== true,
-      },
-    })
+    call(message.id, argv)
     return
   }
   send({
     jsonrpc: "2.0",
     id: message.id,
     error: { code: -32601, message: `method not found: ${message.method}` },
+  })
+}
+
+/** One CLI command per call. It runs beside other calls, so ping and cancel are answered meanwhile. */
+function call(id: number | string, argv: string[]) {
+  const key = String(id)
+  const cli = cliCommand()
+  // Its own process group, so a cancel also stops the suite the command started.
+  const child = spawn(cli.bin, [...cli.args, ...argv], { stdio: ["ignore", "pipe", "ignore"], detached: true })
+  running.set(key, child)
+  let text = ""
+  child.stdout?.setEncoding("utf8")
+  child.stdout?.on("data", (chunk: string) => {
+    text += chunk
+  })
+  const settle = (failure: string | null) => {
+    // A cancelled call is no longer in the map. Its reply is dropped.
+    const live = running.get(key) === child
+    running.delete(key)
+    if (live) reply(id, text, failure)
+    if (closing && running.size === 0) process.exit(0)
+  }
+  child.on("error", (error) => settle(error.message))
+  child.on("close", () => settle(null))
+}
+
+function reply(id: number | string, text: string, failure: string | null) {
+  let envelope: { ok?: boolean } | null = null
+  try {
+    envelope = JSON.parse(text) as { ok?: boolean }
+  } catch {
+    envelope = null
+  }
+  if (!envelope || typeof envelope !== "object") {
+    const message = failure ? `the command did not start: ${failure}` : "the command did not return one JSON object"
+    send({ jsonrpc: "2.0", id, error: { code: -32000, message } })
+    return
+  }
+  send({
+    jsonrpc: "2.0",
+    id,
+    result: {
+      content: [{ type: "text", text: text.trim() }],
+      structuredContent: envelope,
+      isError: envelope.ok !== true,
+    },
   })
 }
 

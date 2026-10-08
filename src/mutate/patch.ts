@@ -129,5 +129,6 @@ export function applyPatch(repo: string, raw: string, direction: PatchDirection)
 /** Put a throwaway worktree back. A diff label is not trusted for the path list. */
 export function restoreTree(repo: string): void {
   git(repo, ["checkout", "--", "."])
-  git(repo, ["clean", "-fd", "-e", "node_modules"])
+  // .probatio.json may be the user's uncommitted copy, put there when the worktree was made.
+  git(repo, ["clean", "-fd", "-e", "node_modules", "-e", ".probatio.json"])
 }

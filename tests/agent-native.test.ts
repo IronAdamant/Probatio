@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import test from "node:test"
+import test, { after } from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
 import { firstSkip, missingPytest, missingTool } from "./require-tool.ts"
@@ -390,8 +390,14 @@ test("a second run reuses an unchanged mutant and its killing test", { timeout: 
   save("step-history", `first=${stored.outcome}\nsecond=${again?.outcome}\nreused=${again?.reused}\n`)
 })
 
+const fixtures: string[] = []
+after(() => {
+  for (const dir of fixtures) rmSync(dir, { recursive: true, force: true })
+})
+
 function fixture(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-agent-"))
+  fixtures.push(dir)
   mkdirSync(path.join(dir, "tests"))
   mkdirSync(path.join(dir, "patches"))
   return dir

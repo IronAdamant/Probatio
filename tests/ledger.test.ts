@@ -161,6 +161,37 @@ test("cli ledger build prints one json object", () => {
   }
 })
 
+test("a release commit that bumps the version is not a fix unless it says Fixes-bug", () => {
+  const pkg = repo()
+  const out = path.join(pkg, "ledger")
+  try {
+    writeFileSync(path.join(pkg, "package.json"), '{ "name": "gate", "version": "0.1.0" }\n')
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export const n = 1\n")
+    writeFileSync(path.join(pkg, "tests", "gate.test.ts"), "export {}\n")
+    commitIn(pkg, "init")
+    // A feature bundle shipped with a version bump. It touches src and tests, and it is not one bug.
+    writeFileSync(path.join(pkg, "package.json"), '{ "name": "gate", "version": "0.2.0" }\n')
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export const n = 2\nexport const m = 3\n")
+    writeFileSync(path.join(pkg, "tests", "gate.test.ts"), "export const t = 1\n")
+    commitIn(pkg, "Set version 0.2.0 for two features")
+    const release = shaOf(pkg).slice(0, 7)
+    // The same shape with a trailer is a fix the author named.
+    writeFileSync(path.join(pkg, "package.json"), '{ "name": "gate", "version": "0.2.1" }\n')
+    writeFileSync(path.join(pkg, "src", "gate.ts"), "export const n = 2\nexport const m = 4\n")
+    writeFileSync(path.join(pkg, "tests", "gate.test.ts"), "export const t = 2\n")
+    commitIn(pkg, "Set version 0.2.1\n\nFixes-bug: m was three")
+    const named = shaOf(pkg).slice(0, 7)
+    const tsx = path.join(root, "node_modules", ".bin", "tsx")
+    const result = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300"], { cwd: root, encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    const ids = readEntries(out).map((item) => item.id)
+    assert.equal(ids.includes(release), false, JSON.stringify(ids))
+    assert.equal(ids.includes(named), true, JSON.stringify(ids))
+  } finally {
+    rmSync(pkg, { recursive: true, force: true })
+  }
+})
+
 test("cli ledger build stops after --max-commits and says the rest was not scanned", () => {
   const pkg = repo()
   const out = path.join(pkg, "ledger")

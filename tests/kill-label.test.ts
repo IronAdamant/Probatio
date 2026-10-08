@@ -12,7 +12,7 @@ const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
 const COMPILER = "javac|compiler|build|cobc|nasm|clang|cargo|tsc|dotnet|swiftc"
 
-test("mutate run separates a named-test kill from a build kill", { timeout: 60_000 }, () => {
+test("a mutant that does not build is unviable, not a kill", { timeout: 60_000 }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-label-"))
   const source = "export function open(n) { return n > 0 }\n"
   const flipped = "export function open(n) { return n >= 0 }\n"
@@ -45,34 +45,35 @@ test("mutate run separates a named-test kill from a build kill", { timeout: 60_0
       ok: boolean
       summary: string
       killed: number
+      unviable: number
+      unviableIds: string[]
       survived: number
       kills?: Array<{ id: string; cause: string; killedBy: string[]; next: string }>
     }
     assert.equal(body.ok, true, body.summary)
-    assert.equal(body.killed, 2, body.summary)
+    // A compiler rejecting the mutant is not a test catching it. The count says so.
+    assert.equal(body.killed, 1, body.summary)
+    assert.equal(body.unviable, 1, body.summary)
+    assert.deepEqual(body.unviableIds, ["m-build"])
+    assert.match(body.summary, /1 killed, 1 did not build,/)
     assert.equal(body.survived, 0, body.summary)
     const kills = body.kills ?? []
     const byTest = kills.find((item) => item.id === "m-test")
-    const byBuild = kills.find((item) => item.id === "m-build")
     assert.ok(byTest, JSON.stringify(kills))
-    assert.ok(byBuild, JSON.stringify(kills))
+    assert.equal(kills.some((item) => item.id === "m-build"), false, JSON.stringify(kills))
     assert.equal(byTest.cause, "test")
-    assert.equal(byBuild.cause, "build")
     assert.match(byTest.next, /closed at zero/)
-    assert.match(byBuild.next, /build/i)
-    assert.equal(byTest.next === byBuild.next, false)
-    assert.doesNotMatch(byBuild.next, new RegExp(`add a test named (${COMPILER})`, "i"))
-    for (const id of ["m-test", "m-build"]) {
-      const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", `${id}.json`), "utf8")) as {
-        outcome: string
-        cause: string
-        next: string
-      }
-      assert.equal(saved.outcome, "killed")
-      const printed = kills.find((item) => item.id === id)
-      assert.equal(saved.cause, printed?.cause)
-      assert.equal(saved.next, printed?.next)
-    }
+    const testSaved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-test.json"), "utf8")) as { outcome: string; cause: string }
+    assert.equal(testSaved.outcome, "killed")
+    const buildSaved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-build.json"), "utf8")) as { outcome: string; cause: string; next: string }
+    assert.equal(buildSaved.outcome, "unviable")
+    assert.equal(buildSaved.cause, "build")
+    assert.match(buildSaved.next, /did not build/)
+    assert.doesNotMatch(buildSaved.next, new RegExp(`add a test named (${COMPILER})`, "i"))
+    const tally = spawnSync(tsx, ["src/cli.ts", "mutate", "tally", "--out", path.join(dir, "out")], { cwd: root, encoding: "utf8" })
+    const tallied = JSON.parse(tally.stdout) as { keep: string[]; gaps: unknown[] }
+    assert.equal(tallied.gaps.length, 0, "an unviable mutant is not a gap")
+    assert.equal(tallied.keep.some((name) => new RegExp(`^(${COMPILER})$`).test(name)), false, JSON.stringify(tallied.keep))
     const testKill = check(dir, "m-test")
     const buildKill = check(dir, "m-build")
     assert.equal(testKill.status, 0, testKill.stderr + testKill.stdout)
@@ -84,7 +85,7 @@ test("mutate run separates a named-test kill from a build kill", { timeout: 60_0
     assert.equal(testBody.cause, "test")
     assert.equal(buildBody.cause, "build")
     assert.match(testBody.next, /closed at zero/)
-    assert.match(buildBody.next, /build/i)
+    assert.match(buildBody.next, /did not build/)
     assert.equal(testBody.next === buildBody.next, false)
     assert.doesNotMatch(buildBody.next, new RegExp(`add a test named (${COMPILER})`, "i"))
   } finally {

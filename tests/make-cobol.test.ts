@@ -62,6 +62,7 @@ test("make test names a COBOL failure and a cobc failure differently", { timeout
       ok: boolean
       summary: string
       killed: number
+      unviable: number
       survived: number
       kills?: Array<{ id: string; cause: string; next: string }>
     }
@@ -72,19 +73,21 @@ test("make test names a COBOL failure and a cobc failure differently", { timeout
     }
     assert.equal(baseline.ok, true, JSON.stringify(baseline))
     assert.deepEqual(baseline.failed, [])
-    assert.equal(body.killed, 2, body.summary)
+    // The compiler rejecting a mutant is not a test catching it.
+    assert.equal(body.killed, 1, body.summary)
+    assert.equal(body.unviable, 1, body.summary)
     assert.equal(body.survived, 0, body.summary)
     const byTest = (body.kills ?? []).find((item) => item.id === "m-test")
-    const byBuild = (body.kills ?? []).find((item) => item.id === "m-build")
     assert.ok(byTest, JSON.stringify(body.kills))
-    assert.ok(byBuild, JSON.stringify(body.kills))
+    assert.equal((body.kills ?? []).some((item) => item.id === "m-build"), false, JSON.stringify(body.kills))
     assert.equal(byTest.cause, "test")
-    assert.equal(byBuild.cause, "build")
     assert.match(byTest.next, /gate::main::stays-closed/)
     assert.doesNotMatch(byTest.next, /stays-closed - OK/)
-    assert.match(byBuild.next, /build/i)
-    assert.doesNotMatch(byBuild.next, /add a test named (javac|compiler|build|cobc|nasm|clang|cargo|tsc|dotnet|swiftc)/i)
-    const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-build.json"), "utf8")) as { killedBy: string[] }
+    const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-build.json"), "utf8")) as { outcome: string; cause: string; next: string; killedBy: string[] }
+    assert.equal(saved.outcome, "unviable")
+    assert.equal(saved.cause, "build")
+    assert.match(saved.next, /did not build/)
+    assert.doesNotMatch(saved.next, /add a test named (javac|compiler|build|cobc|nasm|clang|cargo|tsc|dotnet|swiftc)/i)
     assert.deepEqual(saved.killedBy, ["cobc"])
   } finally {
     rmSync(dir, { recursive: true, force: true })

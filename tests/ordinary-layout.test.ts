@@ -130,3 +130,39 @@ function git(repo: string, args: string[]) {
   const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" })
   if (result.status !== 0) throw new Error(result.stderr || result.stdout)
 }
+
+test("a node package with go and pytest examples inside is still a node suite", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-nested-examples-"))
+  try {
+    writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
+    mkdirSync(path.join(dir, "tests"))
+    writeFileSync(path.join(dir, "tests", "gate.test.ts"), 'import test from "node:test"\ntest("ok", () => {})\n')
+    // Each example is its own project. Its tests are not this package's suite.
+    mkdirSync(path.join(dir, "examples", "go"), { recursive: true })
+    writeFileSync(path.join(dir, "examples", "go", "go.mod"), "module example.com/gate\n\ngo 1.21\n")
+    writeFileSync(path.join(dir, "examples", "go", "gate_test.go"), "package gate\n")
+    mkdirSync(path.join(dir, "examples", "pytest", "tests"), { recursive: true })
+    writeFileSync(path.join(dir, "examples", "pytest", "pytest.ini"), "[pytest]\n")
+    writeFileSync(path.join(dir, "examples", "pytest", "tests", "test_gate.py"), "import pytest\ndef test_low():\n    assert True\n")
+    const spec = discoverSuite(dir, "tests")
+    assert.equal(spec?.kind, "node", JSON.stringify(spec))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("go discovery needs a module at or above the package, and leaves a nested module out", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-go-module-"))
+  try {
+    writeFileSync(path.join(dir, "go.mod"), "module example.com/root\n\ngo 1.21\n")
+    writeFileSync(path.join(dir, "root_test.go"), "package root\n")
+    mkdirSync(path.join(dir, "tools"))
+    writeFileSync(path.join(dir, "tools", "go.mod"), "module example.com/tools\n\ngo 1.21\n")
+    writeFileSync(path.join(dir, "tools", "tool_test.go"), "package tools\n")
+    const spec = discoverSuite(dir, "tests")
+    assert.equal(spec?.kind, "go", JSON.stringify(spec))
+    assert.deepEqual(spec?.files, ["root_test.go"])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

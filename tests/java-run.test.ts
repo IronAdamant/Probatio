@@ -11,7 +11,7 @@ import { missingTool } from "./require-tool.ts"
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
 
-test("mutate run kills a Java mutant that fails javac", { timeout: 180_000, skip: missingTool("mvn") }, () => {
+test("a Java mutant that fails javac is unviable, not a kill", { timeout: 180_000, skip: missingTool("mvn") }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-java-"))
   const source = "package example;\npublic class Gate {\n  public static boolean open(int n) { return n > 0; }\n}\n"
   const broken = "package example;\npublic class Gate {\n  public static boolean open(int n) { return n > ; }\n}\n"
@@ -40,14 +40,15 @@ test("mutate run kills a Java mutant that fails javac", { timeout: 180_000, skip
   try {
     const result = launch(dir, patches, path.join(dir, "out"))
     assert.equal(result.status, 0, result.stderr + result.stdout)
-    const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killed: number; survived: number }
+    const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killed: number; unviable: number; survived: number }
     assert.equal(body.ok, true, body.summary)
-    assert.equal(body.killed, 1, body.summary)
+    assert.equal(body.killed, 0, body.summary)
+    assert.equal(body.unviable, 1, body.summary)
     assert.equal(body.survived, 0, body.summary)
-    assert.match(body.summary, /\b1 killed\b/)
+    assert.match(body.summary, /\b0 killed, 1 did not build\b/)
     const saved = JSON.parse(readFileSync(path.join(dir, "out", "results", "m-javac.json"), "utf8")) as { outcome: string; killedBy: string[] }
-    assert.equal(saved.outcome, "killed")
-    assert.ok(saved.killedBy.length > 0, JSON.stringify(saved))
+    assert.equal(saved.outcome, "unviable")
+    assert.deepEqual(saved.killedBy, ["javac"])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

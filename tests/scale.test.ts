@@ -144,11 +144,12 @@ test("tally names a test that killed nothing and does not delete it", () => {
     const body = JSON.parse(result.stdout) as TallyReport
     assert.equal(body.command, "mutate.tally")
     assert.ok(body.keep.some((name) => name.includes("positive opens")), body.summary)
-    assert.ok(body.drop.includes("never killed"), JSON.stringify(body.drop))
-    assert.equal(body.drop.includes("tsc"), false)
+    assert.ok(body.noKillsYet.includes("never killed"), JSON.stringify(body.noKillsYet))
+    assert.equal(body.noKillsYet.includes("tsc"), false)
     assert.equal(body.keep.includes("tsc"), false)
     assert.equal(body.pruning.deletedTests, 0)
-    assert.equal(body.pruning.advice.includes("never killed"), true)
+    // One batch is not evidence for a deletion. The tally gives no prune advice.
+    assert.deepEqual(body.pruning.advice, [])
     assert.equal(body.gaps.length, 1)
     assert.ok(body.gaps.some((gap) => gap.id === "m-lived" && gap.outcome === "survived"))
     assert.equal(body.gaps.some((gap) => gap.id === "m-dark" || gap.id === "m-slow"), false)
@@ -273,7 +274,7 @@ type TallyReport = {
   command: string
   summary: string
   keep: string[]
-  drop: string[]
+  noKillsYet: string[]
   next?: string
   gaps: Array<{ id: string; outcome: string }>
   pruning: { mode: string; deletedTests: number; advice: string[] }

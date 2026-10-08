@@ -153,6 +153,8 @@ function collect(
     const hasTrailer = /^Fixes-bug:/m.test(body)
     if (!hasTrailer && !(src && tests)) continue
     if (!hasTrailer && lines === 0) continue
+    // A version bump ships whatever was finished. Reverting it puts back several changes, not one bug.
+    if (!hasTrailer && bumpsVersion(repo, sha)) continue
     found.push({
       commit: sha,
       date: date ?? "",
@@ -162,6 +164,18 @@ function collect(
     })
   }
   return { found, scanned: limited.length, budgetHit }
+}
+
+const MANIFESTS = ["package.json", "Cargo.toml", "pyproject.toml", "setup.cfg"].map((name) => `:(glob)**/${name}`)
+
+/** True when the commit changes a project version line in a manifest. */
+function bumpsVersion(repo: string, sha: string): boolean {
+  const diff = git(repo, ["show", "--format=", "-U0", sha, "--", ...MANIFESTS])
+  if (diff.status !== 0) return false
+  return diff.stdout
+    .split("\n")
+    .filter((line) => /^[-+]/.test(line) && !line.startsWith("+++") && !line.startsWith("---"))
+    .some((line) => /"version"\s*:/.test(line) || /^[-+]\s*version\s*=/.test(line))
 }
 
 function entry(candidate: Candidate, id: string, status: LedgerStatus, files: Array<{ file: string; line: number }>, reason?: string): LedgerEntry {

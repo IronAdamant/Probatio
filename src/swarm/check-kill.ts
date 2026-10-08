@@ -4,8 +4,8 @@ import { SCHEMA_VERSION, type Envelope } from "../contract.js"
 import { directImporters } from "../mutate/affected.js"
 import { filesInDiff } from "../mutate/patch.js"
 import { killLabel } from "../mutate/kill-label.js"
-import { runMutants, type RunOptions, type RunReport } from "../mutate/run.js"
-import { campaignSummary } from "../mutate/suite-decision.js"
+import { normalizeResult, runMutants, type RunOptions, type RunReport } from "../mutate/run.js"
+import { campaignSummary, UNVIABLE_NEXT } from "../mutate/suite-decision.js"
 
 /** The gap is done only when this mutant is killed and the baseline suite is green. */
 export async function checkKill(id: string, options: RunOptions): Promise<Envelope> {
@@ -49,18 +49,24 @@ export async function checkKill(id: string, options: RunOptions): Promise<Envelo
   let outcome: string | null = null
   let killedBy: string[] = []
   if (existsSync(resultFile)) {
-    const result = JSON.parse(readFileSync(resultFile, "utf8")) as { outcome?: string; killedBy?: string[] }
+    const result = normalizeResult(JSON.parse(readFileSync(resultFile, "utf8")) as { outcome: string; cause?: string | null; killedBy?: string[] })
     outcome = result.outcome ?? null
     killedBy = Array.isArray(result.killedBy) ? result.killedBy : []
   }
-  const done = suiteGreen && outcome === "killed"
-  const label = done ? killLabel(killedBy) : null
+  // A mutant that does not build needs no test. The task is closed, and it is not called a kill.
+  const unviableMutant = suiteGreen && outcome === "unviable"
+  const done = (suiteGreen && outcome === "killed") || unviableMutant
+  const label = unviableMutant ? { cause: "build" as const, next: UNVIABLE_NEXT } : done ? killLabel(killedBy) : null
   const head = checkHead(report)
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: done,
     command: "check-kill",
-    summary: done ? `${head} ${id} is dead and the suite is green.` : `${head} ${id} is not done.`,
+    summary: unviableMutant
+      ? `${head} ${id} does not build. No test is needed.`
+      : done
+        ? `${head} ${id} is dead and the suite is green.`
+        : `${head} ${id} is not done.`,
     next: label?.next ?? (done ? "The gap-fixing task is done." : "The task is not done."),
     nextCall: null,
     done,
@@ -80,11 +86,12 @@ function importersOf(id: string, options: RunOptions): string[] {
 }
 
 function checkHead(report: RunReport): string {
-  const finished = report.killed + report.survived + report.flaky + report.timeouts + report.errors + report.noCoverage
+  const finished = report.killed + report.unviable + report.survived + report.flaky + report.timeouts + report.errors + report.noCoverage
   return campaignSummary({
     noCoverage: report.noCoverage,
     survived: report.survived,
     killed: report.killed,
+    unviable: report.unviable,
     flaky: report.flaky,
     timeouts: report.timeouts,
     errors: report.errors,

@@ -12,7 +12,9 @@ import { writeJavaCoverage } from "./java-coverage.js"
 import { writeRustCoverage } from "./rust-coverage.js"
 import { applyPatch, changedLines, chooseDirection, filesInDiff, git, restoreTree, type PatchDirection } from "./patch.js"
 import { killLabel, type KillCause } from "./kill-label.js"
+import { CONFIG_FILE, readProjectConfig } from "./project-config.js"
 import {
+  UNVIABLE_NEXT,
   TIMEOUT_FLOOR_MS,
   TIMEOUT_MULTIPLE,
   TIMEOUT_NEXT,
@@ -71,7 +73,8 @@ export type RunOptions = {
   onProgress?: (line: string) => void
 }
 
-export type MutantOutcome = "killed" | "survived" | "flaky" | "timeout" | "error" | "build-failed" | "no coverage"
+/** `unviable` is a mutant that did not build. No test saw it, so it is not a kill and not a gap. */
+export type MutantOutcome = "killed" | "survived" | "flaky" | "timeout" | "error" | "build-failed" | "no coverage" | "unviable"
 
 export type MutantResult = {
   id: string
@@ -105,7 +108,11 @@ export type KillFact = {
   files: Array<{ file: string; line: number }>
 }
 
-type Failure = { name: string; file: string; line: number; fileTimeout?: boolean }
+/**
+ * `fileTimeout`: the file finished its tests and did not exit. `fileLoad`: the file failed before any test ran.
+ * `staticLoad`: that file did not link or parse, so no code ran. The mutant did not build; no test caught it.
+ */
+type Failure = { name: string; file: string; line: number; fileTimeout?: boolean; fileLoad?: boolean; staticLoad?: boolean }
 
 export type TestReport = {
   tests: number
@@ -133,6 +140,9 @@ export type RunReport = {
   commit: string
   runId: string
   killed: number
+  /** Mutants the compiler rejected. Not kills. */
+  unviable: number
+  unviableIds: string[]
   survived: number
   flaky: number
   timeouts: number
@@ -179,6 +189,8 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
     ? listed.files.filter((file) => path.basename(file, ".patch") === options.onlyPatch)
     : listed.files
   if (patchFiles.length === 0) return failReport(options.outDir, run.id, commit, "no patches")
+  const config = readProjectConfig(packageDir)
+  if ("error" in config) return failReport(options.outDir, run.id, commit, config.error, undefined, `Fix ${CONFIG_FILE} and run the same command again.`)
   const gate = resolveSuite(packageDir, options)
   if (gate.action === "stop") return failReport(options.outDir, run.id, commit, gate.summary, undefined, gate.next, gate.suiteCommand)
   const testsHere = options.onlyTests && options.onlyTests.length > 0 ? options.onlyTests : gate.spec.files
@@ -191,6 +203,13 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
   const worktrees = await createWorktrees(repo, packageDir, run.id, commit, options.workers, options.outDir)
   if ("error" in worktrees) return failReport(options.outDir, run.id, commit, worktrees.error)
   hidePaths(worktrees.dirs, repo, packageDir, options.hide ?? [])
+  // A cancelled run (MCP cancel, Ctrl-C) still removes its worktrees from the user's repo.
+  const onSignal = (signal: NodeJS.Signals) => {
+    removeWorktrees(repo, worktrees.dirs, options.outDir)
+    process.exit(signal === "SIGINT" ? 130 : 143)
+  }
+  process.once("SIGTERM", onSignal)
+  process.once("SIGINT", onSignal)
   const budgetMs = options.budgetMs ?? (options.maxMinutes == null ? null : options.maxMinutes * 60_000)
   let budgetStarted = 0
   const overBudget = () => budgetMs !== null && budgetStarted !== 0 && Date.now() - budgetStarted > budgetMs
@@ -235,7 +254,7 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
           const prior = history.get(id)
           if (prior && reusable(prior, raw, treePkg)) {
             startedMutants += 1
-            const reused = reusedResult(prior, commit, run.id, options.agent)
+            const reused = normalizeResult(reusedResult(prior, commit, run.id, options.agent))
             writeResult(options.outDir, reused)
             progress(`reused ${id}`)
             continue
@@ -283,6 +302,8 @@ export async function runMutants(options: RunOptions): Promise<RunReport> {
       baselineMs: prep.baselineMs,
     })
   } finally {
+    process.removeListener("SIGTERM", onSignal)
+    process.removeListener("SIGINT", onSignal)
     removeWorktrees(repo, worktrees.dirs, options.outDir)
   }
 }
@@ -436,10 +457,12 @@ async function runOne(
       const built = await spawnCollected(options.build[0], options.build.slice(1), pkg, childEnv(options.unset), Math.min(options.suiteTimeoutMs, 120_000))
       if (built.timedOut) return { ...base(), direction, outcome: "timeout", error: "build timed out", next: TIMEOUT_NEXT }
       // The baseline build already succeeded. A mutant that no longer builds cannot pass the suite.
-      if (built.code !== 0) return finishMutant(killed(base, direction, ["build"]), pkg, "", false, [])
+      if (built.code !== 0) return finishMutant(unviable(base, direction, "build"), pkg, "", false, [])
     }
     const picked = selectionFor(prep.coverage, edited.length > 0 ? edited : files)
-    const forced = options.onlyNames && options.onlyNames.length > 0 ? options.onlyNames : null
+    const forced = options.onlyNames && options.onlyNames.length > 0
+      ? prep.spec.kind === "node" ? options.onlyNames.map(nodeTitle) : options.onlyNames
+      : null
     if (!forced && picked.state === "uncovered") {
       return {
         ...base(),
@@ -477,7 +500,7 @@ async function runOne(
       )
     }
     // A compile error can leave the previous run's report on disk. That report is not this mutant.
-    if (main.compileToken) return finishMutant(killed(base, direction, [main.compileToken]), pkg, commands.join(" | "), false, [])
+    if (main.compileToken) return finishMutant(unviable(base, direction, main.compileToken), pkg, commands.join(" | "), false, [])
     if (!main.report) {
       const detail = main.detail ? clip(main.detail) : ""
       const tool = missingToolFrom(detail, main.command)
@@ -488,11 +511,20 @@ async function runOne(
           : "test reporter returned nothing"
       return { ...base(), direction, error, command: commands.join(" | ") }
     }
+    // A node name pattern that matches nothing passes the file. That is not a survivor.
+    // A requested describe block reports its leaf tests, so any test that ran counts.
+    if (forced && prep.spec.kind === "node" && main.report.names.every((name) => isNodeTestFile(name))) {
+      return { ...base(), direction, error: `no requested test ran (${forced.join(", ")})`, command: commands.join(" | ") }
+    }
     const whole = main.wholeSuite || forceWhole
     const chosen = main.selectedTests
     if (main.report.failed.length === 0) return finishMutant({ ...base(), direction, outcome: "survived" }, pkg, commands.join(" | "), whole, chosen)
-    if (!options.confirm) return finishMutant(killed(base, direction, main.report.failed.map((item) => failureId(pkg, item))), pkg, commands.join(" | "), whole, chosen)
-    const confirmed = await confirmFailures(pkg, options, main.report.failed, prep, limit, commands)
+    // A test file that no longer links ran no test. It is the build failing, the same as javac rejecting it.
+    // Only a failure where code ran can kill. When none did, the mutant did not build.
+    const ran = main.report.failed.filter((item) => !item.staticLoad)
+    if (ran.length === 0) return finishMutant(unviable(base, direction, "compiler"), pkg, commands.join(" | "), false, [])
+    if (!options.confirm) return finishMutant(killed(base, direction, ran.map((item) => failureId(pkg, item))), pkg, commands.join(" | "), whole, chosen)
+    const confirmed = await confirmFailures(pkg, options, ran, prep, limit, commands)
     const killedBy = confirmed.killed.map((item) => failureId(pkg, item))
     const flaky = confirmed.flaky.map((item) => failureId(pkg, item))
     const outcome: MutantOutcome = killedBy.length > 0 ? "killed" : "flaky"
@@ -528,6 +560,20 @@ function killed(base: () => MutantResult, direction: PatchDirection | null, kill
   return { ...base(), direction, outcome: "killed", killedBy, cause: label?.cause ?? "test", next: label?.next ?? "" }
 }
 
+/** The compiler rejected the mutant. `killedBy` names the compiler so the record says which one. */
+function unviable(base: () => MutantResult, direction: PatchDirection | null, compiler: string): MutantResult {
+  return { ...base(), direction, outcome: "unviable", killedBy: [compiler], cause: "build", next: UNVIABLE_NEXT }
+}
+
+/**
+ * Results written before `unviable` existed stored a compile failure as killed with cause build.
+ * Read them the new way so an old out dir does not count a compiler as a test.
+ */
+export function normalizeResult<T extends { outcome: string; cause?: string | null }>(result: T): T {
+  if (result.outcome === "killed" && result.cause === "build") return { ...result, outcome: "unviable", next: UNVIABLE_NEXT }
+  return result
+}
+
 async function confirmFailures(
   pkg: string,
   options: RunOptions,
@@ -540,11 +586,13 @@ async function confirmFailures(
   let wholeSuite = false
   const named = new Map<string, Failure[]>()
   const hungFiles = new Map<string, Failure[]>()
+  const unloaded = new Map<string, Failure[]>()
   for (const failure of failed) {
     const key = failure.file || "*"
     // A name filter skips the tests that left the handle open, so the file
     // timeout never comes back. Rerun that file with no name pattern.
-    const bucket = failure.fileTimeout ? hungFiles : named
+    // A file that did not load has no test name to filter by either.
+    const bucket = failure.fileTimeout ? hungFiles : failure.fileLoad ? unloaded : named
     const list = bucket.get(key) ?? []
     list.push(failure)
     bucket.set(key, list)
@@ -555,6 +603,9 @@ async function confirmFailures(
   }
   for (const [file, failures] of hungFiles) {
     if (await rerunGroup(pkg, options, file, failures, counts, null, prep, timeoutMs, commands)) wholeSuite = true
+  }
+  for (const [file, failures] of unloaded) {
+    if (await rerunGroup(pkg, options, file, failures, counts, null, prep, timeoutMs, commands, "load")) wholeSuite = true
   }
   const killed: Failure[] = []
   const flaky: Failure[] = []
@@ -572,6 +623,7 @@ async function rerunGroup(
   prep: Prepared,
   timeoutMs: number,
   commands: string[],
+  fileFailure: "timeout" | "load" = "timeout",
 ): Promise<boolean> {
   const files = file === "*" ? listTestFiles(pkg, options.testsDir, prep.spec) : [testArg(pkg, file, options.testsDir)]
   const isolated = { ...options, concurrency: 1 }
@@ -582,14 +634,14 @@ async function rerunGroup(
     const rerun = await runSuite(pkg, files, isolated, directNames ? null : pattern, directNames, prep.spec, timeoutMs, false, null, null)
     if (rerun.wholeSuite) wholeSuite = true
     if (rerun.command) commands.push(rerun.command)
-    if (pattern === null && rerun.timedOut) {
+    if (pattern === null && fileFailure === "timeout" && rerun.timedOut) {
       for (const id of new Set(failures.map((item) => failureId(pkg, item)))) bump(counts, id)
       continue
     }
     if (!rerun.report) continue
     const seen = new Set<string>()
     for (const hit of rerun.report.failed) {
-      if (pattern === null && !hit.fileTimeout) continue
+      if (pattern === null && !(fileFailure === "timeout" ? hit.fileTimeout : hit.fileLoad)) continue
       const id = failureId(pkg, hit)
       if (failures.some((item) => failureId(pkg, item) === id)) seen.add(id)
     }
@@ -736,7 +788,7 @@ class NodeBatch {
       return {
         report: null,
         timedOut: false,
-        detail: waited.error || "test reporter returned nothing",
+        detail: waited.error || (selected.length > 0 ? `no requested test ran (${selected.join(", ")})` : "test reporter returned nothing"),
         compileToken: null,
         command: waited.command || "",
         wholeSuite: false,
@@ -797,6 +849,12 @@ function isNodeTestFile(file: string): boolean {
   return /\.(test|spec)\.(ts|tsx|mts|js|mjs|cjs)$/.test(base) || /_test\.(ts|tsx|js|mjs)$/.test(base)
 }
 
+/** A node keep id may carry its file (`tests/gate.test.ts::zero stays shut`). node:test matches the title. */
+export function nodeTitle(id: string): string {
+  const match = /^[^\s:][^:]*\.(?:[cm]?[jt]s|[jt]sx)::(.+)$/.exec(id)
+  return match ? match[1] : id
+}
+
 function narrowNodeFiles(pkg: string, files: string[], names: string[] | null, kind: string): string[] {
   if (kind !== "node" || !names || names.length === 0) return files
   const hit = files.filter((file) => {
@@ -828,6 +886,16 @@ function childEnv(unset: string[]): NodeJS.ProcessEnv {
   // A suite launched from inside node:test inherits this and then refuses to run.
   for (const key of Object.keys(env)) {
     if (key === "NODE_TEST_CONTEXT" || key.startsWith("NODE_TEST_")) delete env[key]
+  }
+  // This run may itself be a child of a suite that another Probatio run is mapping.
+  // That outer map is not this run's. Only the baseline sets a map, through runDiscoveredSuite.
+  delete env.PROBATIO_COVERAGE_MAP
+  delete env.PROBATIO_PACKAGE_ROOT
+  delete env.PROBATIO_CHILD_DIR
+  if (env.NODE_OPTIONS) {
+    const kept = env.NODE_OPTIONS.split(/\s+/).filter((part) => part.length > 0 && !/child-lines\.mjs$/.test(part)).join(" ")
+    if (kept) env.NODE_OPTIONS = kept
+    else delete env.NODE_OPTIONS
   }
   for (const key of unset) delete env[key]
   return env
@@ -955,8 +1023,11 @@ async function createWorktrees(
   }
   writeFileSync(path.join(outDir, "worktrees.json"), `${JSON.stringify(dirs)}\n`)
   const sources = nodeModuleSources(repo, packageDir)
+  const config = path.join(packageDir, CONFIG_FILE)
   for (const dir of dirs) {
     const pkgRoot = packageIn(dir, repo, packageDir)
+    // How to run the suite is not the code under test. An uncommitted .probatio.json still applies.
+    if (existsSync(config) && !existsSync(path.join(pkgRoot, CONFIG_FILE))) copyFileSync(config, path.join(pkgRoot, CONFIG_FILE))
     for (const source of sources) {
       const dest = path.join(pkgRoot, source.rel)
       if (existsSync(dest)) continue
@@ -1107,7 +1178,7 @@ function writeResult(outDir: string, result: MutantResult): void {
 function readResult(outDir: string, id: string): MutantResult | null {
   const file = resultPath(outDir, id)
   if (!existsSync(file)) return null
-  return JSON.parse(readFileSync(file, "utf8")) as MutantResult
+  return normalizeResult(JSON.parse(readFileSync(file, "utf8")) as MutantResult)
 }
 
 function reportOf(
@@ -1126,6 +1197,7 @@ function reportOf(
 ): RunReport {
   const count = (outcome: MutantOutcome) => results.filter((result) => result.outcome === outcome).length
   const killed = count("killed")
+  const unviableCount = count("unviable")
   const survived = count("survived")
   const flaky = count("flaky")
   const timeouts = count("timeout")
@@ -1139,7 +1211,7 @@ function reportOf(
     return { id: result.id, file, line, ...(known?.op ? { op: known.op } : {}) }
   })
   const budgetHit = context.budgetHit || context.pendingLeft > 0
-  const summary = campaignSummary({ noCoverage, survived, killed, flaky, timeouts, errors, finished: results.length })
+  const summary = campaignSummary({ noCoverage, survived, killed, unviable: unviableCount, flaky, timeouts, errors, finished: results.length })
   const notes: string[] = []
   const uncovered = results.find((result) => result.outcome === "no coverage")
   if (uncovered?.next) notes.push(uncovered.next)
@@ -1158,6 +1230,8 @@ function reportOf(
     commit: context.commit,
     runId: context.runId,
     killed,
+    unviable: unviableCount,
+    unviableIds: results.filter((result) => result.outcome === "unviable").slice(0, 10).map((result) => result.id),
     survived,
     flaky,
     timeouts,
@@ -1230,6 +1304,8 @@ function failReport(
     commit,
     runId,
     killed: 0,
+    unviable: 0,
+    unviableIds: [],
     survived: 0,
     flaky: 0,
     timeouts: 0,
@@ -1406,9 +1482,18 @@ function failureId(pkg: string, failure: Failure): string {
   // An unnamed shell suite stays ::command so a tally does not treat it as a test.
   if (!failure.file) return BARE_SUITE.has(failure.name) ? `::${failure.name}` : failure.name
   if (!testFileOnDisk(pkg, failure.file)) return failure.name
-  const rel = path.relative(pkg, failure.file)
+  // macOS temp dirs are /var and /private/var. A report can name either, so compare real paths.
+  const rel = path.relative(realOrSame(pkg), realOrSame(path.resolve(pkg, failure.file)))
   const file = !rel || rel.startsWith("..") ? path.basename(failure.file) : rel.split(path.sep).join("/")
   return `${file}::${failure.name}`
+}
+
+function realOrSame(file: string): string {
+  try {
+    return realpathSync(file)
+  } catch {
+    return file
+  }
 }
 
 function testFileOnDisk(pkg: string, file: string): boolean {

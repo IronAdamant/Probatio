@@ -12,6 +12,8 @@ if (mapPath) {
   let prelude = []
   /** @type {{ positiveLines: () => Promise<Array<{ file: string, line: number }>> } | null} */
   let sampler = null
+  /** @type {((mapPath: string) => Array<{ file: string, line: number }>) | null} */
+  let takeChildHits = null
 
   function add(hits, name) {
     if (!name) return
@@ -40,7 +42,10 @@ if (mapPath) {
     async beforeAll() {
       try {
         const opened = await import("./precise-lines.mjs")
-        sampler = await opened.openLineSampler((rel) => rel.endsWith("mocha-coverage.cjs") || rel.endsWith("precise-lines.mjs") || rel.endsWith("node-coverage.mjs"))
+        sampler = await opened.openLineSampler((rel) => rel.endsWith("mocha-coverage.cjs") || rel.endsWith("precise-lines.mjs") || rel.endsWith("node-coverage.mjs") || rel.endsWith("child-lines.mjs"))
+        // A node child of a Mocha test is mapped under that test, the same as under node:test.
+        opened.exposeChildLines()
+        takeChildHits = opened.takeChildHits
         prelude = await sampler.positiveLines()
       } catch (err) {
         writeFileSync(`${mapPath}.error`, `${err instanceof Error ? err.message : String(err)}\n`)
@@ -52,6 +57,7 @@ if (mapPath) {
       try {
         add(prelude, title)
         add(await sampler.positiveLines(), title)
+        if (takeChildHits) add(takeChildHits(mapPath), title)
       } catch (err) {
         writeFileSync(`${mapPath}.error`, `${err instanceof Error ? err.message : String(err)}\n`)
       }

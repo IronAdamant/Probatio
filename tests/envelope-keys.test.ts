@@ -54,7 +54,7 @@ test("mutate run and tally keep the envelope keys and scrub a home path", { time
       nextCall: { argv: string[] } | null
       full?: string
       keep: string[]
-      drop: string[]
+      noKillsYet: string[]
       gaps: unknown[]
       pruning: { deletedTests: number; mode: string }
     }
@@ -62,10 +62,10 @@ test("mutate run and tally keep the envelope keys and scrub a home path", { time
     const { nextCall, ...shown } = counted
     assert.equal(JSON.stringify(shown).includes(homedir()), false, tally.stdout)
     assert.match(String(counted.full ?? ""), /^~/)
-    assert.ok(nextCall && nextCall.argv.includes(out), tally.stdout)
+    assert.ok(nextCall && nextCall.argv.includes(`${out}.rescore`), tally.stdout)
     assert.equal(nextCall.argv.some((arg) => arg.includes("~")), false)
     assert.ok(Array.isArray(counted.keep))
-    assert.ok(Array.isArray(counted.drop))
+    assert.ok(Array.isArray(counted.noKillsYet))
     assert.ok(Array.isArray(counted.gaps))
     assert.equal(counted.pruning.deletedTests, 0)
     assert.equal(counted.pruning.mode, "advisory")

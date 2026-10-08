@@ -85,8 +85,8 @@ public class ProbatioJacocoRun {
       System.err.println("java coverage: tests ran but JaCoCo recorded no classes");
       System.exit(1);
     }
-    // jsoup's integration tests leave Netty loops running. A normal return would
-    // wait on those threads until the parent clock kills the dump.
+    // Integration tests can leave non-daemon threads running (jsoup leaves Netty loops).
+    // A normal return would wait on those threads until the parent clock kills the dump.
     System.exit(0);
   }
 

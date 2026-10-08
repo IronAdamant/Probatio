@@ -40,8 +40,22 @@ function underPackage(abs) {
   return real === root || real.startsWith(root.endsWith(path.sep) ? root : root + path.sep)
 }
 
+/** TypeScript with NodeNext writes `./limit.js` for `limit.ts`. tsx resolves that, so this loader does too. */
+function typeScriptSibling(specifier) {
+  if (!/^(\.{1,2}\/|\/|file:)/.test(specifier)) return null
+  const swapped = specifier.replace(/\.js$/, ".ts").replace(/\.mjs$/, ".mts").replace(/\.cjs$/, ".cts").replace(/\.jsx$/, ".tsx")
+  return swapped === specifier ? null : swapped
+}
+
 export async function resolve(specifier, context, nextResolve) {
-  const resolved = await nextResolve(specifier, context)
+  let resolved
+  try {
+    resolved = await nextResolve(specifier, context)
+  } catch (error) {
+    const sibling = typeScriptSibling(specifier)
+    if (!sibling) throw error
+    resolved = await nextResolve(sibling, context)
+  }
   const gen = generation()
   if (!gen) return resolved
   let abs

@@ -5,6 +5,8 @@ export const UNKNOWN_NEXT =
 
 export const TIMEOUT_NEXT = "Timed out. The mutant ran longer than the baseline allows."
 
+export const UNVIABLE_NEXT = "The mutant did not build. No test saw it, so it is not a kill and not a gap. No test is needed."
+
 export const WHOLE_SUITE_NEXT = "The suite command cannot take a test name, so the whole suite ran."
 
 export const TIMEOUT_MULTIPLE = 5
@@ -37,6 +39,8 @@ export function campaignSummary(counts: {
   noCoverage: number
   survived: number
   killed: number
+  /** Named only when a mutant did not build. Older summaries keep their shape. */
+  unviable?: number
   flaky: number
   timeouts: number
   errors: number
@@ -46,7 +50,7 @@ export function campaignSummary(counts: {
     counts.noCoverage,
     counts.survived,
     "survived",
-    `${counts.killed} killed, ${counts.flaky} flaky, ${counts.timeouts} timed out, ${counts.errors} errored, of ${counts.finished} finished.`,
+    `${counts.killed} killed, ${counts.unviable ? `${counts.unviable} did not build, ` : ""}${counts.flaky} flaky, ${counts.timeouts} timed out, ${counts.errors} errored, of ${counts.finished} finished.`,
   )
 }
 

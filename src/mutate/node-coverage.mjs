@@ -1,13 +1,14 @@
 // Baseline-only per-test line map for node --test. Loaded with --import in each
 // test-file process. Writes one shard; the runner merges shards after the suite.
 // takePreciseCoverage resets counters, so each sample is only what ran since the last take.
-// A plain-script child does not run these hooks. It may leave a nameless hit list in
-// ${map}.children. afterEach stores that list under the parent test before the shard is written.
+// A node child of a test does not run these hooks. exposeChildLines puts child-lines.mjs in
+// its NODE_OPTIONS, so it leaves a nameless hit list in ${map}.children when it exits.
+// afterEach stores that list under the parent test before the shard is written.
 import { randomBytes } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { after, afterEach, before } from "node:test"
 import path from "node:path"
-import { openLineSampler } from "./precise-lines.mjs"
+import { exposeChildLines, openLineSampler, takeChildHits } from "./precise-lines.mjs"
 
 const mapPath = process.env.PROBATIO_COVERAGE_MAP
 if (mapPath) {
@@ -19,6 +20,7 @@ if (mapPath) {
   }
 
   if (sampler) {
+    exposeChildLines()
     /** @type {Map<string, Map<number, Set<string>>>} */
     const byFile = new Map()
     /** @type {Array<{ file: string, line: number }>} */
@@ -41,33 +43,6 @@ if (mapPath) {
       }
     }
 
-    function takeChildHits() {
-      const dir = `${mapPath}.children`
-      if (!existsSync(dir)) return []
-      /** @type {Array<{ file: string, line: number }>} */
-      const hits = []
-      for (const name of readdirSync(dir)) {
-        if (!name.endsWith(".json")) continue
-        const full = path.join(dir, name)
-        try {
-          const parsed = JSON.parse(readFileSync(full, "utf8"))
-          const list = parsed && Array.isArray(parsed.hits) ? parsed.hits : []
-          for (const hit of list) {
-            if (!hit || typeof hit.file !== "string" || !Number.isInteger(hit.line)) continue
-            hits.push({ file: hit.file, line: hit.line })
-          }
-        } catch {
-          // A torn dump is ignored. The parent does not invent a line.
-        }
-        try {
-          unlinkSync(full)
-        } catch {
-          // The next test must not inherit this dump.
-        }
-      }
-      return hits
-    }
-
     before(async () => {
       try {
         prelude = await sampler.positiveLines()
@@ -80,7 +55,7 @@ if (mapPath) {
       try {
         add(prelude, t.name)
         add(await sampler.positiveLines(), t.name)
-        add(takeChildHits(), t.name)
+        add(takeChildHits(mapPath), t.name)
       } catch (err) {
         writeFileSync(`${mapPath}.error`, `${err instanceof Error ? err.message : String(err)}\n`)
       }

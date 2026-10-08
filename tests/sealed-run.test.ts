@@ -79,6 +79,46 @@ test("--hide with a parent segment is refused and the outside file stays", () =>
   }
 })
 
+test("a sealed kill by a test the fix commit edited is not called a catch by older tests", { timeout: 120_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-sealed-edited-"))
+  const labelFile = path.join(dir, "label.txt")
+  writeFileSync(labelFile, "bug_id=seal-edit-71c\nissue_id=issue-edit-71c\nexpected_fail=zero stays shut\n")
+  const buggy = source.replace("n > 0", "n >= 0")
+  const openTest = (extra: string) =>
+    `import test from "node:test"\nimport assert from "node:assert/strict"\nimport { gate } from "../src/gate.ts"\ntest("one stays open", () => {\n  assert.equal(gate(1), true)\n${extra}})\n`
+  mkdirSync(path.join(dir, "src"))
+  mkdirSync(path.join(dir, "tests"))
+  mkdirSync(path.join(dir, "patches"))
+  writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
+  writeFileSync(path.join(dir, "src", "gate.ts"), buggy)
+  writeFileSync(path.join(dir, "tests", "open.test.ts"), openTest(""))
+  git(dir, ["init", "-q"])
+  git(dir, ["add", "."])
+  git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "before the fix"])
+  // The fix: the source, a new revealing test, and an edit to an older test that now also sees the bug.
+  writeFileSync(path.join(dir, "src", "gate.ts"), source)
+  writeFileSync(path.join(dir, "tests", "open.test.ts"), openTest("  assert.equal(gate(0), false)\n"))
+  writeFileSync(
+    path.join(dir, "tests", "shut.test.ts"),
+    "import test from \"node:test\"\nimport assert from \"node:assert/strict\"\nimport { gate } from \"../src/gate.ts\"\ntest(\"zero stays shut\", () => { assert.equal(gate(0), false) })\n",
+  )
+  git(dir, ["add", "."])
+  git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "fix"])
+  writeFileSync(path.join(dir, "patches", "m1.patch"), forwardDiff("src/gate.ts", source, buggy))
+  try {
+    const run = sealed(dir, labelFile, path.join(dir, "out"))
+    assert.equal(run.status, 0, run.stderr + run.stdout)
+    const body = JSON.parse(run.stdout) as { ok: boolean; summary: string; next: string; killed: number; fixEdited?: string[]; olderTestCatch?: boolean }
+    assert.equal(body.killed, 1, body.summary)
+    assert.deepEqual(body.fixEdited, ["tests/open.test.ts"], run.stdout)
+    assert.equal(body.olderTestCatch, false, run.stdout)
+    assert.match(body.summary, /edited by the fix commit/)
+    assert.equal(labelLeaked(run.stdout, readSealedLabel(labelFile)), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 function sealed(dir: string, label: string, out: string) {
   return spawnSync(
     tsx,

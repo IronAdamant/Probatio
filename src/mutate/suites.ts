@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { projectConfig, type ProjectConfig } from "./project-config.js"
 import type { TestReport } from "./run.js"
 
 export type SuiteSpec = {
@@ -69,11 +69,12 @@ export async function runDiscoveredSuite(
   }
   if (!spec) return empty
   const selected = files.length > 0 ? files : spec.files
-  const child: NodeJS.ProcessEnv = { ...env }
+  // The project's own .probatio.json env, then Probatio's collectors.
+  const child: NodeJS.ProcessEnv = { ...env, ...projectConfig(pkg).env }
   if (extra?.coverageMap) child.PROBATIO_COVERAGE_MAP = extra.coverageMap
   if (extra?.profileFile) child.LLVM_PROFILE_FILE = extra.profileFile
   const result = await launch(pkg, spec, selected, pattern, extra?.names ?? null, timeoutMs, child, hooks)
-  const compileToken = result.timedOut ? null : detectCompile(spec.kind, result.stdout, result.stderr, result.code)
+  const compileToken = result.timedOut ? null : detectCompile(spec.kind, result.stdout, result.stderr, result.code, projectConfig(pkg))
   // Ignore a report read from disk when this run failed to compile. The previous
   // suite's files are still in the worktree and are not this mutant's result.
   const report = result.timedOut || compileToken ? null : adapt(spec.kind, pkg, result.stdout, result.stderr, result.code)
@@ -104,7 +105,10 @@ function cargoSuite(pkg: string): SuiteSpec | null {
 }
 
 function goSuite(pkg: string): SuiteSpec | null {
-  const files = walk(pkg, (rel) => rel.endsWith("_test.go"))
+  // `go test ./...` needs a module at or above the package and skips a nested module.
+  // Go files in an example module inside a Node or Python package are not this suite.
+  if (!moduleAbove(pkg, "go.mod")) return null
+  const files = outsideNested(pkg, ["go.mod"], walk(pkg, (rel) => rel.endsWith("_test.go")))
   if (files.length === 0) return null
   return { kind: "go", files, command: "go test -json ./..." }
 }
@@ -208,15 +212,37 @@ export function sourceCandidates(pkg: string): string[] {
   return walk(pkg, (rel) => SOURCE_EXT.test(rel) && (hasSegment(rel, "tests") || hasSegment(rel, "test")))
 }
 
+/** Files that mark a directory as its own Python project. */
+const PYTHON_PROJECT = ["pytest.ini", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini"]
+
 function pythonTests(pkg: string, testsDir: string): string[] {
   const configured = pytestTestPaths(pkg)
   const roots = new Set(configured ?? [testsDir, "tests", "test"])
-  return walk(pkg, (rel) => {
+  // A nested Python project (an example with its own pytest.ini) is not this package's suite.
+  return outsideNested(pkg, PYTHON_PROJECT, walk(pkg, (rel) => {
     const base = path.posix.basename(rel)
     if (!/^test_.*\.py$/.test(base) && !/_test\.py$/.test(base) && !/^tests_.*\.py$/.test(base)) return false
     if (configured) return configured.some((root) => rel === root || rel.startsWith(`${root}/`))
     return rel.split("/").some((part) => roots.has(part))
-  })
+  }))
+}
+
+/** True when `name` sits in the package or one of its parents. */
+function moduleAbove(pkg: string, name: string): boolean {
+  let dir = path.resolve(pkg)
+  for (;;) {
+    if (existsSync(path.join(dir, name))) return true
+    const parent = path.dirname(dir)
+    if (parent === dir) return false
+    dir = parent
+  }
+}
+
+/** Drops files inside a subdirectory that has one of these manifests. That subdirectory is another project. */
+function outsideNested(pkg: string, manifests: string[], files: string[]): string[] {
+  const nested = walk(pkg, (rel) => rel.includes("/") && manifests.includes(path.posix.basename(rel))).map((rel) => path.posix.dirname(rel))
+  if (nested.length === 0) return files
+  return files.filter((rel) => !nested.some((dir) => rel.startsWith(`${dir}/`)))
 }
 
 /** Directories pytest itself would collect. A missing setting keeps the broader walk. */
@@ -437,7 +463,7 @@ async function launch(
     const command = grep ? `${spec.command} --grep ${JSON.stringify(grep)}` : spec.command
     return tag(runMocha(pkg, files, timeoutMs, env, selection), command, false, selection)
   }
-  // A tty is only for a suite that runs `docker run -it` (tini). Everything else is bash.
+  // A tty is only for a suite whose scripts run `docker run -it`. Everything else is bash.
   if (spec.kind === "script") {
     const launched = scriptInvocation(pkg)
     return tag(runScript(pkg, timeoutMs, env, launched), launched.command, wantsNames, selection)
@@ -850,81 +876,7 @@ function runScript(
   env: NodeJS.ProcessEnv,
   launched: { bin: string; args: string[] },
 ): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
-  const next = { ...env }
-  const shim = writeDockerShim(pkg)
-  if (shim) next.PATH = `${shim}${path.delimiter}${next.PATH ?? ""}`
-  // This project's CI sets ARCH_NATIVE=1. Without it, ci/run_build.sh skips the tests.
-  const inner = path.join(pkg, "test", "run_inner_tests.py")
-  const build = path.join(pkg, "ci", "run_build.sh")
-  if (!next.ARCH_NATIVE && existsSync(inner) && existsSync(build) && readFileSync(build, "utf8").includes("ARCH_NATIVE")) {
-    next.ARCH_NATIVE = "1"
-  }
-  return spawnCollected(launched.bin, launched.args, pkg, next, timeoutMs)
-}
-
-function writeDockerShim(pkg: string): string | null {
-  const found = spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" })
-  const real = found.stdout?.trim() ?? ""
-  if (found.status !== 0 || !real) return null
-  const dir = path.join(pkg, ".probatio-suite", "bin")
-  mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, "docker")
-  writeFileSync(file, dockerShimScript(real), { mode: 0o755 })
-  return dir
-}
-
-function dockerShimScript(real: string): string {
-  return `#!/bin/bash
-set -euo pipefail
-REAL=${JSON.stringify(real)}
-if [[ "\${1:-}" != "build" ]]; then
-  exec "$REAL" "$@"
-fi
-shift
-args=()
-context=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --build-arg|--file|-f|--tag|-t|--target|--platform|--iidfile|--label|--network|--output|-o|--secret|--ssh|--cache-from|--cache-to|--build-context|--ulimit|--add-host)
-      args+=("$1" "$2"); shift 2 ;;
-    --build-arg=*|--file=*|--tag=*|--target=*|--platform=*|--network=*|--output=*)
-      args+=("$1"); shift ;;
-    --)
-      shift; context="\${1:-}"; break ;;
-    -*)
-      args+=("$1"); shift ;;
-    *)
-      context="$1"; shift ;;
-  esac
-done
-if [[ -z "$context" ]]; then
-  exec "$REAL" build --pull=false "\${args[@]}"
-fi
-src=$(cd "$context" && pwd)
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-cp -a "$src"/. "$tmp"/
-deps="$tmp/ci/install_deps.sh"
-if [[ -f "$deps" ]] && grep -q "pip install --upgrade pip" "$deps"; then
-  python3 - "$deps" << 'PY'
-import sys
-from pathlib import Path
-p = Path(sys.argv[1])
-text = p.read_text()
-old = "python3 -m pip install --upgrade pip\\npython3 -m pip install virtualenv\\n"
-new = """python3 -m pip install 'pip==20.3.4'
-printf '%s\\\\n' '[global]' 'constraint = /etc/pip-constraints.txt' > /etc/pip.conf
-printf '%s\\\\n' 'virtualenv==16.7.10' 'psutil==5.6.7' 'python-prctl==1.8.1' > /etc/pip-constraints.txt
-python3 -m pip install 'virtualenv==16.7.10'
-"""
-if old not in text:
-    raise SystemExit(0)
-p.write_text(text.replace(old, new, 1))
-p.chmod(0o755)
-PY
-fi
-"$REAL" build --pull=false "\${args[@]}" "$tmp"
-`
+  return spawnCollected(launched.bin, launched.args, pkg, env, timeoutMs)
 }
 
 function runSwift(
@@ -932,70 +884,7 @@ function runSwift(
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
 ): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
-  const args = ["test"]
-  if (declaresOwnPredicate(pkg)) {
-    const overlay = foundationPredicateOverlay()
-    if (overlay) {
-      args.push(
-        "-Xswiftc",
-        "-vfsoverlay",
-        "-Xswiftc",
-        overlay.file,
-        "-Xswiftc",
-        "-module-cache-path",
-        "-Xswiftc",
-        overlay.cache,
-      )
-    }
-  }
-  return spawnCollected("swift", args, pkg, env, timeoutMs)
-}
-
-function declaresOwnPredicate(pkg: string): boolean {
-  return walk(pkg, (rel) => rel.endsWith(".swift")).some((rel) => /struct\s+Predicate\s*</.test(readFileSync(path.join(pkg, rel), "utf8")))
-}
-
-function foundationPredicateOverlay(): { file: string; cache: string } | null {
-  const sdk = spawnSync("xcrun", ["--sdk", "macosx", "--show-sdk-path"], { encoding: "utf8" })
-  const sdkPath = sdk.stdout?.trim() ?? ""
-  if (sdk.status !== 0 || !sdkPath) return null
-  const moduleDir = path.join(sdkPath, "System/Library/Frameworks/Foundation.framework/Modules/Foundation.swiftmodule")
-  if (!existsSync(moduleDir)) return null
-  const interfaces = readdirSync(moduleDir).filter((name) => name.endsWith(".swiftinterface"))
-  if (interfaces.length === 0) return null
-  const stamp = String(statSync(path.join(moduleDir, interfaces[0])).mtimeMs)
-  const root = path.join(tmpdir(), "probatio-foundation-overlay")
-  const edited = path.join(root, "interfaces")
-  const file = path.join(root, "overlay.json")
-  const cache = path.join(root, "cache")
-  const stampFile = path.join(root, "stamp")
-  mkdirSync(cache, { recursive: true })
-  if (!existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp || !existsSync(file)) {
-    mkdirSync(edited, { recursive: true })
-    const contents: Array<{ name: string; type: string; "external-contents": string }> = []
-    for (const name of readdirSync(moduleDir).sort()) {
-      const original = path.join(moduleDir, name)
-      if (!statSync(original).isFile()) continue
-      let external = original
-      if (name.endsWith(".swiftinterface")) {
-        external = path.join(edited, name)
-        writeFileSync(external, hideFoundationPredicate(readFileSync(original, "utf8")))
-      }
-      contents.push({ name, type: "file", "external-contents": external })
-    }
-    writeFileSync(file, `${JSON.stringify({ version: 0, roots: [{ name: moduleDir, type: "directory", contents }] }, null, 2)}\n`)
-    writeFileSync(stampFile, stamp)
-  }
-  return { file, cache }
-}
-
-function hideFoundationPredicate(text: string): string {
-  return text
-    .split("public struct Predicate<each Input>")
-    .join("public struct HiddenPredicate<each Input>")
-    .split("public macro Predicate<each Input>")
-    .join("public macro HiddenPredicate<each Input>")
-    .replace(/Foundation::Predicate(?![A-Za-z])/g, "Foundation::HiddenPredicate")
+  return spawnCollected("swift", ["test"], pkg, env, timeoutMs)
 }
 
 function readMochaConfig(pkg: string): { extension?: string[]; require: string[]; spec?: string[] } | null {
@@ -1262,7 +1151,7 @@ function compileFailed(result: { code: number; stdout: string; stderr: string; t
 }
 
 /** A compiler token when this run failed before any test result exists. Null when tests ran. */
-export function detectCompile(kind: string, stdout: string, stderr: string, code: number): string | null {
+export function detectCompile(kind: string, stdout: string, stderr: string, code: number, config: ProjectConfig = projectConfig("")): string | null {
   if (code === 0) return null
   const text = `${stdout}\n${stderr}`
   if (text.includes("PROB_COMPILE_FAILED")) return compilerToken(kind)
@@ -1275,15 +1164,20 @@ export function detectCompile(kind: string, stdout: string, stderr: string, code
   if (kind === "node" && /SyntaxError/.test(text) && jsonReport(stdout) === null) return "compiler"
   if (kind === "mocha" && /error TS\d+|Unable to compile/.test(text) && !/"tests"\s*:/.test(text)) return "tsc"
   if (kind === "make-test" && !/Tests run:\s*\d+/.test(text) && /error:|cobc:|syntax error/i.test(text)) return "cobc"
-  // A shell suite that dies in the compiler never prints a test title. That is a compile kill.
-  if (kind === "script" && !scriptReported(text) && /:\s*error:|fatal error:|undefined reference to|\[-Werror/.test(text)) return "clang"
+  // A shell suite that dies in the compiler never prints a test line. That mutant did not build.
+  if (kind === "script" && !scriptReported(text, config) && COMPILER_ERROR.test(text)) return "clang"
   return null
 }
 
-function scriptReported(text: string): boolean {
-  const testLine =
-    /^(Testing (?!with FORCE_SUBREAPER\b).+|Running (?:exit code|reaping|process group|zombie|signal configuration|parent death).+|running signal test .+)$/
-  return text.split(/\r?\n/).some((raw) => testLine.test(scriptLine(raw)))
+/** A C or C++ compiler or linker error: `file.c:12:5: error:`, or an undefined symbol. */
+const COMPILER_ERROR = /^[^\s:]+\.(?:c|cc|cpp|cxx|h|hh|hpp|m|mm):\d+:\d+:\s+(?:fatal\s+)?error:|undefined reference to|Undefined symbols for architecture/m
+
+/** True when the output already has a test line, so a later error is a test, not the build. */
+function scriptReported(text: string, config: ProjectConfig): boolean {
+  return text.split(/\r?\n/).some((raw) => {
+    const line = scriptLine(raw)
+    return (config.testLine !== null && config.testLine.test(line)) || TAP_LINE.test(line)
+  })
 }
 
 function scriptLine(raw: string): string {
@@ -1310,7 +1204,7 @@ function adapt(kind: string, pkg: string, stdout: string, stderr: string, code: 
   if (kind === "go") return parseGo(stdout)
   if (kind === "cargo") return parseCargo(`${stdout}\n${stderr}`)
   if (kind === "swift") return parseSwift(`${stdout}\n${stderr}`, code)
-  if (kind === "script") return parseScriptReport(`${stdout}\n${stderr}`, code)
+  if (kind === "script") return parseScriptReport(`${stdout}\n${stderr}`, code, projectConfig(pkg))
   if (kind === "maven") return mavenReport(pkg, `${stdout}\n${stderr}`, code)
   if (kind === "dotnet") return parseDotnet(`${stdout}\n${stderr}`, code)
   if (kind === "mocha") return parseMocha(stdout)
@@ -1372,18 +1266,42 @@ function parseCargo(text: string): TestReport | null {
   return { tests: names.length, pass: names.length - failed.length, fail: failed.length, failed, names }
 }
 
-function parseScriptReport(text: string, code: number): TestReport | null {
-  const names: string[] = []
-  const testLine =
-    /^(Testing (?!with FORCE_SUBREAPER\b).+|Running (?:exit code|reaping|process group|zombie|signal configuration|parent death).+|running signal test .+)$/
-  for (const raw of text.split(/\r?\n/)) {
-    const line = scriptLine(raw)
-    if (!testLine.test(line) || names.includes(line)) continue
-    names.push(line)
+/** TAP: `ok 1 - name`, `not ok 2 - name # SKIP`. Many shell suites print it. */
+const TAP_LINE = /^(not )?ok\b\s*\d*\s*(?:-\s*)?(.*?)\s*(?:#\s*(SKIP|TODO)\b.*)?$/i
+
+/**
+ * A shell suite names its tests with the project's `testLine` from .probatio.json, or with TAP.
+ * With neither, it is one command: exit 0 passes, and a failure is `::command`, not an invented name.
+ */
+function parseScriptReport(text: string, code: number, config: ProjectConfig): TestReport | null {
+  const lines = text.split(/\r?\n/).map(scriptLine)
+  if (config.testLine) {
+    const names: string[] = []
+    for (const line of lines) {
+      const match = config.testLine.exec(line)
+      if (!match) continue
+      const name = (match[1] ?? match[0]).trim()
+      if (name && !names.includes(name)) names.push(name)
+    }
+    // A configured test line that never printed is not a report. The baseline stops on that.
+    if (names.length === 0) return null
+    const passed = code === 0 || (config.passLine !== null && lines.some((line) => config.passLine!.test(line)))
+    // The suite stops at the test that failed, so the last test line is the one that was running.
+    const failed = passed ? [] : [{ name: names[names.length - 1], file: "", line: 0 }]
+    return { tests: names.length, pass: names.length - failed.length, fail: failed.length, failed, names }
   }
-  if (names.length === 0) return null
-  const failed = text.includes("All done, tests as expected") || code === 0 ? [] : [{ name: names[names.length - 1], file: "", line: 0 }]
-  return { tests: names.length, pass: names.length - failed.length, fail: failed.length, failed, names }
+  const names: string[] = []
+  const failed: TestReport["failed"] = []
+  for (const line of lines) {
+    const match = TAP_LINE.exec(line)
+    if (!match || !match[2]) continue
+    const name = match[2]
+    if (names.includes(name)) continue
+    names.push(name)
+    if (match[1] && !match[3]) failed.push({ name, file: "", line: 0 })
+  }
+  if (names.length > 0) return { tests: names.length, pass: names.length - failed.length, fail: failed.length, failed, names }
+  return exitReport("command", code)
 }
 
 function parseSwift(text: string, code: number): TestReport | null {
