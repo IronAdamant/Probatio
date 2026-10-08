@@ -4,9 +4,11 @@ Versions on npm, newest first. `0.1.1` was committed and was not published. Git 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
-## Unreleased
+## 0.3.0
 
-Not on npm. Read before upgrading an agent:
+- Not yet published. The gitHead to publish is the commit that sets this version, tagged `v0.3.0`. It is the first version cut through `docs/releasing.md`.
+
+Read before upgrading an agent:
 
 - `schemaVersion` is 2. 0.2.0 renamed `drop` to `noKillsYet` and moved compile and link failures from `killed` to `unviable` without bumping it. Every envelope now says 2.
 - `schemas/` has one JSON Schema per command, shipped in the package, and `probatio schema <command>` prints one. A new field does not change `schemaVersion`. A renamed or removed one does.
