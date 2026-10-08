@@ -8,6 +8,19 @@ Newest first. Start a review by rerunning the commands in the latest section. Th
 - `npm test` on this Mac, 2026-10-08: 146 tests, 143 pass, 0 fail, 3 skipped, about 142s. Skips name the missing tool (`llvm-cov`, `arch -x86_64`). GitHub Actions run `37715743205` on `4c5f205` (these changes) is green on all five jobs.
 - Sealed record: no hidden real bug has been caught by older tests. Seven subjects are in the README table. The CSV-271 kill came from a test the fix commit edited, and with the line map it is now a survivor.
 
+## 2026-10-08, later — the six follow-ups
+
+Branch `next`. Each item has a builder test that failed first, except the schema files, which are checked against real output.
+
+1. **Self-check.** `ledger check` runs every ledger bug and compares each outcome with `ledger/<id>.golden.json`. A caught bug that is not caught now fails it. Re-recording a change needs `Golden-Change: <id>: <why>`. `.github/workflows/self-score.yml` runs it on pushes to `main` and `next`, nightly, and on demand, with the toolchain job's tools. A hand-made mutant that names its fix (`source=hand fix=<sha>`) now replaces the history revert. `ledger/950dea0-hand.patch` keeps `surefireArg` and puts back the comma join. Local run on this Mac (18m46s): `950dea0` killed by `tests/surefire-attr.test.ts`, `38c6f42` killed, `4eda582` survived because `llvm-cov` is missing here. The goldens were recorded with that reason. CI's toolchain has llvm, so `4eda582` may be caught there: read the first self-score run and re-record that row with a Golden-Change line if so.
+2. **Demo.** [docs/demo-commons-csv.md](docs/demo-commons-csv.md). Blind protocol, three subjects. No hidden bug was caught by the new tests. Subject 1 (CSV-265): the gap pass found two real survivors, and one new test killed both, but the bug was a rewritten `readLine()` whose missing `position` update no operator expressed. Subject 2 did not build on this JDK. Subject 3 was a refactor, not a bug. The demo led to two operator changes: statement deletion for semicolon languages, and no `-` for string concatenation in text languages.
+3. **Golden recorder.** `golden record` and `golden compare` for Node/TypeScript ESM modules. Test: `tests/golden-record.test.ts`, which records from real unit tests (a callback call counted as hidden, an async row, a throwing row), replays, fails on a wrong row, and compares (the table kills every unit kill on that fixture).
+4. **Schemas.** `schemas/<command>.schema.json` for 24 commands, `schemaVersion` 2, `probatio schema <command>`. `tests/schemas.test.ts` runs every command on a fixture and validates its stdout with ajv. It found that `queue.seed` and `queue.reap` return id lists, not counts.
+5. **Wide operators.** `--operators wide`. `core` stays the default, so ids and counts from earlier runs do not move.
+6. **Release gate.** `scripts/release-check.mjs` as `prepublishOnly`, with `docs/releasing.md`. On this repo today it refuses: the branch is `next`, 0.2.0 is already on npm, no `v0.2.0` tag, and no self-score run on that commit.
+
+Also fixed: a kill in a nested test folder (`tests/unit/x.test.ts`) was confirmed against `tests/x.test.ts` on macOS (`/var` and `/private/var`), so it read as flaky. `golden compare` found it, because its replay tests live in `tests/golden/`. `mutate sealed --fix <commit>` names the fix commit when later commits sit on top.
+
 ## 2026-10-08 — Claude review, then fixes
 
 Each fix below has a builder test that failed before the change and passes after, except where noted.

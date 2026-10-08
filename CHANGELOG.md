@@ -17,8 +17,9 @@ Added:
 - `.github/workflows/self-score.yml`: Probatio runs `ledger check` on its own ledger on every push to `main` and nightly.
 - A hand-made ledger mutant whose header names its fix (`source=hand fix=<commit>`) replaces that fix's history revert. Probatio's own `950dea0` revert did not build, and its hand-made mutant keeps `surefireArg`.
 - `golden record`: records the plain-data calls a module's unit tests make into a golden table and a self-contained replay test. `golden compare`: scores the same mutants with only the unit tests and with only the replay. Nothing is deleted.
-- `--operators wide` on `generate`, `verify-change`, and `golden compare`: arithmetic, integer constants, and in TypeScript a dropped call. `core` stays the default, so earlier ids and counts do not move.
+- `--operators wide` on `generate`, `verify-change`, and `golden compare`: arithmetic, integer constants, and a dropped statement (TypeScript calls; in Java, C, C++, C#, JavaScript, and Rust, a call, assignment, or increment alone on its line). String concatenation is left alone. `core` stays the default, so earlier ids and counts do not move.
 - `mutate sealed --fix <commit>`: the fix commit whose diff the fix-edited check reads, when later commits sit on top of it.
+- `docs/demo-commons-csv.md`: a blind run of gaps, new tests, and a hidden bug on Commons CSV. The result is negative and says why.
 - `scripts/release-check.mjs` runs as `prepublishOnly`. `npm publish` needs a clean `main`, a CHANGELOG entry, a pushed `v<version>` tag on HEAD, and green `test` and `self-score` runs on that commit. See `docs/releasing.md`.
 
 Fixed:

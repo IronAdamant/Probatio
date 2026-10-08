@@ -65,6 +65,8 @@ Sealed runs. A sealed run hides the test that came with a fix, puts the bug back
 
 The CSV-271 kill came from `CSVFormatTest.testFormatThrowsNullPointerException`. The fix commit itself edited that test: it changed the asserted stack-frame class from `CSVFormat` to `java.util.Objects`. With the test as it was before the fix, all 92 `CSVFormatTest` tests pass on the reverted code, and no other test fails because of the bug. So no older test caught it. The honest record is that these suites did not notice a hidden real bug, which is what a sealed run is for. A kill that pins an internal detail, such as which class threw, is not the same as a test that checks behaviour.
 
+A blind run of the whole loop (gaps, new tests, then a hidden real bug) on Commons CSV is written up in [docs/demo-commons-csv.md](docs/demo-commons-csv.md). The new tests closed real gaps, and they did not catch the hidden bug. The page says why.
+
 Known limits:
 
 - The sealed list (`seal`) is a plain id list in the state dir. An agent that can read that directory can see it. Keep the state dir and every `mutate sealed` label file outside the workspace of the agents being scored.
@@ -84,7 +86,7 @@ npx probatio mutate run --package . --patches .probatio/generate/mutants --out .
 npx probatio mutate tally --out .probatio/runs
 ```
 
-`--operators wide` (on `generate`, `verify-change`, and `golden compare`) adds arithmetic swaps (`+`/`-`, `*`/`/`, `%`), integer constants (`0`→`1`, `1`→`0`, `n`→`n+1`), and in TypeScript a dropped call statement (`log(x)` becomes `void 0`). Text languages need the operator spaced on both sides, so `++`, `+=`, `->`, `//`, `**`, unary minus, and pointer stars are left alone, and hex, float, and suffixed literals are not constants. COBOL and assembly get no wide operators. `core` is the default, so ids and counts from earlier runs do not move. `mutants.json` records the set.
+`--operators wide` (on `generate`, `verify-change`, and `golden compare`) adds arithmetic swaps (`+`/`-`, `*`/`/`, `%`), integer constants (`0`→`1`, `1`→`0`, `n`→`n+1`), and a dropped statement. In TypeScript a call statement becomes `void 0`. In Java, C, C++, C#, JavaScript, and Rust, a call, an assignment, or an increment that is a whole statement on its own line becomes `;`. Text languages need the operator spaced on both sides, so `++`, `+=`, `->`, `//`, `**`, unary minus, and pointer stars are left alone. A `+` beside a string literal is concatenation and is left alone. Hex, float, and suffixed literals are not constants. COBOL and assembly get no wide operators, and Python gets no dropped statement. `core` is the default, so ids and counts from earlier runs do not move. `mutants.json` records the set.
 
 `generate` writes operator mutants (conditions, `&&`/`||`, `===`/`!==`, boundaries, booleans, a dropped `!`). The same class is written for COBOL (`.cob`, `.cbl`), Rust, C, C++, Java, Go, Python, JavaScript, and C#. Strings and comments are not mutated. A COBOL `*>` comment and a fixed-format line whose column 7 is `*` or `/` are comments. Each patch is forward: apply it to introduce the bug, and the file says so. When mutants were written, `next` states the count, the suite command if one was discovered, and whether the first run collects a line map.
 

@@ -161,3 +161,40 @@ test("mutate generate takes --operators wide, records it, and refuses an unknown
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("wide text operators leave string concatenation alone and still swap arithmetic", async () => {
+  const { findInSource } = await import("../src/mutate/find.ts")
+  const java = 'class T {\n  String show(Object type, StringBuilder content) {\n    return type + " [" + content.toString() + "]";\n  }\n  int sum(int a, int b) {\n    return a + b;\n  }\n}\n'
+  const ops = findInSource("src/T.java", java, "wide").points.filter((point) => point.op === "add-to-sub").map((point) => point.line)
+  // `"x" + y` builds a string. `-` would not compile, so it is not a mutant worth running.
+  assert.deepEqual(ops, [6])
+  const py = 'def label(n):\n    return "n=" + str(n) + "!"\n\ndef grow(n):\n    return n + 1\n'
+  assert.deepEqual(findInSource("src/label.py", py, "wide").points.filter((point) => point.op === "add-to-sub").map((point) => point.line), [5])
+})
+
+test("wide drops a call, assignment, or increment that stands alone on its line, and nothing else", async () => {
+  const { findInSource } = await import("../src/mutate/find.ts")
+  const java = [
+    "class R {",
+    "  int read() {",
+    "    final int current = super.read();",
+    "    if (current == 13) read();",
+    "    eolCounter++;",
+    "    position += 1;",
+    "    lastChar = current;",
+    "    this.mark(1);",
+    "    super(1);",
+    "    return lastChar;",
+    "  }",
+    '  String s = "x; y = 1;";',
+    "  // counter++;",
+    "}",
+    "",
+  ].join("\n")
+  const dropped = findInSource("src/R.java", java, "wide").points.filter((point) => point.op === "drop-statement").map((point) => point.original).sort()
+  // A declaration, a return, super(...), a statement after `if (...)` on the same line, a string, and a comment are not dropped.
+  assert.deepEqual(dropped, ["eolCounter++;", "lastChar = current;", "position += 1;", "this.mark(1);"])
+  const python = "def f(x):\n    total = x\n    total += 1\n    return total\n"
+  assert.equal(findInSource("src/f.py", python, "wide").points.some((point) => point.op === "drop-statement"), false, "no semicolon, no line deletion")
+  assert.equal(findInSource("src/R.java", java).points.some((point) => point.op === "drop-statement"), false, "core never drops a statement")
+})

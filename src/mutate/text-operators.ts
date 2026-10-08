@@ -154,7 +154,39 @@ export function findTextMutants(file: string, text: string, operators: OperatorS
     })
     index += match.original.length
   }
+  if (operators === "wide") points.push(...droppedStatements(file, text, code, kind))
   return { points, violations: [] }
+}
+
+const DROP_KINDS = new Set<Kind>(["c", "csharp", "js", "rust"])
+const NOT_DROPPED = /^(return|throw|break|continue|goto|case|default|yield|else|if|for|while|do|switch|try|catch|finally|new|package|import|using|let|const|var|val|super|assert)\b/
+const CALL = /^(this\.)?[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*\s*\(.*\)\s*;$/
+const ASSIGN = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*|\[[^\]]*\])*\s*([-+*/%|&^]|<<|>>)?=(?!=).+;$/
+const STEP = /^((\+\+|--)[A-Za-z_$][\w$.]*|[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*(\+\+|--));$/
+
+/**
+ * Wide set, semicolon languages only: drop a call, an assignment, or an increment that is a whole
+ * statement on its own line. `;` takes its place, which is an empty statement in every one of them.
+ * A declaration has a type before the name, so it never matches. A line inside a string, a comment,
+ * or the middle of a multi-line statement does not start with code that matches either.
+ */
+function droppedStatements(file: string, text: string, code: Uint8Array, kind: Kind): MutantPoint[] {
+  if (!DROP_KINDS.has(kind)) return []
+  const points: MutantPoint[] = []
+  let offset = 0
+  const lines = text.split("\n")
+  for (const [index, raw] of lines.entries()) {
+    const lead = raw.length - raw.trimStart().length
+    const statement = raw.trim()
+    const start = offset + lead
+    const end = start + statement.length
+    offset += raw.length + 1
+    if (!statement.endsWith(";") || !code[start] || !code[end - 1]) continue
+    if (NOT_DROPPED.test(statement)) continue
+    if (!CALL.test(statement) && !ASSIGN.test(statement) && !STEP.test(statement)) continue
+    points.push({ file, start, end, line: index + 1, op: "drop-statement", original: statement, replacement: ";" })
+  }
+  return points
 }
 
 function matchAt(text: string, index: number, code: Uint8Array, kind: Kind): Op | null {
@@ -193,6 +225,8 @@ function wideAt(text: string, index: number, code: Uint8Array, kind: Kind): Op |
     if (!(/[ \t]/.test(prev) && /[ \t]/.test(next))) return null
     const before = text.slice(0, index).trimEnd().slice(-1)
     if (before === "" || /[=(,[{:?!<>&|+\-*/%^~]/.test(before)) return null
+    // `"x" + y` builds a string. In Java or C# a `-` there does not compile, so it is not a useful mutant.
+    if (op.original === "+" && (stringBeside(text, code, index, -1) || stringBeside(text, code, index, 1))) return null
     return spanIsCode(code, index, 1) ? op : null
   }
   if (!/[0-9]/.test(text[index]) || /[A-Za-z0-9_.$#]/.test(prev)) return null
@@ -204,6 +238,13 @@ function wideAt(text: string, index: number, code: Uint8Array, kind: Kind): Op |
   if (digits === "1") return { original: "1", op: "const-one-to-zero", replacement: "0" }
   if (digits.length > 15 || digits.startsWith("0")) return null
   return { original: digits, op: "const-inc", replacement: String(Number(digits) + 1) }
+}
+
+/** True when the nearest non-space character on that side is a quote that the mask hides: a string literal's edge. */
+function stringBeside(text: string, code: Uint8Array, index: number, step: -1 | 1): boolean {
+  let at = index + step
+  while (at >= 0 && at < text.length && (text[at] === " " || text[at] === "\t")) at += step
+  return at >= 0 && at < text.length && !code[at] && /["'`]/.test(text[at])
 }
 
 function resolveKind(file: string, text: string): Kind | null {
