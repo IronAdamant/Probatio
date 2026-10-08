@@ -16,8 +16,8 @@ function runner(overrides: Record<string, Reply> = {}) {
     "npm view probatio@0.3.0 version": { status: 0, stdout: "" },
     "git rev-parse v0.3.0^{commit}": { status: 0, stdout: `${HEAD}\n` },
     "git ls-remote --tags origin refs/tags/v0.3.0^{} refs/tags/v0.3.0": { status: 0, stdout: `${OLD}\trefs/tags/v0.3.0\n${HEAD}\trefs/tags/v0.3.0^{}\n` },
-    [`gh run list --commit ${HEAD} --workflow test.yml --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"completed","conclusion":"success"}]' },
-    [`gh run list --commit ${HEAD} --workflow self-score.yml --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"completed","conclusion":"success"}]' },
+    [`gh run list --commit ${HEAD} --workflow test.yml --branch main --event push --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"completed","conclusion":"success"}]' },
+    [`gh run list --commit ${HEAD} --workflow self-score.yml --branch main --event push --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"completed","conclusion":"success"}]' },
     ...overrides,
   }
   return (bin: string, args: string[]) => answers[[bin, ...args].join(" ")] ?? { status: 1, stdout: "" }
@@ -41,12 +41,12 @@ test("a release-ready commit passes every check", async () => {
 
 test("a red self-score, a missing tag, or a published version stops npm publish", async () => {
   const red = await checks({
-    [`gh run list --commit ${HEAD} --workflow self-score.yml --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"completed","conclusion":"failure"}]' },
+    [`gh run list --commit ${HEAD} --workflow self-score.yml --branch main --event push --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"completed","conclusion":"failure"}]' },
   })
   assert.equal(red.ok, false)
   assert.ok(red.checks.some((check) => !check.ok && check.label.startsWith("self-score.yml")))
   const running = await checks({
-    [`gh run list --commit ${HEAD} --workflow test.yml --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"in_progress","conclusion":""}]' },
+    [`gh run list --commit ${HEAD} --workflow test.yml --branch main --event push --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"in_progress","conclusion":""}]' },
   })
   assert.equal(running.ok, false, "a run that has not finished is not green")
   const untagged = await checks({ "git rev-parse v0.3.0^{commit}": { status: 128, stdout: "" } })
@@ -60,4 +60,12 @@ test("a red self-score, a missing tag, or a published version stops npm publish"
   assert.equal(unpushed.ok, false)
   const dirty = await checks({ "git status --porcelain": { status: 0, stdout: " M src/cli.ts\n" } })
   assert.equal(dirty.ok, false)
+})
+
+test("the check reads the main push run, so a run started by the tag push cannot stand in for it", async () => {
+  // Without --branch main, gh would return the newest run on this commit, which is the tag's.
+  const ignoresTag = await checks({
+    [`gh run list --commit ${HEAD} --workflow test.yml --json status,conclusion --limit 1`]: { status: 0, stdout: '[{"status":"in_progress","conclusion":""}]' },
+  })
+  assert.equal(ignoresTag.ok, true, JSON.stringify(ignoresTag.checks.filter((check) => !check.ok)))
 })

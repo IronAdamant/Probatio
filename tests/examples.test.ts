@@ -52,7 +52,7 @@ for (const item of cases) {
 }
 
 function cli(dir: string, args: string[]) {
-  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8" })
+  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8", timeout: 300_000 })
 }
 
 function git(repo: string, args: string[]) {

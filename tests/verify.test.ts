@@ -235,7 +235,7 @@ test("verify-change does not call an uncommitted edit a clean miss", () => {
     )
     commit(dir, "init")
     writeFileSync(path.join(dir, "src", "gate.ts"), "export function gate(n: number): boolean {\n  return n >= 0\n}\n")
-    const result = spawnSync(tsx, ["src/cli.ts", "verify-change", "--package", dir, "--out", out], { cwd: root, encoding: "utf8" })
+    const result = spawnSync(tsx, ["src/cli.ts", "verify-change", "--package", dir, "--out", out], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(result.status, 1, result.stdout + result.stderr)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string }
     assert.equal(body.ok, false)

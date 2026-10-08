@@ -6,7 +6,9 @@ The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, the
 
 ## 0.3.0
 
-- Not yet published. The gitHead to publish is the commit that sets this version, tagged `v0.3.0`. It is the first version cut through `docs/releasing.md`.
+- Published 2026-10-08. gitHead `f969b984b9aeb35dcec383b48db36e11ac65d680`, tagged `v0.3.0`. The first version cut through `docs/releasing.md`: `test` (run `37742850434`) and `self-score` (run `37742850444`, 3 of 3 ledger bugs caught) were green on that commit before the tag.
+- The first `npm publish` was refused. Pushing the tag started a third `test` run on the same commit, and its `core` job hung until its 20-minute limit. The check read that newest run. The failed job was rerun green, and the publish went through. Since then the check reads the run from the push to `main`, and every CLI call in the tests has a 300-second limit, so a hang fails one named test instead of the job.
+- `npx probatio@0.3.0` from an empty folder: `schema` lists 24 commands, and generate (`--operators wide`), run, and tally work on `examples/node-ts`.
 
 Read before upgrading an agent:
 

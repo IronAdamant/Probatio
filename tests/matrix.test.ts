@@ -126,6 +126,6 @@ function run(cwd: string, scores: string, direct: string, patches: string, kills
       "--out",
       out,
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }

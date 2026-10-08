@@ -113,7 +113,7 @@ test("a red baseline stops before mutants and does not say caught or killed", ()
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", out, "--no-build", "--no-confirm", "--workers", "1"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 1, result.stderr + result.stdout)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killed: number; survived: number; kills?: unknown[] }

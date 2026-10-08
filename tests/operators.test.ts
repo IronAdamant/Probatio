@@ -140,7 +140,7 @@ test("mutate generate takes --operators wide, records it, and refuses an unknown
     writeFileSync(path.join(dir, "src", "price.ts"), "export function price(n: number): number {\n  if (n > 10) return n * 2\n  return n + 1\n}\n")
     for (const args of [["init", "-q"], ["add", "."], ["-c", "user.email=p@example.com", "-c", "user.name=p", "commit", "-qm", "i"]]) spawnSync("git", ["-C", dir, ...args])
     const run = (set: string) =>
-      JSON.parse(spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", dir, "--out", path.join(dir, set), "--operators", set], { cwd: root, encoding: "utf8" }).stdout) as {
+      JSON.parse(spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", dir, "--out", path.join(dir, set), "--operators", set], { cwd: root, encoding: "utf8", timeout: 300_000 }).stdout) as {
         ok: boolean
         summary: string
         mutantCount: number

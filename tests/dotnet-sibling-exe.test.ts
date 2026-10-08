@@ -117,7 +117,7 @@ test("dotnet test builds a sibling exe the suite launches by path", { timeout: 1
         "--suite-timeout-ms",
         "120000",
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const body = JSON.parse(result.stdout) as {

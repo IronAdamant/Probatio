@@ -17,7 +17,7 @@ test("the mcp tool returns the same json object as the cli", async () => {
   writeFileSync(recorded, `${JSON.stringify(table, null, 2)}\n`)
   const argv = ["golden", "check", "--recorded", recorded, "--actual", recorded]
   try {
-    const cli = spawnSync(tsx, ["src/cli.ts", ...argv], { cwd: root, encoding: "utf8" })
+    const cli = spawnSync(tsx, ["src/cli.ts", ...argv], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(cli.status, 0, cli.stderr)
     const first = await callMcp(argv)
     const second = await callMcp(argv)

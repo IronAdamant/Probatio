@@ -39,12 +39,12 @@ test("a plain-script child dump is scored under the parent test", () => {
       ].join("\n"),
     )
     commit(dir)
-    const generated = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", dir, "--src", "src", "--out", path.join(dir, "gen")], { cwd: root, encoding: "utf8" })
+    const generated = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", dir, "--src", "src", "--out", path.join(dir, "gen")], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(generated.status, 0, generated.stderr + generated.stdout)
     const ran = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--patches", path.join(dir, "gen", "mutants"), "--out", path.join(dir, "out"), "--no-build", "--no-confirm"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(ran.status, 0, ran.stderr + ran.stdout)
     const body = JSON.parse(ran.stdout) as { ok: boolean; summary: string; next: string; noCoverage: number; survived: number }
@@ -98,12 +98,12 @@ test("a plain node child is mapped under the parent test, and a child with no en
       ].join("\n"),
     )
     commit(dir)
-    const generated = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", dir, "--src", "src", "--out", path.join(dir, "gen")], { cwd: root, encoding: "utf8" })
+    const generated = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", dir, "--src", "src", "--out", path.join(dir, "gen")], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(generated.status, 0, generated.stderr + generated.stdout)
     const ran = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--patches", path.join(dir, "gen", "mutants"), "--out", path.join(dir, "out"), "--no-build", "--no-confirm"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(ran.status, 0, ran.stderr + ran.stdout)
     const results = path.join(dir, "out", "results")

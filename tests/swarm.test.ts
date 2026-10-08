@@ -179,7 +179,7 @@ function packageWith(before: string, after: string, assertion: string) {
 }
 
 function run(args: string[]) {
-  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8" })
+  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8", timeout: 300_000 })
 }
 
 function git(repo: string, args: string[]) {

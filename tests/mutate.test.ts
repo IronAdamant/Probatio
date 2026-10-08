@@ -62,14 +62,14 @@ test("generate reads the commit unless --working-tree is set", () => {
   try {
     const gate = path.join(pkg, "src", "gate.ts")
     writeFileSync(gate, readFileSync(gate, "utf8").replace("n > 0 && n < 10", "n > 0 && n < 2"))
-    const committed = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", committedOut, "--max-mutants", "20"], { cwd: root, encoding: "utf8" })
+    const committed = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", committedOut, "--max-mutants", "20"], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(committed.status, 0, committed.stderr + committed.stdout)
     const committedBody = JSON.parse(committed.stdout) as { ok: boolean; summary: string }
     assert.equal(committedBody.ok, true, committedBody.summary)
     const committedBlob = readdirSync(path.join(committedOut, "mutants")).filter((name) => name.endsWith(".patch")).map((name) => readFileSync(path.join(committedOut, "mutants", name), "utf8")).join("\n")
     assert.match(committedBlob, /n < 10/)
     assert.equal(committedBlob.includes("n < 2"), false, committedBlob)
-    const dirty = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", dirtyOut, "--max-mutants", "20", "--working-tree"], { cwd: root, encoding: "utf8" })
+    const dirty = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", dirtyOut, "--max-mutants", "20", "--working-tree"], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(dirty.status, 0, dirty.stderr + dirty.stdout)
     const dirtyBody = JSON.parse(dirty.stdout) as { ok: boolean; next: string }
     assert.equal(dirtyBody.ok, true, dirty.stdout)
@@ -317,7 +317,7 @@ test("mutate run uses the main checkout node_modules when the worktree has none"
         "--suite-timeout-ms",
         "20000",
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     const parsed = JSON.parse(result.stdout) as { ok: boolean; summary: string }
     assert.equal(parsed.summary.includes("suite already failing"), false, parsed.summary)
@@ -377,7 +377,7 @@ test("mutate run links node_modules that live under a nested package", () => {
         "--suite-timeout-ms",
         "20000",
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     const parsed = JSON.parse(result.stdout) as { ok: boolean; summary: string }
     assert.equal(parsed.summary.includes("baseline already failing"), false, parsed.summary)

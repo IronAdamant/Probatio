@@ -79,7 +79,7 @@ test("check-kill on a red suite does not name the broken test", () => {
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "check-kill", "m-ge", "--package", pkg, "--out", path.join(pkg, "kill"), "--patches", path.join(pkg, "patches"), "--no-build", "--no-confirm"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 1, result.stdout + result.stderr)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killedBy: string[]; outcome: string | null }
@@ -166,7 +166,7 @@ function run(pkg: string, out: string) {
       "--no-confirm",
       "--max-mutants", "1",
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 

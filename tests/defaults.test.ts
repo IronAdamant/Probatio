@@ -39,7 +39,7 @@ test("omitting --build does not run npm run build:mcp", () => {
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, "out"), "--no-confirm", "--workers", "1"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     const text = `${result.stdout}\n${result.stderr}`
     assert.equal(result.status, 0, text)

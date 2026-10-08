@@ -101,7 +101,7 @@ function launch(dir: string, extra: string[]) {
       "30000",
       ...extra,
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 

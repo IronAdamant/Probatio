@@ -338,7 +338,7 @@ function readResults(dir: string): Array<{ outcome: string; command: string; fil
 }
 
 function cli(args: string[]) {
-  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8" })
+  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8", timeout: 300_000 })
 }
 
 function commit(repo: string) {

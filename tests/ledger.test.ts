@@ -182,7 +182,7 @@ test("a release commit that bumps the version is not a fix unless it says Fixes-
     commitIn(pkg, "Set version 0.2.1\n\nFixes-bug: m was three")
     const named = shaOf(pkg).slice(0, 7)
     const tsx = path.join(root, "node_modules", ".bin", "tsx")
-    const result = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300"], { cwd: root, encoding: "utf8" })
+    const result = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300"], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const ids = readEntries(out).map((item) => item.id)
     assert.equal(ids.includes(release), false, JSON.stringify(ids))
@@ -223,7 +223,7 @@ test("a hand-made mutant that names its fix replaces the history revert, so an u
       ].join("\n"),
     )
     const tsx = path.join(root, "node_modules", ".bin", "tsx")
-    const result = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300"], { cwd: root, encoding: "utf8" })
+    const result = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300"], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const entryFor = readEntries(out).find((item) => item.id === id)
     assert.equal(entryFor?.status, "handmade", JSON.stringify(readEntries(out)))
@@ -252,7 +252,7 @@ test("ledger check fails when a caught ledger bug stops being caught, and re-rec
     writeFileSync(path.join(pkg, "tests", "gate.test.ts"), guard)
     commitIn(pkg, "Keep zero shut\n\nFixes-bug: zero opened the gate")
     const id = shaOf(pkg).slice(0, 7)
-    const built = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out], { cwd: root, encoding: "utf8" })
+    const built = spawnSync(tsx, ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out], { cwd: root, encoding: "utf8", timeout: 300_000 })
     assert.equal(built.status, 0, built.stdout)
     commitIn(pkg, "ledger")
     const check = (extra: string[] = []) => cli(["ledger", "check", "--package", pkg, "--out", path.join(pkg, ".check"), ...extra])
@@ -306,7 +306,7 @@ test("cli ledger build stops after --max-commits and says the rest was not scann
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "ledger", "build", "--package", pkg, "--out", out, "--max-lines", "300", "--max-commits", "1"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     const parsed = JSON.parse(result.stdout) as {
       ok: boolean

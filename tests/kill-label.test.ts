@@ -70,7 +70,7 @@ test("a mutant that does not build is unviable, not a kill", { timeout: 60_000 }
     assert.equal(buildSaved.cause, "build")
     assert.match(buildSaved.next, /did not build/)
     assert.doesNotMatch(buildSaved.next, new RegExp(`add a test named (${COMPILER})`, "i"))
-    const tally = spawnSync(tsx, ["src/cli.ts", "mutate", "tally", "--out", path.join(dir, "out")], { cwd: root, encoding: "utf8" })
+    const tally = spawnSync(tsx, ["src/cli.ts", "mutate", "tally", "--out", path.join(dir, "out")], { cwd: root, encoding: "utf8", timeout: 300_000 })
     const tallied = JSON.parse(tally.stdout) as { keep: string[]; gaps: unknown[] }
     assert.equal(tallied.gaps.length, 0, "an unviable mutant is not a gap")
     assert.equal(tallied.keep.some((name) => new RegExp(`^(${COMPILER})$`).test(name)), false, JSON.stringify(tallied.keep))
@@ -116,7 +116,7 @@ function launch(dir: string, out: string) {
       "--suite-timeout-ms",
       "30000",
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 
@@ -141,7 +141,7 @@ function check(dir: string, id: string) {
       "--suite-timeout-ms",
       "30000",
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 

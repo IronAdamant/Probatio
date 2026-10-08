@@ -67,7 +67,7 @@ test("--hide with a parent segment is refused and the outside file stays", () =>
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--patches", dir, "--out", path.join(dir, "out"), "--hide", "../secret.txt", "--no-confirm"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(existsSync(secret), true)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string }
@@ -152,7 +152,7 @@ function sealed(dir: string, label: string, out: string, extra: string[] = []) {
       "1",
       ...extra,
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 

@@ -32,7 +32,9 @@ export function releaseChecks({ run, version, changelog, name }) {
   const pushedSha = pushed.split("\n").map((line) => line.split(/\s+/)).find(([, ref]) => ref?.endsWith("^{}"))?.[0] ?? pushed.split(/\s+/)[0] ?? ""
   add(local.ok && local.text === head && pushedSha === head, `${tag} is pushed and points at HEAD`, `git tag -a ${tag} -m ${tag} && git push origin ${tag}`)
   for (const workflow of ["test.yml", "self-score.yml"]) {
-    const listed = out("gh", ["run", "list", "--commit", head, "--workflow", workflow, "--json", "status,conclusion", "--limit", "1"])
+    // The run from the push to main. Pushing the tag starts another run on the same commit, and the
+    // newest run would otherwise be that one, still in progress or with a flaky job of its own.
+    const listed = out("gh", ["run", "list", "--commit", head, "--workflow", workflow, "--branch", "main", "--event", "push", "--json", "status,conclusion", "--limit", "1"])
     let green = false
     try {
       const [latest] = JSON.parse(listed.text || "[]")
@@ -40,7 +42,7 @@ export function releaseChecks({ run, version, changelog, name }) {
     } catch {
       green = false
     }
-    add(green, `${workflow} is green on ${head.slice(0, 7)}`, `Wait for ${workflow} on this commit, or fix it. gh run list --commit ${head} --workflow ${workflow}`)
+    add(green, `${workflow} is green on ${head.slice(0, 7)}`, `Wait for ${workflow} on this commit's push to main, or fix it. gh run list --commit ${head} --workflow ${workflow} --branch main`)
   }
   return { ok: checks.every((check) => check.ok), checks }
 }

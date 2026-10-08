@@ -41,7 +41,7 @@ test("dotnet discovers a suite under test/ and scores it", { timeout: 120_000, s
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, "out"), "--no-build", "--no-confirm", "--workers", "1", "--suite-timeout-ms", "90000"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killed: number; survived: number }

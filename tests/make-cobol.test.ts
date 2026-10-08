@@ -116,7 +116,7 @@ function launch(dir: string) {
       "--suite-timeout-ms",
       "30000",
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 

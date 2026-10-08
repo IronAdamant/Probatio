@@ -166,5 +166,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function run(args: string[]) {
-  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8" })
+  return spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8", timeout: 300_000 })
 }

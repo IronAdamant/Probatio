@@ -111,7 +111,7 @@ function launch(dir: string, patches: string, out: string, env: NodeJS.ProcessEn
   return spawnSync(
     tsx,
     ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", patches, "--out", out, "--no-build", "--max-mutants", "1", "--max-minutes", "1", "--workers", "1", "--suite-timeout-ms", "20000"],
-    { cwd: root, encoding: "utf8", env },
+    { cwd: root, encoding: "utf8", env, timeout: 300_000 },
   )
 }
 

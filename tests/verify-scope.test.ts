@@ -38,7 +38,7 @@ test("verify-change diffs the package when the rest of the repo diff is huge", {
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "verify-change", "--package", pkg, "--repo", repo, "--out", out, "--base", "HEAD~1", "--commit", "HEAD", "--max-mutants", "4"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; caught: Array<{ file: string }>; missed: Array<{ file: string }> }

@@ -115,7 +115,7 @@ function launch(dir: string, patches: string, out: string) {
       "--suite-timeout-ms",
       "180000",
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", timeout: 300_000 },
   )
 }
 

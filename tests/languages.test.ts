@@ -408,7 +408,7 @@ function score(dir: string, command?: string): { killed: number; survived: numbe
 }
 
 function launch(dir: string, args: string[]) {
-  const result = spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8" })
+  const result = spawnSync(tsx, ["src/cli.ts", ...args], { cwd: root, encoding: "utf8", timeout: 300_000 })
   assert.equal(result.status === 0 || result.stdout.trim().startsWith("{"), true, result.stderr + result.stdout)
   return result
 }

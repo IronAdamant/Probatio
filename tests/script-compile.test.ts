@@ -51,7 +51,7 @@ test("a shell suite labels a compiler error separately from a named test", { tim
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, "out"), "--no-build", "--no-confirm", "--workers", "1", "--suite-timeout-ms", "30000"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const body = JSON.parse(result.stdout) as {
@@ -105,7 +105,7 @@ test("a shell suite that runs docker with a tty is wrapped for both BSD and GNU 
     const result = spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, "out"), "--no-confirm", "--workers", "1", "--suite-timeout-ms", "30000"],
-      { cwd: root, encoding: "utf8" },
+      { cwd: root, encoding: "utf8", timeout: 300_000 },
     )
     assert.equal(result.status, 0, result.stderr + result.stdout)
     const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; killed: number; commands?: Array<{ id: string; command: string }> }
@@ -149,7 +149,7 @@ test("a shell suite with no test lines is one command, TAP names tests, and .pro
     spawnSync(
       tsx,
       ["src/cli.ts", "mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", path.join(dir, out), "--no-confirm", "--workers", "1", "--suite-timeout-ms", "30000"],
-      { cwd: root, encoding: "utf8", env },
+      { cwd: root, encoding: "utf8", env, timeout: 300_000 },
     )
   try {
     type Body = { ok: boolean; summary: string; killed: number; kills?: Array<{ killedBy: string[] }> }
