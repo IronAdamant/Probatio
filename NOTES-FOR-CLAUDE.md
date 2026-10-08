@@ -4,7 +4,7 @@ Newest first. Start a review by rerunning the commands in the latest section. Th
 
 ## Current state
 
-- Version in `package.json`: `0.2.0`. npm latest is still `0.1.3` until the maintainer publishes. `CHANGELOG.md` lists the changes, including the output fields that changed.
+- npm latest is `0.2.0`, published 2026-10-08 by the maintainer at gitHead `405d15b`. `CHANGELOG.md` lists the changes, including the output fields that changed. Git tags are still not created.
 - `npm test` on this Mac, 2026-10-08: 146 tests, 143 pass, 0 fail, 3 skipped, about 142s. Skips name the missing tool (`llvm-cov`, `arch -x86_64`). GitHub Actions run `37715743205` on `4c5f205` (these changes) is green on all five jobs.
 - Sealed record: no hidden real bug has been caught by older tests. Seven subjects are in the README table. The CSV-271 kill came from a test the fix commit edited, and with the line map it is now a survivor.
 

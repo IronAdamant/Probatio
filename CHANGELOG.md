@@ -6,7 +6,9 @@ The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, the
 
 ## 0.2.0
 
-- Not yet published. The gitHead to publish is the commit that sets this version. GitHub Actions run `37715743205` on `4c5f205` is green: core, pack on Node 22, pack on Node 24, toolchain, and macos.
+- Published 2026-10-08. gitHead `405d15bb2ab1421cebc2295c828916f3c48d4f94`.
+- GitHub Actions is green on `4c5f205` (run `37715743205`) and on `405d15b` (run `37717510566`): core, pack on Node 22, pack on Node 24, toolchain, and macos.
+- `npx probatio@0.2.0` from an empty folder ran generate, run, and tally on `examples/node-ts`: 1 killed, the keep id listed once, and `nextCall` writing to `<out>.rescore`.
 
 Changed output (schema 1, read before upgrading an agent):
 
