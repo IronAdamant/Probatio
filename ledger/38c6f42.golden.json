@@ -1,0 +1,12 @@
+{
+  "rows": {
+    "38c6f42": {
+      "ok": true,
+      "outcome": "killed",
+      "reason": "Killed by tests/keep-id.test.ts::junit parametrized keep id keeps the invocation Surefire recorded.",
+      "summary": "0 no coverage, 1 survived, 1 killed, 1 did not build, 0 flaky, 0 timed out, 0 errored, of 3 finished.",
+      "nextCall": null,
+      "next": "Killed by tests/keep-id.test.ts::junit parametrized keep id keeps the invocation Surefire recorded."
+    }
+  }
+}

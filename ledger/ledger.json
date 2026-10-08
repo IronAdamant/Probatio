@@ -1,42 +1,73 @@
 {
-  "commit": "ea651932cb6ddaf02ba0c9a8af319facf4282ad1",
+  "commit": "4c5f205a35a847871d66976c865d41673473955d",
   "package": ".",
   "entries": [
     {
-      "id": "922a301",
-      "commit": "922a3018a66e5e6bb29e417b0ce790499458ad90",
-      "date": "2026-10-06T13:20:47+11:00",
-      "subject": "Set version 0.1.0 for a sealed catch, a map-backed edit, and a packed CLI.",
+      "id": "4c5f205",
+      "commit": "4c5f205a35a847871d66976c865d41673473955d",
+      "date": "2026-10-08T13:00:32+11:00",
+      "subject": "Count only what tests caught: unviable link and compile failures, a working Node filter, async MCP, child-process maps, and .probatio.json.",
+      "fixer": "human",
+      "status": "skipped",
+      "lines": 1105,
+      "files": [],
+      "reason": "src diff is 1105 lines, over the 300 line cap"
+    },
+    {
+      "id": "950dea0",
+      "commit": "950dea0b7f51c98144ad9cd0625391948858e001",
+      "date": "2026-10-06T20:04:17+11:00",
+      "subject": "Join Surefire methods of one class with a plus.",
       "fixer": "human",
       "status": "clean",
-      "lines": 120,
+      "lines": 23,
       "files": [
         {
-          "file": "src/cli.ts",
-          "line": 138
+          "file": "src/mutate/suites.ts",
+          "line": 419
+        }
+      ],
+      "patch": "950dea0.patch"
+    },
+    {
+      "id": "38c6f42",
+      "commit": "38c6f42db0e8bc33955fc9af066afd140ff6f711",
+      "date": "2026-10-06T19:51:54+11:00",
+      "subject": "Read Surefire test names and rerun parameterized methods with a star.",
+      "fixer": "human",
+      "status": "clean",
+      "lines": 19,
+      "files": [
+        {
+          "file": "src/mutate/suites.ts",
+          "line": 508
+        }
+      ],
+      "patch": "38c6f42.patch"
+    },
+    {
+      "id": "4eda582",
+      "commit": "4eda58291671fa9010b8264ee66901415494f639",
+      "date": "2026-10-06T19:17:43+11:00",
+      "subject": "Make the Ubuntu toolchain compile Java 17 fixtures and read the matching LLVM profile.",
+      "fixer": "human",
+      "status": "clean",
+      "lines": 111,
+      "files": [
+        {
+          "file": "src/mutate/coverage-map.ts",
+          "line": 101
         },
         {
-          "file": "src/mutate/probatio-jacoco-run.java",
-          "line": 252
-        },
-        {
-          "file": "src/mutate/run.ts",
-          "line": 52
+          "file": "src/mutate/rust-coverage.ts",
+          "line": 1
         },
         {
           "file": "src/mutate/suites.ts",
-          "line": 459
-        },
-        {
-          "file": "src/mutate/tally.ts",
-          "line": 106
-        },
-        {
-          "file": "src/verify/change.ts",
-          "line": 7
+          "line": 814
         }
       ],
-      "patch": "922a301.patch"
+      "patch": "4eda582.patch"
     },
     {
       "id": "746f21c",
@@ -55,7 +86,7 @@
       "date": "2026-10-05T21:31:46+11:00",
       "subject": "Clear bytecode before a shell suite.",
       "fixer": "human",
-      "status": "clean",
+      "status": "hand",
       "lines": 4,
       "files": [
         {
@@ -63,7 +94,7 @@
           "line": 401
         }
       ],
-      "patch": "93589bf.patch"
+      "reason": "patch does not apply"
     },
     {
       "id": "3cb785a",
@@ -75,17 +106,6 @@
       "lines": 535,
       "files": [],
       "reason": "src diff is 535 lines, over the 300 line cap"
-    },
-    {
-      "id": "e776699",
-      "commit": "e776699ffb90f146e54c0394e58f96b2e929e94b",
-      "date": "2026-10-05T18:38:53+11:00",
-      "subject": "Stop a red baseline, map Go and Java lines, and speak newline MCP.",
-      "fixer": "human",
-      "status": "skipped",
-      "lines": 934,
-      "files": [],
-      "reason": "src diff is 934 lines, over the 300 line cap"
     }
   ]
 }

@@ -1,0 +1,47 @@
+# probatio-mutant direction=forward meaning=apply-to-introduce-the-bug
+# probatio-ledger source=history fix=38c6f42db0e8bc33955fc9af066afd140ff6f711
+diff --git b/src/mutate/suites.ts a/src/mutate/suites.ts
+index 4c312eb..946fe4e 100644
+--- b/src/mutate/suites.ts
++++ a/src/mutate/suites.ts
+@@ -508,11 +508,8 @@ function surefireTest(name: string): string {
+   const leaf = name.split("::").pop() ?? name
+   const dot = leaf.lastIndexOf(".")
+   const body = dot <= 0 ? leaf : `${leaf.slice(0, dot)}#${leaf.slice(dot + 1)}`
+-  // testShut[0] matches nothing. A bare testShut matches on Surefire 3.6 and runs
+-  // zero tests on 3.5. testShut* matches every invocation on both. method(Parser)[1] keeps the types.
+-  const invocation = /\[[^\]]*\]$/.test(body)
+-  const method = body.replace(/\[[^\]]*\]$/, "")
+-  return invocation ? `${method}*` : method
++  // testShut[0] collects nothing. method(Parser)[1] keeps the parameter types.
++  return body.replace(/\[[^\]]*\]$/, "")
+ }
+ 
+ function escapeRegExp(value: string): string {
+@@ -1490,12 +1487,6 @@ function mavenReport(pkg: string, text: string, code: number): TestReport | null
+   return parseSurefire(pkg) ?? parseMavenText(text)
+ }
+ 
+-/** An attribute on the opening tag. `classname` must not be read as `name`. */
+-export function surefireAttr(fragment: string, key: string): string {
+-  const open = fragment.slice(0, fragment.indexOf(">") === -1 ? fragment.length : fragment.indexOf(">"))
+-  return new RegExp(`(?:^|\\s)${key}="([^"]*)"`).exec(open)?.[1] ?? ""
+-}
+-
+ function parseSurefire(pkg: string): TestReport | null {
+   const dir = path.join(pkg, "target", "surefire-reports")
+   if (!existsSync(dir)) return null
+@@ -1505,10 +1496,10 @@ function parseSurefire(pkg: string): TestReport | null {
+     if (!name.endsWith(".xml")) continue
+     const xml = readFileSync(path.join(dir, name), "utf8")
+     for (const part of xml.split("<testcase ").slice(1)) {
+-      const test = surefireAttr(part, "name")
+-      const klass = surefireAttr(part, "classname")
++      const test = /name="([^"]+)"/.exec(part)?.[1]
++      const klass = /classname="([^"]+)"/.exec(part)?.[1] ?? ""
+       if (!test) continue
+-      const id = klass ? `${klass}.${test}` : test
++      const id = `${klass}.${test}`
+       names.push(id)
+       if (part.includes("<failure") || part.includes("<error")) failed.push({ name: id, file: klass, line: 0 })
+     }

@@ -4,9 +4,9 @@ Versions on npm, newest first. `0.1.1` was committed and was not published. Git 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
-## Unreleased
+## 0.2.0
 
-Not on npm. The version in `package.json` is still `0.1.3`.
+- Not yet published. The gitHead to publish is the commit that sets this version. GitHub Actions run `37715743205` on `4c5f205` is green: core, pack on Node 22, pack on Node 24, toolchain, and macos.
 
 Changed output (schema 1, read before upgrading an agent):
 

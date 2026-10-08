@@ -4,8 +4,8 @@ Newest first. Start a review by rerunning the commands in the latest section. Th
 
 ## Current state
 
-- Version in `package.json`: `0.1.3`, the same as npm. The changes below are not published. `CHANGELOG.md` has them under Unreleased, including the output fields that changed.
-- `npm test` on this Mac, 2026-10-08: 146 tests, 143 pass, 0 fail, 3 skipped, about 142s. Skips name the missing tool (`llvm-cov`, `arch -x86_64`). CI has not run these changes.
+- Version in `package.json`: `0.2.0`. npm latest is still `0.1.3` until the maintainer publishes. `CHANGELOG.md` lists the changes, including the output fields that changed.
+- `npm test` on this Mac, 2026-10-08: 146 tests, 143 pass, 0 fail, 3 skipped, about 142s. Skips name the missing tool (`llvm-cov`, `arch -x86_64`). GitHub Actions run `37715743205` on `4c5f205` (these changes) is green on all five jobs.
 - Sealed record: no hidden real bug has been caught by older tests. Seven subjects are in the README table. The CSV-271 kill came from a test the fix commit edited, and with the line map it is now a survivor.
 
 ## 2026-10-08 — Claude review, then fixes
@@ -53,20 +53,19 @@ Decided, 2026-10-08: a Node test file that does not link or parse under a mutant
 
 Self-score:
 
-Probatio scored its own suite in a fresh scratch clone of this repo, with all of these changes in one commit (1,039 src lines, so `ledger build` skips it over the cap). `ledger build --commit HEAD --max-lines 300` found 3 clean fixes (`950dea0`, `38c6f42`, `4eda582`), one hand fix (`93589bf` no longer applies), and three over the cap. No version bump was counted.
+The tracked `ledger/` was rebuilt at `4c5f205` (`ledger build --package . --commit HEAD --out ledger --max-lines 300`). It holds 3 clean fixes (`950dea0`, `38c6f42`, `4eda582`), one hand fix (`93589bf` no longer applies), and three over the cap, including `4c5f205` itself at 1,105 lines. No version bump was counted. `922a301` and its golden are gone.
 
 ```bash
-probatio ledger build --package <clone> --commit HEAD --out <ledger> --max-lines 300
-probatio mutate run --package <clone> --patches <ledger> --out <fresh dir> --workers 1 --concurrency 4 --suite-timeout-ms 3000000 --test-timeout-ms 600000
+probatio mutate run --package . --patches ledger --out <fresh dir> --workers 1 --concurrency 4 --suite-timeout-ms 3000000 --test-timeout-ms 600000
 ```
 
-Confirm on. Baseline green, 147 tests, 236s under the map. Wall time 21 minutes. Summary: `0 no coverage, 1 survived, 2 killed, 0 flaky, 0 timed out, 0 errored, of 3 finished.` Before this pass, both self patches were `no coverage`, because the tests start the CLI as a child process.
+Confirm on. Baseline green, 233s under the map. Wall time 20.5 minutes on this Mac. Summary: `0 no coverage, 1 survived, 1 killed, 1 did not build, 0 flaky, 0 timed out, 0 errored, of 3 finished.` Before this pass, both self patches were `no coverage`, because the tests start the CLI as a child process. One golden per patch is in `ledger/<id>.golden.json`.
 
-- `38c6f42` was killed by `tests/keep-id.test.ts::junit parametrized keep id keeps the invocation Surefire recorded`, and by `tests/surefire-attr.test.ts` failing to load.
-- `950dea0` was killed by `tests/surefire-attr.test.ts` failing to load. The reverted fix removes `surefireArg`, which that file imports. Earlier self-scores in this pass showed it as survived (the batch dropped load failures), then flaky (the batch loader could not resolve `./x.js`). Both were runner bugs, fixed above.
-- `4eda582` (`coverage-map.ts:105`, LLVM profile) survived, because the LLVM tests skip on this Mac (`llvm-cov` is missing). CI's toolchain job has llvm.
+- `38c6f42` was killed by `tests/keep-id.test.ts::junit parametrized keep id keeps the invocation Surefire recorded`.
+- `950dea0` is `unviable`. The reverted fix removes `surefireArg`, which `tests/surefire-attr.test.ts` imports, so that file does not link. No test checks the behaviour the fix added. Next step: a hand-made mutant that keeps `surefireArg` and joins with a comma again.
+- `4eda582` (`coverage-map.ts:105`, LLVM profile) survived here, because the LLVM tests skip on this Mac (`llvm-cov` is missing). CI's toolchain job has llvm and runs them.
 
-The tracked `ledger/` still holds the build from `ea65193` and its two `no coverage` goldens. After these changes are committed, rebuild it there (`probatio ledger build --package . --commit HEAD --out ledger --max-lines 300`), rescore, and re-record the goldens. `922a301` is no longer a fix under the version-bump rule.
+Earlier self-scores in this pass read `950dea0` as survived (the batch dropped load failures), then flaky (the batch loader could not resolve `./x.js`), then killed (a load failure counted as a kill). Each was a runner bug or an open rule, fixed above.
 
 Open:
 

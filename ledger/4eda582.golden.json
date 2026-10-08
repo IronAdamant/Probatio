@@ -1,0 +1,12 @@
+{
+  "rows": {
+    "4eda582": {
+      "ok": true,
+      "outcome": "survived",
+      "reason": "Survived on this Mac: the tests that would catch it need llvm-cov, which is missing here. CI's toolchain job has it.",
+      "summary": "0 no coverage, 1 survived, 1 killed, 1 did not build, 0 flaky, 0 timed out, 0 errored, of 3 finished.",
+      "nextCall": null,
+      "next": "Survived on this Mac: the tests that would catch it need llvm-cov, which is missing here. CI's toolchain job has it."
+    }
+  }
+}
