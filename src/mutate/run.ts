@@ -463,7 +463,8 @@ async function runOne(
     const forced = options.onlyNames && options.onlyNames.length > 0
       ? prep.spec.kind === "node" ? options.onlyNames.map(nodeTitle) : options.onlyNames
       : null
-    if (!forced && picked.state === "uncovered") {
+    // A forced name does not invent a run. The line map still says nothing executed this line.
+    if (picked.state === "uncovered") {
       return {
         ...base(),
         direction,

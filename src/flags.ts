@@ -85,3 +85,17 @@ export function requireText(flags: Map<string, FlagValue[]>, key: string): strin
   if (!value) throw new Error(`--${key} is required`)
   return value
 }
+
+/**
+ * Flag keys this command does not read. `--human` is known for every command.
+ * `_` is a positional left after `--`, not a flag.
+ */
+export function unknownFlags(flags: Map<string, FlagValue[]>, known: readonly string[]): string[] {
+  const allowed = new Set(known)
+  const names: string[] = []
+  for (const key of flags.keys()) {
+    if (key === "human" || key === "_" || allowed.has(key)) continue
+    names.push(key)
+  }
+  return names.sort()
+}

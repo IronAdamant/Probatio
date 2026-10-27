@@ -6,7 +6,7 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { forwardDiff } from "../src/mutate/patch.ts"
-import { labelLeaked, readSealedLabel } from "../src/mutate/sealed.ts"
+import { judgeSealedCatch, labelLeaked, readSealedLabel } from "../src/mutate/sealed.ts"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -107,24 +107,64 @@ test("a sealed kill by a test the fix commit edited is not called a catch by old
   writeFileSync(path.join(dir, "patches", "m1.patch"), forwardDiff("src/gate.ts", source, buggy))
   try {
     const run = sealed(dir, labelFile, path.join(dir, "out"))
-    assert.equal(run.status, 0, run.stderr + run.stdout)
-    const body = JSON.parse(run.stdout) as { ok: boolean; summary: string; next: string; killed: number; fixEdited?: string[]; olderTestCatch?: boolean }
-    assert.equal(body.killed, 1, body.summary)
+    assert.notEqual(run.status, 0, run.stderr + run.stdout)
+    const body = JSON.parse(run.stdout) as {
+      ok: boolean
+      summary: string
+      next: string
+      killed: number
+      miss?: boolean
+      nextCall: unknown
+      fixEdited?: string[]
+      olderTestCatch?: boolean
+    }
+    assert.equal(body.ok, false, body.summary)
+    assert.equal(body.killed, 0, body.summary)
+    assert.equal(body.miss, true)
+    assert.equal(body.nextCall, null)
     assert.deepEqual(body.fixEdited, ["tests/open.test.ts"], run.stdout)
     assert.equal(body.olderTestCatch, false, run.stdout)
     assert.match(body.summary, /edited by the fix commit/)
+    assert.match(body.next, /Record this as a miss/)
+    assert.match(body.next, /Do not restore the hidden test/)
     assert.equal(labelLeaked(run.stdout, readSealedLabel(labelFile)), false)
+    assert.equal(existsSync(path.join(dir, "tests", "shut.test.ts")), true)
     // Later work lands on top of the fix. --fix names the fix commit, so the check still reads its diff.
     writeFileSync(path.join(dir, "NOTES.md"), "later work\n")
     git(dir, ["add", "."])
     git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "later"])
     const later = sealed(dir, labelFile, path.join(dir, "out-later"), ["--fix", "HEAD~1"])
-    const laterBody = JSON.parse(later.stdout) as { fixEdited?: string[]; olderTestCatch?: boolean; summary: string }
+    assert.notEqual(later.status, 0, later.stderr + later.stdout)
+    const laterBody = JSON.parse(later.stdout) as { ok: boolean; killed: number; miss?: boolean; fixEdited?: string[]; olderTestCatch?: boolean; summary: string }
+    assert.equal(laterBody.ok, false, laterBody.summary)
+    assert.equal(laterBody.killed, 0, laterBody.summary)
+    assert.equal(laterBody.miss, true)
     assert.deepEqual(laterBody.fixEdited, ["tests/open.test.ts"], later.stdout)
     assert.equal(laterBody.olderTestCatch, false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test("judgeSealedCatch is a miss only when no older test caught the bug", () => {
+  const base = { ok: true, killed: 1, summary: "1 killed", next: "Killed by a test.", nextCall: { argv: ["mutate", "run"] } }
+  const caught = judgeSealedCatch(base, [{ killedBy: ["tests/old.test.ts"] }], { files: [], olderTestCatch: true })
+  assert.equal(caught.ok, true)
+  assert.equal(caught.killed, 1)
+  assert.equal(caught.miss, false)
+  assert.deepEqual(caught.nextCall, { argv: ["mutate", "run"] })
+  const miss = judgeSealedCatch(base, [{ killedBy: ["tests/open.test.ts"] }], { files: ["tests/open.test.ts"], olderTestCatch: false })
+  assert.equal(miss.ok, false)
+  assert.equal(miss.killed, 0)
+  assert.equal(miss.miss, true)
+  assert.equal(miss.nextCall, null)
+  assert.match(miss.next, /Record this as a miss/)
+  assert.match(miss.next, /Do not restore the hidden test/)
+  assert.equal(miss.summary.includes("bug_id"), false)
+  const quiet = judgeSealedCatch({ ...base, killed: 0, ok: true }, [], { files: [], olderTestCatch: false })
+  assert.equal(quiet.miss, false)
+  assert.equal(quiet.ok, true)
+  assert.equal(quiet.killed, 0)
 })
 
 function sealed(dir: string, label: string, out: string, extra: string[] = []) {

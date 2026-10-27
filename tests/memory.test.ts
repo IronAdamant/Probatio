@@ -88,6 +88,36 @@ type Status = {
   regressions: Array<{ id: string; text: string }>
 }
 
+test("status summary counts every open gap and still prints at most 10", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-memory-gaps-"))
+  const state = path.join(dir, "state")
+  const page = path.join(dir, "PROBATIO.md")
+  try {
+    const gaps = Array.from({ length: 12 }, (_, index) => ({
+      id: `gap-${String(index).padStart(2, "0")}`,
+      status: "open",
+      file: "src/gate.ts",
+      line: index + 1,
+      guard: null,
+      fixedIn: null,
+      guardFile: null,
+      guardLineNo: null,
+      guardLine: null,
+      guardHash: null,
+    }))
+    mkdirSync(state)
+    writeFileSync(path.join(state, "state.json"), `${JSON.stringify({ schemaVersion: 2, gaps, decisions: [] })}\n`)
+    const result = run(["status", "--state", state, "--root", dir, "--page", page])
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    const body = JSON.parse(result.stdout) as { summary: string; gaps: unknown[]; rest: number }
+    assert.equal(body.summary, "12 open gaps, 0 fixes, 0 decisions.")
+    assert.equal(body.gaps.length, 10)
+    assert.equal(body.rest, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 function readStatus(state: string, rootDir: string, page: string, scores?: string) {
   const args = ["status", "--state", state, "--root", rootDir, "--page", page]
   if (scores) args.push("--scores", scores)

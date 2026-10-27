@@ -254,7 +254,8 @@ export function renderPage(view: StatusView, summary: string): string {
 export function statusEnvelope(dir: string, root: string, score: KillScore | null, agent: string | null): { envelope: Envelope; page: string } {
   const view = statusView(dir, root)
   const yard = yardstickSentence(score)
-  const summary = yard ?? `${view.gaps.length} open gaps, ${view.recentFixes.length} fixes, ${view.decisions.length} decisions.`
+  const openCount = view.gaps.length + view.rest
+  const summary = yard ?? `${openCount} open gaps, ${view.recentFixes.length} fixes, ${view.decisions.length} decisions.`
   const first = view.regressions[0]?.text ?? (view.gaps[0] ? `${view.gaps[0].id} at ${view.gaps[0].file}:${view.gaps[0].line}` : "Nothing waiting.")
   const page = renderPage(view, summary)
   return {

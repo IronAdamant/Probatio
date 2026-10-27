@@ -33,13 +33,10 @@ export type PruneAdvice = {
 const METRIC = /^(holdout|real \(train\)|synthetic-1|synthetic-2):\s+(\d+)\/(\d+)(?:\s+\([^)]*\))?(?:\s+missed\s+(.+))?$/
 const PREFIX = /^(?:ho|r|h|v)-/
 
-/** Names of tests that killed nothing. This never deletes a file. */
+/** Always empty. Zero kills are not a deletion list, and this never deletes a file. */
 export function advisePrune(kills: ReadonlyMap<string, number>): PruneAdvice {
-  const advice = [...kills.entries()]
-    .filter(([, killed]) => killed === 0)
-    .map(([name]) => name)
-    .sort()
-  return { mode: "advisory", deletedTests: 0, advice }
+  void kills
+  return { mode: "advisory", deletedTests: 0, advice: [] }
 }
 
 export function parseUnionTsv(text: string): SuiteRow[] {

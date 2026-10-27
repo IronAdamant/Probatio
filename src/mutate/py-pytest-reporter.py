@@ -22,7 +22,8 @@ class Collector:
     def pytest_collectreport(self, report):
         if not report.failed:
             return
-        self._add(getattr(report, "nodeid", "") or "pytest", report)
+        # Collection never ran a test. A syntax or import error here is the mutant failing to load.
+        self._add(getattr(report, "nodeid", "") or "pytest", report, static_load=True)
 
     def pytest_runtest_logreport(self, report):
         if report.when not in ("setup", "call"):
@@ -33,13 +34,22 @@ class Collector:
         if report.when == "call" and name not in self.names:
             self.names.append(name)
         if report.failed:
-            self._add(name, report)
+            # A call-phase assertion is a kill even when its message names an exception class.
+            static = report.when == "setup" and self._setup_failed_to_load(report)
+            self._add(name, report, static_load=static)
 
-    def _add(self, name, report):
+    def _setup_failed_to_load(self, report):
+        text = _longrepr_text(report)
+        return any(token in text for token in ("SyntaxError", "IndentationError", "ImportError", "ModuleNotFoundError"))
+
+    def _add(self, name, report, static_load=False):
         if any(item["name"] == name for item in self.failed):
             return
         location = getattr(report, "location", None) or ("", 0, "")
-        self.failed.append({"name": name, "file": str(location[0] or ""), "line": int(location[1] or 0)})
+        item = {"name": name, "file": str(location[0] or ""), "line": int(location[1] or 0)}
+        if static_load:
+            item["staticLoad"] = True
+        self.failed.append(item)
 
 
 class ContextSwitch:
@@ -48,6 +58,20 @@ class ContextSwitch:
 
     def pytest_runtest_setup(self, item):
         self.cov.switch_context(item.nodeid)
+
+
+def _longrepr_text(report):
+    parts = []
+    longrepr = getattr(report, "longrepr", None)
+    if longrepr is not None:
+        parts.append(str(longrepr))
+        crash = getattr(longrepr, "reprcrash", None)
+        if crash is not None:
+            parts.append(str(getattr(crash, "message", "")))
+    extra = getattr(report, "longreprtext", None)
+    if extra:
+        parts.append(str(extra))
+    return "\n".join(parts)
 
 
 def start_coverage():

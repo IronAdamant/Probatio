@@ -35,7 +35,7 @@ async function runJob(job) {
   const failed = []
   const names = []
   // run() with isolation "none" ignores testNamePatterns on Node 22, so every test in the file runs.
-  // Only a requested test, or a subtest of one, is a result. Another test failing is not a kill.
+  // A requested test is the one the line map named. Another test in that file can still fail, and that failure counts.
   const wanted = new Set((job.names || []).filter((name) => name.length > 0))
   const stack = []
   const requested = (name, nesting) =>
@@ -75,7 +75,12 @@ async function runJob(job) {
         }
         continue
       }
-      if (!requested(name, nesting)) continue
+      if (!requested(name, nesting)) {
+        if (event.type === "test:fail") {
+          failed.push({ name, file: data.file || "", line: data.line || 0, outsideSelection: true })
+        }
+        continue
+      }
       if (!names.includes(name)) names.push(name)
       if (event.type === "test:fail") {
         const error = data.details && data.details.error

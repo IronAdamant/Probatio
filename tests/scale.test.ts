@@ -158,6 +158,7 @@ test("tally names a test that killed nothing and does not delete it", () => {
     assert.match(body.next ?? "", /not a pass/)
     assert.match(body.next ?? "", /not a gap/)
     assert.match(body.summary, /No test file was deleted/)
+    assert.doesNotMatch(body.summary, /tests to keep/)
     assert.equal(readFileSync(planted, "utf8").includes("never killed"), true)
     assert.equal(existsSync(path.join(results, "m-lived.json")), true)
     const stored = JSON.parse(readFileSync(path.join(dir, "tally.json"), "utf8")) as { pruning: { deletedTests: number } }

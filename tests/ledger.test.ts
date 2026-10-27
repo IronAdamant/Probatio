@@ -234,7 +234,7 @@ test("a hand-made mutant that names its fix replaces the history revert, so an u
   }
 })
 
-test("ledger check fails when a caught ledger bug stops being caught, and re-recording needs a reason", { timeout: 300_000 }, () => {
+test("ledger check fails when a caught ledger bug stops being caught, and a Golden-Change line does not retire it", { timeout: 300_000 }, () => {
   const pkg = repo()
   const out = path.join(pkg, "ledger")
   const tsx = path.join(root, "node_modules", ".bin", "tsx")
@@ -267,6 +267,12 @@ test("ledger check fails when a caught ledger bug stops being caught, and re-rec
     const held = check()
     assert.equal(held.ok, true, held.summary)
     assert.equal(held.caught, 1)
+    const lied = check(["--update", "--message", `Golden-Change: ${id}: Killed by tests/liar.test.ts`])
+    assert.equal(lied.ok, true, lied.summary)
+    const stillKilled = readFileSync(path.join(out, `${id}.golden.json`), "utf8")
+    assert.match(stillKilled, /"outcome": "killed"/)
+    assert.equal(stillKilled.includes("liar.test.ts"), false, stillKilled)
+    assert.match(stillKilled, /zero stays shut/)
 
     // Someone weakens the guard. The ledger bug is back in reach of the suite.
     writeFileSync(path.join(pkg, "tests", "gate.test.ts"), 'import test from "node:test"\nimport { gate } from "../src/gate.ts"\ntest("zero stays shut", () => {\n  gate(0)\n})\n')
@@ -279,7 +285,13 @@ test("ledger check fails when a caught ledger bug stops being caught, and re-rec
     assert.equal(silent.ok, false, "a regression is not re-recorded without a reason")
     assert.match(readFileSync(path.join(out, `${id}.golden.json`), "utf8"), /"outcome": "killed"/)
     const reasoned = check(["--update", "--message", `Golden-Change: ${id}: the guard moved to an integration test`])
-    assert.equal(reasoned.ok, true, reasoned.summary)
+    assert.equal(reasoned.ok, false, reasoned.summary)
+    assert.deepEqual(reasoned.regressed, [id])
+    assert.match(reasoned.next, /Find the test that stopped guarding it/)
+    const goldenText = readFileSync(path.join(out, `${id}.golden.json`), "utf8")
+    assert.match(goldenText, /"outcome": "killed"/)
+    assert.equal(goldenText.includes("integration"), false)
+    assert.equal(goldenText.includes('"outcome": "survived"'), false)
   } finally {
     rmSync(pkg, { recursive: true, force: true })
   }

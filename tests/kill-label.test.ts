@@ -77,15 +77,20 @@ test("a mutant that does not build is unviable, not a kill", { timeout: 60_000 }
     const testKill = check(dir, "m-test")
     const buildKill = check(dir, "m-build")
     assert.equal(testKill.status, 0, testKill.stderr + testKill.stdout)
-    assert.equal(buildKill.status, 0, buildKill.stderr + buildKill.stdout)
-    const testBody = JSON.parse(testKill.stdout) as { ok: boolean; cause: string; next: string }
-    const buildBody = JSON.parse(buildKill.stdout) as { ok: boolean; cause: string; next: string }
+    assert.notEqual(buildKill.status, 0, buildKill.stderr + buildKill.stdout)
+    const testBody = JSON.parse(testKill.stdout) as { ok: boolean; done?: boolean; cause: string; next: string; summary: string }
+    const buildBody = JSON.parse(buildKill.stdout) as { ok: boolean; done?: boolean; cause: string | null; next: string; summary: string }
     assert.equal(testBody.ok, true)
-    assert.equal(buildBody.ok, true)
+    assert.equal(testBody.done, true)
+    assert.equal(buildBody.ok, false)
+    assert.equal(buildBody.done, false)
     assert.equal(testBody.cause, "test")
     assert.equal(buildBody.cause, "build")
     assert.match(testBody.next, /closed at zero/)
     assert.match(buildBody.next, /did not build/)
+    assert.match(buildBody.summary, /is not done/)
+    assert.doesNotMatch(buildBody.summary, /is dead/)
+    assert.doesNotMatch(buildBody.summary, /No test is needed/)
     assert.equal(testBody.next === buildBody.next, false)
     assert.doesNotMatch(buildBody.next, new RegExp(`add a test named (${COMPILER})`, "i"))
   } finally {

@@ -3,7 +3,7 @@ import path from "node:path"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { SCHEMA_VERSION, render, type Envelope } from "./contract.js"
-import { bool, int, parseArgs, requireText, text, texts, type FlagValue } from "./flags.js"
+import { bool, int, parseArgs, requireText, text, texts, unknownFlags, type FlagValue } from "./flags.js"
 import { asTable, checkGolden, goldenShape, readGolden, writeGolden } from "./golden/check.js"
 import { compareGoldens, recordGoldens } from "./golden/record.js"
 import { buildLedger } from "./ledger/build.js"
@@ -29,10 +29,11 @@ import { git } from "./mutate/patch.js"
 import { generateMutants } from "./mutate/generate.js"
 import type { OperatorSet } from "./mutate/operators.js"
 import { runMutants } from "./mutate/run.js"
-import { fixEditedKillers, LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel, sealedTreeLeaked } from "./mutate/sealed.js"
+import { fixEditedKillers, judgeSealedCatch, LABEL_LEAK_SUMMARY, labelLeaked, readSealedLabel, sealedTreeLeaked } from "./mutate/sealed.js"
 import { generateNext } from "./mutate/suite-decision.js"
 import { discoverSuite } from "./mutate/suites.js"
 import { tallyRun } from "./mutate/tally.js"
+import { freshGenerateOut, resumeArgv, runNextCall, type BudgetResume } from "./resume-call.js"
 import { checkKill } from "./swarm/check-kill.js"
 import { claimItem, reapClaims, seedQueue } from "./swarm/queue.js"
 import { verifyChange } from "./verify/change.js"
@@ -56,31 +57,53 @@ if (tooOld) {
 const parsed = parseArgs(process.argv.slice(2))
 const [group, action] = parsed.command
 
+const GENERATE_FLAGS = ["package", "out", "per-file", "src", "skip", "seed", "max-mutants", "max-minutes", "skip-file", "commit", "working-tree", "operators", "tests-dir"]
+const RUN_FLAGS = ["hide", "only-test", "suite-command", "package", "patches", "out", "repo", "workers", "direction", "concurrency", "max-minutes", "max-mutants", "build", "tests-dir", "unset", "suite-timeout-ms", "test-timeout-ms", "confirm", "affected", "agent", "history", "timeout-multiple", "timeout-floor-ms", "budget-ms", "commit"]
+const SEALED_FLAGS = [...RUN_FLAGS, "label", "fix"]
+const TALLY_FLAGS = ["out"]
+const LEDGER_BUILD_FLAGS = ["package", "out", "repo", "commit", "src", "tests-dir", "max-lines", "max-commits"]
+const LEDGER_CHECK_FLAGS = ["package", "repo", "commit", "ledger", "out", "update", "message", "concurrency", "suite-timeout-ms", "test-timeout-ms"]
+const MATRIX_FLAGS = ["scores", "direct", "out", "kills", "patches"]
+const GOLDEN_CHECK_FLAGS = ["recorded", "update", "actual", "message", "root"]
+const GOLDEN_RECORD_FLAGS = ["package", "repo", "commit", "module", "tests", "dir", "suite-timeout-ms"]
+const GOLDEN_COMPARE_FLAGS = ["package", "repo", "commit", "module", "tests", "golden", "out", "operators", "suite-timeout-ms"]
+const GAP_FIX_FLAGS = ["state", "line", "id", "file", "guard", "commit", "root"]
+const GAP_REVERT_FLAGS = ["state", "id"]
+const GUARD_FLAGS = ["state", "guard", "message", "root"]
+const FINDINGS_FLAGS = ["state", "status", "id", "reason", "agent", "file", "line", "root"]
+const STATUS_FLAGS = ["state", "root", "page", "scores", "agent"]
+const SEAL_FLAGS = ["state", "from", "id", "fraction", "seed"]
+const QUEUE_SEED_FLAGS = ["state", "id"]
+const QUEUE_CLAIM_FLAGS = ["state", "now", "lease-ms", "id", "agent"]
+const QUEUE_REAP_FLAGS = ["state", "now"]
+const CHECK_KILL_FLAGS = ["package", "patches", "repo", "commit", "out", "max-minutes", "build", "tests-dir", "suite-timeout-ms", "test-timeout-ms", "confirm", "agent"]
+const VERIFY_FLAGS = ["package", "operators", "repo", "out", "base", "commit", "max-mutants", "max-minutes", "max-tests"]
+
 if (group === "mcp" && !action) {
   await import("./mcp.js")
 } else try {
-  if (group === "mutate" && action === "generate") finish(await generateCommand(parsed.flags), parsed.human)
-  if (group === "mutate" && action === "run") finish(await runCommand(parsed.flags), parsed.human)
-  if (group === "mutate" && action === "sealed") finish(await sealedCommand(parsed.flags), parsed.human)
-  if (group === "mutate" && action === "tally") finish(tallyCommand(parsed.flags), parsed.human)
-  if (group === "ledger" && action === "build") finish(await ledgerCommand(parsed.flags), parsed.human)
-  if (group === "ledger" && action === "check") finish(await ledgerCheckCommand(parsed.flags), parsed.human)
-  if (group === "matrix" && action === "report") finish(matrixCommand(parsed.flags), parsed.human)
-  if (group === "golden" && action === "check") finish(goldenCommand(parsed.flags), parsed.human)
-  if (group === "golden" && action === "record") finish(await goldenRecordCommand(parsed.flags), parsed.human)
-  if (group === "golden" && action === "compare") finish(await goldenCompareCommand(parsed.flags), parsed.human)
-  if (group === "gap" && action === "fix") finish(gapFixCommand(parsed.flags), parsed.human)
-  if (group === "gap" && action === "revert") finish(gapRevertCommand(parsed.flags), parsed.human)
-  if (group === "guard" && action === "check") finish(guardCommand(parsed.flags), parsed.human)
-  if (group === "findings" && action === "add") finish(findingsCommand(parsed.flags), parsed.human)
-  if (group === "status") finish(statusCommand(parsed.flags), parsed.human)
-  if (group === "seal") finish(sealCommand(parsed.flags), parsed.human)
-  if (group === "queue" && action === "seed") finish(queueSeedCommand(parsed.flags), parsed.human)
-  if (group === "queue" && action === "claim") finish(queueClaimCommand(parsed.flags), parsed.human)
-  if (group === "queue" && action === "reap") finish(queueReapCommand(parsed.flags), parsed.human)
-  if (group === "check-kill") finish(await checkKillCommand(parsed.flags, action), parsed.human)
-  if (group === "verify-change") finish(await verifyCommand(parsed.flags), parsed.human)
-  if (group === "schema") finish(schemaCommand(action), parsed.human)
+  if (group === "mutate" && action === "generate") finish(refuse("mutate.generate", GENERATE_FLAGS) ?? await generateCommand(parsed.flags), parsed.human)
+  if (group === "mutate" && action === "run") finish(refuse("mutate.run", RUN_FLAGS) ?? await runCommand(parsed.flags), parsed.human)
+  if (group === "mutate" && action === "sealed") finish(refuse("mutate.sealed", SEALED_FLAGS) ?? await sealedCommand(parsed.flags), parsed.human)
+  if (group === "mutate" && action === "tally") finish(refuse("mutate.tally", TALLY_FLAGS) ?? tallyCommand(parsed.flags), parsed.human)
+  if (group === "ledger" && action === "build") finish(refuse("ledger.build", LEDGER_BUILD_FLAGS) ?? await ledgerCommand(parsed.flags), parsed.human)
+  if (group === "ledger" && action === "check") finish(refuse("ledger.check", LEDGER_CHECK_FLAGS) ?? await ledgerCheckCommand(parsed.flags), parsed.human)
+  if (group === "matrix" && action === "report") finish(refuse("matrix.report", MATRIX_FLAGS) ?? matrixCommand(parsed.flags), parsed.human)
+  if (group === "golden" && action === "check") finish(refuse("golden.check", GOLDEN_CHECK_FLAGS) ?? goldenCommand(parsed.flags), parsed.human)
+  if (group === "golden" && action === "record") finish(refuse("golden.record", GOLDEN_RECORD_FLAGS) ?? await goldenRecordCommand(parsed.flags), parsed.human)
+  if (group === "golden" && action === "compare") finish(refuse("golden.compare", GOLDEN_COMPARE_FLAGS) ?? await goldenCompareCommand(parsed.flags), parsed.human)
+  if (group === "gap" && action === "fix") finish(refuse("gap.fix", GAP_FIX_FLAGS) ?? gapFixCommand(parsed.flags), parsed.human)
+  if (group === "gap" && action === "revert") finish(refuse("gap.revert", GAP_REVERT_FLAGS) ?? gapRevertCommand(parsed.flags), parsed.human)
+  if (group === "guard" && action === "check") finish(refuse("guard.check", GUARD_FLAGS) ?? guardCommand(parsed.flags), parsed.human)
+  if (group === "findings" && action === "add") finish(refuse("findings.add", FINDINGS_FLAGS) ?? findingsCommand(parsed.flags), parsed.human)
+  if (group === "status") finish(refuse("status", STATUS_FLAGS) ?? statusCommand(parsed.flags), parsed.human)
+  if (group === "seal") finish(refuse("seal", SEAL_FLAGS) ?? sealCommand(parsed.flags), parsed.human)
+  if (group === "queue" && action === "seed") finish(refuse("queue.seed", QUEUE_SEED_FLAGS) ?? queueSeedCommand(parsed.flags), parsed.human)
+  if (group === "queue" && action === "claim") finish(refuse("queue.claim", QUEUE_CLAIM_FLAGS) ?? queueClaimCommand(parsed.flags), parsed.human)
+  if (group === "queue" && action === "reap") finish(refuse("queue.reap", QUEUE_REAP_FLAGS) ?? queueReapCommand(parsed.flags), parsed.human)
+  if (group === "check-kill") finish(refuse("check-kill", CHECK_KILL_FLAGS) ?? await checkKillCommand(parsed.flags, action), parsed.human)
+  if (group === "verify-change") finish(refuse("verify-change", VERIFY_FLAGS) ?? await verifyCommand(parsed.flags), parsed.human)
+  if (group === "schema") finish(refuse("schema", []) ?? schemaCommand(action), parsed.human)
   finish(usage(false, "Use mutate, ledger, matrix, golden, gap, guard, findings, status, queue, check-kill, verify-change, or schema."), parsed.human)
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
@@ -104,6 +127,21 @@ function usage(ok: boolean, summary: string): Envelope {
     command: "mutate.help",
     summary,
     next: "probatio mutate generate writes operator mutants. probatio mutate run confirms each kill twice. probatio mutate sealed runs one forward bug and keeps the label file out of the report. probatio mutate tally reads a finished run and does not delete a test. probatio ledger build reverts fix commits. probatio matrix report reads a recorded score table.",
+    nextCall: null,
+  }
+}
+
+/** Unknown flags stop the command before any work. `--no-confirm` is stored as `confirm`. */
+function refuse(command: string, known: readonly string[]): Envelope | null {
+  const unknown = unknownFlags(parsed.flags, known)
+  if (unknown.length === 0) return null
+  const named = unknown.map((name) => `--${name}`).join(", ")
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    ok: false,
+    command,
+    summary: unknown.length === 1 ? `Unknown flag ${named}.` : `Unknown flags ${named}.`,
+    next: "Drop the unknown flag and run the command again.",
     nextCall: null,
   }
 }
@@ -151,7 +189,12 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
   const shown = result.mutants.slice(0, 10).map(({ id, file, line, op }) => ({ id, file, line, op }))
   const patches = path.join(outDir, "mutants")
   const stopped = result.budgetHit
-  const suite = discoverSuite(packageDir, text(flags, "tests-dir") ?? "tests")
+  const givenCommit = text(flags, "commit")
+  const givenTests = text(flags, "tests-dir")
+  const suite = discoverSuite(packageDir, givenTests ?? "tests")
+  const followUp = ["mutate", "run", "--package", packageDir, "--patches", patches, "--out", freshGenerateOut(outDir)]
+  if (givenCommit) followUp.push("--commit", givenCommit)
+  if (givenTests) followUp.push("--tests-dir", givenTests)
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: true,
@@ -167,10 +210,7 @@ async function generateCommand(flags: ReturnType<typeof parseArgs>["flags"]): Pr
         ? "These patches match the working tree. mutate run scores the commit, so commit the files before mutate run."
         : "",
     ].filter((line) => line.length > 0).join(" "),
-    nextCall:
-      result.mutants.length === 0
-        ? null
-        : { argv: ["mutate", "run", "--package", packageDir, "--patches", patches, "--out", path.join(outDir, "runs")] },
+    nextCall: result.mutants.length === 0 ? null : { argv: followUp },
     mutantCount: result.mutants.length,
     operators: operatorSet(flags),
     stringLiteralMutants: 0,
@@ -256,19 +296,24 @@ async function runCommand(flags: ReturnType<typeof parseArgs>["flags"], hide: st
     timeoutMultiple: int(flags, "timeout-multiple") ?? 5,
     timeoutFloorMs: int(flags, "timeout-floor-ms") ?? 20_000,
     budgetMs: int(flags, "budget-ms") ?? null,
-    hide,
+    hide: hidden,
     onProgress: (line) => process.stderr.write(`${line}\n`),
   })
-  const resume: Envelope["nextCall"] = report.budgetHit
-    ? { argv: ["mutate", "run", "--package", packageDir, "--repo", repoDir, "--out", outDir, ...patchDirs.flatMap((dir) => ["--patches", dir])] }
-    : null
+  const resume = resumeArgv(resumeInput(flags, "run", {
+    packageDir,
+    repoDir,
+    outDir,
+    patchDirs,
+    commit: report.commit,
+    hide: hidden,
+  }))
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: report.ok,
     command: "mutate.run",
     summary: report.summary,
     next: report.next,
-    nextCall: report.ok ? resume : null,
+    nextCall: runNextCall(report, outDir, resume),
     killed: report.killed,
     unviable: report.unviable,
     unviableIds: report.unviableIds,
@@ -297,7 +342,8 @@ function tallyCommand(flags: ReturnType<typeof parseArgs>["flags"]): Envelope {
 }
 
 async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
-  const label = readSealedLabel(path.resolve(requireText(flags, "label")))
+  const labelPath = path.resolve(requireText(flags, "label"))
+  const label = readSealedLabel(labelPath)
   const hide = texts(flags, "hide")
   const outDir = path.resolve(requireText(flags, "out"))
   const report = await runCommand(flags, hide)
@@ -311,28 +357,51 @@ async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
   if (fixSha && fixSha.status !== 0) throw new Error(`--fix ${fixRef} does not resolve`)
   const commit = fixSha ? fixSha.stdout.trim() : scored
   const edited = report.ok && commit ? fixEditedKillers(repoDir, packageDir, commit, hide, kills) : { files: [], olderTestCatch: false }
-  const fromFix = kills.length > 0 && !edited.olderTestCatch
   const judged: Envelope = {
     ...report,
-    ...(fromFix
-      ? {
-          summary: `${report.summary} Every kill came from a test edited by the fix commit (${edited.files.join(", ")}). That is the fix's own test, so no older test caught the bug.`,
-          next: "Record this as a miss. Do not restore the hidden test.",
-        }
-      : {}),
-    fixEdited: edited.files,
-    olderTestCatch: edited.olderTestCatch,
+    ...judgeSealedCatch(
+      {
+        ok: report.ok,
+        killed: typeof report.killed === "number" ? report.killed : 0,
+        summary: report.summary,
+        next: report.next,
+        nextCall: report.nextCall,
+      },
+      kills,
+      edited,
+    ),
   }
   const body = JSON.stringify(judged)
-  if (!labelLeaked(body, label) && !sealedTreeLeaked(outDir, label)) return judged
-  return {
-    schemaVersion: SCHEMA_VERSION,
-    ok: false,
-    command: "mutate.sealed",
-    summary: LABEL_LEAK_SUMMARY,
-    next: "Keep the label in its own file. Run the same command again.",
-    nextCall: null,
+  if (labelLeaked(body, label) || sealedTreeLeaked(outDir, label)) {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      ok: false,
+      command: "mutate.sealed",
+      summary: LABEL_LEAK_SUMMARY,
+      next: "Keep the label in its own file. Run the same command again.",
+      nextCall: null,
+    }
   }
+  // A miss (ok false) keeps the nextCall the judgment set. Do not replace it with tally.
+  if (report.budgetHit === true && judged.ok) {
+    const patchDirs = texts(flags, "patches").map((dir) => path.resolve(dir))
+    return {
+      ...judged,
+      nextCall: {
+        argv: resumeArgv(resumeInput(flags, "sealed", {
+          packageDir,
+          repoDir,
+          outDir,
+          patchDirs,
+          commit: scored,
+          hide,
+          label: labelPath,
+          fix: text(flags, "fix") ?? null,
+        })),
+      },
+    }
+  }
+  return judged
 }
 
 async function ledgerCommand(flags: ReturnType<typeof parseArgs>["flags"]): Promise<Envelope> {
@@ -722,11 +791,67 @@ function finish(envelope: Envelope, human: boolean): never {
 }
 
 /** Omitted `--build` and `--no-build` both mean no build. `--build <cmd>` opts in. */
-function buildCommand(flags: Map<string, FlagValue[]>): string[] | null {
+function buildText(flags: Map<string, FlagValue[]>): string | null {
   const values = flags.get("build")
   if (!values || values.length === 0) return null
   const last = values[values.length - 1]
   if (typeof last !== "string") return null
-  const parts = last.split(" ").filter(Boolean)
+  return last.trim().length > 0 ? last : null
+}
+
+function buildCommand(flags: Map<string, FlagValue[]>): string[] | null {
+  const command = buildText(flags)
+  if (!command) return null
+  const parts = command.split(" ").filter(Boolean)
   return parts.length > 0 ? parts : null
+}
+
+function passedInt(flags: Map<string, FlagValue[]>, key: string): number | null {
+  if (!flags.has(key)) return null
+  return int(flags, key) ?? null
+}
+
+function resumeInput(
+  flags: Map<string, FlagValue[]>,
+  verb: "run" | "sealed",
+  paths: {
+    packageDir: string
+    repoDir: string
+    outDir: string
+    patchDirs: string[]
+    commit: string
+    hide: string[]
+    label?: string | null
+    fix?: string | null
+  },
+): BudgetResume {
+  const history = text(flags, "history")
+  return {
+    verb,
+    packageDir: paths.packageDir,
+    repoDir: paths.repoDir,
+    outDir: paths.outDir,
+    patchDirs: paths.patchDirs,
+    commit: paths.commit,
+    suiteCommand: text(flags, "suite-command") ?? null,
+    build: buildText(flags),
+    hide: paths.hide,
+    suiteTimeoutMs: int(flags, "suite-timeout-ms") ?? 600_000,
+    testTimeoutMs: int(flags, "test-timeout-ms") ?? 60_000,
+    timeoutMultiple: passedInt(flags, "timeout-multiple"),
+    budgetMs: passedInt(flags, "budget-ms"),
+    maxMinutes: passedInt(flags, "max-minutes"),
+    timeoutFloorMs: passedInt(flags, "timeout-floor-ms"),
+    maxMutants: passedInt(flags, "max-mutants"),
+    testsDir: text(flags, "tests-dir") ?? "tests",
+    workers: int(flags, "workers") ?? 1,
+    confirm: bool(flags, "confirm", true),
+    direction: text(flags, "direction") ?? "auto",
+    onlyTests: texts(flags, "only-test"),
+    affected: bool(flags, "affected", false),
+    unset: texts(flags, "unset"),
+    history: history ? path.resolve(history) : null,
+    label: paths.label ?? null,
+    fix: paths.fix ?? null,
+  }
 }

@@ -9,9 +9,11 @@ import type { LedgerEntry } from "./build.js"
  * Every fixed bug in the ledger, run against the suite, compared with the outcome recorded for it.
  * "The suite must catch every ledger bug, forever" is checked here, not remembered.
  *
- * A bug that was caught and is not caught now is a regression, and the check fails. Any other change
- * (a survivor that is now caught, a patch that no longer applies) also fails until it is re-recorded
- * with `--update` and a `Golden-Change: <id>: <why>` line in `--message`, the same guard golden check uses.
+ * A bug that was caught and is not caught now is a regression, and the check fails. `--update` and a
+ * `Golden-Change:` line do not retire it: the golden stays `killed`. Any other change (a survivor that
+ * is now caught, a patch that no longer applies) fails until it is re-recorded with `--update` and a
+ * `Golden-Change: <id>: <why>` line in `--message`, the same guard golden check uses. The why is not a
+ * killer name. A row that is still killed is refreshed from this run's `killedBy` list.
  */
 
 export type LedgerCheckOptions = {
@@ -93,30 +95,37 @@ export async function checkLedger(options: LedgerCheckOptions): Promise<Envelope
   const changed: string[] = []
   const unrecorded: string[] = []
   const unauthorized: string[] = []
+  const writtenIds: string[] = []
   for (const item of guarded) {
     const patchId = path.basename(item.patch as string, ".patch")
     const resultFile = path.join(outDir, "run", "results", `${patchId}.json`)
     const result = existsSync(resultFile) ? normalizeResult(JSON.parse(readFileSync(resultFile, "utf8")) as MutantResult) : null
     const outcome = result?.outcome ?? "missing"
-    const next = outcome === "killed" ? `Killed by ${(result?.killedBy ?? []).join(", ")}.` : result?.next || result?.error || REASON[outcome] || outcome
+    const killedBy = Array.isArray(result?.killedBy) ? result.killedBy : []
+    // The trailer is a reason, not a killer. A still-killed row names only this run's killedBy.
+    const next = outcome === "killed" ? `Killed by ${killedBy.join(", ")}.` : result?.next || result?.error || REASON[outcome] || outcome
     const actual: Row = { ok: true, outcome, reason: REASON[outcome] ?? outcome, next }
     const goldenFile = path.join(options.ledgerDir, `${item.id}.golden.json`)
     const recorded = existsSync(goldenFile)
       ? ((JSON.parse(readFileSync(goldenFile, "utf8")) as { rows?: Record<string, { outcome?: string }> }).rows?.[item.id]?.outcome ?? null)
       : null
     rows.push({ id: item.id, recorded, actual: outcome, next })
+    const regression = recorded === "killed" && outcome !== "killed"
     if (recorded === null) unrecorded.push(item.id)
-    else if (recorded === "killed" && outcome !== "killed") regressed.push(item.id)
+    else if (regression) regressed.push(item.id)
     else if (recorded !== outcome) changed.push(item.id)
     const differs = recorded !== outcome
-    if (differs && recorded !== null && !allowed.has(item.id)) unauthorized.push(item.id)
-    if (options.update && (!differs || recorded === null || allowed.has(item.id))) {
+    if (differs && recorded !== null && !regression && !allowed.has(item.id)) unauthorized.push(item.id)
+    // killed → anything else is never an update, Golden-Change line or not.
+    const refresh = options.update && !regression && (recorded === null || !differs || allowed.has(item.id))
+    if (refresh) {
       writeFileSync(goldenFile, `${JSON.stringify({ rows: { [item.id]: actual } }, null, 2)}\n`)
+      writtenIds.push(item.id)
     }
   }
   const killed = rows.filter((row) => row.actual === "killed").length
-  const written = options.update ? rows.filter((row) => !unauthorized.includes(row.id)).length : 0
-  const ok = options.update ? unauthorized.length === 0 : regressed.length === 0 && changed.length === 0 && unrecorded.length === 0
+  const written = writtenIds.length
+  const ok = regressed.length === 0 && (options.update ? unauthorized.length === 0 : changed.length === 0 && unrecorded.length === 0)
   const parts = [`${killed} of ${rows.length} ledger bugs caught.`]
   if (regressed.length > 0) parts.push(`Regressed: ${regressed.join(", ")}.`)
   if (changed.length > 0) parts.push(`Changed: ${changed.join(", ")}.`)

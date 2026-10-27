@@ -250,7 +250,7 @@ test("cli generate is one json object on stdout", () => {
   const out = path.join(pkg, "out")
   try {
     const tsx = path.join(root, "node_modules", ".bin", "tsx")
-    const result = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", out, "--no-build"], {
+    const result = spawnSync(tsx, ["src/cli.ts", "mutate", "generate", "--package", pkg, "--out", out], {
       cwd: root,
       encoding: "utf8",
     })

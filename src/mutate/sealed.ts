@@ -108,6 +108,45 @@ export function fixEditedKillers(
   return { files: [...files].sort(), olderTestCatch }
 }
 
+export type SealedCatchInput = {
+  ok: boolean
+  killed: number
+  summary: string
+  next: string
+  nextCall: { argv: string[] } | null
+}
+
+export type SealedCatchJudgment = SealedCatchInput & {
+  miss: boolean
+  fixEdited: string[]
+  olderTestCatch: boolean
+}
+
+/**
+ * Every kill from a test the fix commit edited is a miss, not a catch.
+ * An older test the fix left alone (`olderTestCatch`) stays a catch.
+ */
+export function judgeSealedCatch(
+  report: SealedCatchInput,
+  kills: Array<{ killedBy: string[] }>,
+  edited: { files: string[]; olderTestCatch: boolean },
+): SealedCatchJudgment {
+  const fromFix = kills.length > 0 && !edited.olderTestCatch
+  if (!fromFix) {
+    return { ...report, miss: false, fixEdited: edited.files, olderTestCatch: edited.olderTestCatch }
+  }
+  return {
+    ok: false,
+    killed: 0,
+    summary: `${report.summary.replace(/(\d+) killed/, "0 killed")} Every kill came from a test edited by the fix commit (${edited.files.join(", ")}). That is the fix's own test, so no older test caught the bug.`,
+    next: "Record this as a miss. Do not restore the hidden test.",
+    nextCall: null,
+    miss: true,
+    fixEdited: edited.files,
+    olderTestCatch: false,
+  }
+}
+
 /** True when a kill id names this file, its class, or a test written in it. */
 function killerInFile(id: string, rel: string, read: () => string): boolean {
   if (id.includes(rel) || id.startsWith(`${path.posix.basename(rel)}::`)) return true

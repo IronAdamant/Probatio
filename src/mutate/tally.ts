@@ -100,7 +100,7 @@ export function tallyRun(outDir: string): Envelope {
     }))
     .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.id.localeCompare(b.id))
   const shown = gaps.slice(0, 10)
-  const summary = leadSummary(noCoverage, survived, "survived", `${keep.length} tests to keep, ${noKillsYet.length} tests saw no kill in this batch, ${gaps.length} gaps. No test file was deleted.`)
+  const summary = leadSummary(noCoverage, survived, "survived", `${keep.length} tests killed a mutant, ${noKillsYet.length} tests saw no kill in this batch, ${gaps.length} gaps. No test file was deleted.`)
   const notes: string[] = []
   if (noCoverage > 0) notes.push(`${noCoverage} no coverage. That line was not seen. It is not a pass and not a gap.`)
   if (gaps.length > 0) {

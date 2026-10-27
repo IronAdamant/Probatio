@@ -1,29 +1,29 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { SCHEMA_VERSION, type Envelope } from "../contract.js"
-import { directImporters } from "../mutate/affected.js"
-import { filesInDiff } from "../mutate/patch.js"
 import { killLabel } from "../mutate/kill-label.js"
 import { normalizeResult, runMutants, type RunOptions, type RunReport } from "../mutate/run.js"
 import { campaignSummary, UNVIABLE_NEXT } from "../mutate/suite-decision.js"
 
-/** The gap is done only when this mutant is killed and the baseline suite is green. */
+/** Done only when this mutant is killed after confirm and the full suite baseline is green. */
 export async function checkKill(id: string, options: RunOptions): Promise<Envelope> {
-  const importers = importersOf(id, options)
-  if (importers.length === 0) {
+  const patch = options.patchDirs.map((dir) => path.join(dir, `${id}.patch`)).find((file) => existsSync(file))
+  if (!patch) {
     return {
       schemaVersion: SCHEMA_VERSION,
       ok: false,
       command: "check-kill",
-      summary: `${id} is not done. no direct importer in ${options.testsDir}`,
+      summary: `${id} is not done. The patch is missing.`,
       next: "The task is not done.",
       nextCall: null,
       done: false,
       outcome: null,
       suiteGreen: false,
+      killedBy: [],
     }
   }
-  const report = await runMutants({ ...options, onlyTests: importers, onlyPatch: id, affected: false })
+  // The baseline file is the discovered suite. Importers do not replace it. Confirm stays as passed in.
+  const report = await runMutants({ ...options, onlyTests: null, onlyPatch: id, affected: false })
   const baselineFile = path.join(options.outDir, "baseline.json")
   let suiteGreen = false
   if (existsSync(baselineFile)) {
@@ -53,20 +53,16 @@ export async function checkKill(id: string, options: RunOptions): Promise<Envelo
     outcome = result.outcome ?? null
     killedBy = Array.isArray(result.killedBy) ? result.killedBy : []
   }
-  // A mutant that does not build needs no test. The task is closed, and it is not called a kill.
-  const unviableMutant = suiteGreen && outcome === "unviable"
-  const done = (suiteGreen && outcome === "killed") || unviableMutant
+  // A mutant that did not build is not a kill and not done.
+  const unviableMutant = outcome === "unviable"
+  const done = suiteGreen && outcome === "killed"
   const label = unviableMutant ? { cause: "build" as const, next: UNVIABLE_NEXT } : done ? killLabel(killedBy) : null
   const head = checkHead(report)
   return {
     schemaVersion: SCHEMA_VERSION,
     ok: done,
     command: "check-kill",
-    summary: unviableMutant
-      ? `${head} ${id} does not build. No test is needed.`
-      : done
-        ? `${head} ${id} is dead and the suite is green.`
-        : `${head} ${id} is not done.`,
+    summary: done ? `${head} ${id} is dead and the suite is green.` : `${head} ${id} is not done.`,
     next: label?.next ?? (done ? "The gap-fixing task is done." : "The task is not done."),
     nextCall: null,
     done,
@@ -75,14 +71,6 @@ export async function checkKill(id: string, options: RunOptions): Promise<Envelo
     killedBy,
     suiteGreen,
   }
-}
-
-/** Same direct-importer set verify-change runs for a diff that touches this mutant's file. */
-function importersOf(id: string, options: RunOptions): string[] {
-  const patch = options.patchDirs.map((dir) => path.join(dir, `${id}.patch`)).find((file) => existsSync(file))
-  if (!patch) return []
-  const rels = filesInDiff(readFileSync(patch, "utf8")).map((item) => packageRelative(options.repoDir, options.packageDir, item.file))
-  return directImporters(options.packageDir, rels, options.testsDir)
 }
 
 function checkHead(report: RunReport): string {
@@ -99,17 +87,4 @@ function checkHead(report: RunReport): string {
   })
 }
 
-function packageRelative(repoDir: string, packageDir: string, file: string): string {
-  const norm = file.split(path.sep).join("/")
-  let repo = repoDir
-  let pkg = packageDir
-  try {
-    repo = realpathSync(repoDir)
-    pkg = realpathSync(packageDir)
-  } catch {
-    // A missing path still has a relative prefix.
-  }
-  const prefix = path.relative(repo, pkg).split(path.sep).join("/")
-  if (prefix && prefix !== "." && !prefix.startsWith("..") && norm.startsWith(`${prefix}/`)) return norm.slice(prefix.length + 1)
-  return norm
-}
+

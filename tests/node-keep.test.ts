@@ -82,13 +82,17 @@ test("node keep ids are one spelling, honour --only-test, and the tally nextCall
     assert.equal(rescore.killed, 1, rescore.summary)
     assert.ok(existsSync(path.join(rescoreOut, "baseline.json")), "the rescore ran its own baseline")
 
+    // The name filter asks for the test that passes. The other test in the file still fails, and that is not a survivor.
     const other = run(dir, path.join(dir, "other"), ["--only-test", "five opens"])
-    assert.equal(other.killed ?? 0, 0, `only five opens ran, and it passes on the mutant: ${other.summary}`)
-    assert.equal(other.survived, 1, other.summary)
+    assert.equal(other.survived ?? 0, 0, other.summary)
+    assert.equal(other.killed, 1, other.summary)
+    assert.match((other.kills?.[0]?.killedBy ?? []).join(" "), /zero stays shut/)
 
     const missing = run(dir, path.join(dir, "missing"), ["--only-test", "no such test"])
-    assert.equal(missing.killed ?? 0, 0, `a test that does not exist cannot kill: ${missing.summary}`)
-    assert.equal(missing.survived ?? 0, 0, `a test that does not exist is not a survivor: ${missing.summary}`)
+    assert.equal(missing.survived ?? 0, 0, `a missing name is not a survivor: ${missing.summary}`)
+    assert.equal(missing.killed, 1, missing.summary)
+    assert.match((missing.kills?.[0]?.killedBy ?? []).join(" "), /zero stays shut/)
+    assert.equal((missing.kills?.[0]?.killedBy ?? []).some((name) => name.includes("no such test")), false)
 
     const qualified = run(dir, path.join(dir, "qualified"), ["--only-test", tally.keep[0]])
     assert.equal(qualified.killed, 1, `the keep id as printed is runnable: ${qualified.summary}`)

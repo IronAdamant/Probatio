@@ -71,7 +71,7 @@ test("check-kill is done only when the mutant dies and the suite is green", () =
   }
 })
 
-test("check-kill runs only the direct importer and confirms the kill in isolation", () => {
+test("check-kill baselines the full suite and confirms the kill", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "probatio-kill-scope-"))
   const ran = path.join(dir, "ran")
   mkdirSync(ran)
@@ -136,7 +136,7 @@ test("check-kill runs only the direct importer and confirms the kill in isolatio
     assert.equal(stableJson.suiteGreen, true)
     assert.equal(stableJson.outcome, "killed")
     assert.match(stableJson.summary, /stable is dead and the suite is green/)
-    assert.equal(existsSync(otherMark), false)
+    assert.equal(existsSync(otherMark), true)
 
     const once = run([
       "check-kill", "once",
@@ -150,7 +150,7 @@ test("check-kill runs only the direct importer and confirms the kill in isolatio
     assert.equal(onceJson.ok, false)
     assert.equal(onceJson.done, false)
     assert.equal(onceJson.outcome, "flaky")
-    assert.equal(existsSync(otherMark), false)
+    assert.equal(existsSync(otherMark), true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

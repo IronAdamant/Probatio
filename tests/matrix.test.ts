@@ -83,7 +83,7 @@ test("matrix report reads the score files, headlines the gap, and does not delet
     assert.match(report.next, /ho-abc at src\/gate\.ts:4/)
     assert.equal(report.pruning.mode, "advisory")
     assert.equal(report.pruning.deletedTests, 0)
-    assert.deepEqual(report.pruning.advice, ["tests/sleepy.test.ts"])
+    assert.deepEqual(report.pruning.advice, [])
     assert.equal(readFileSync(sleepy, "utf8"), sleepyBody)
     assert.equal(existsSync(sleepy), true)
     const full = JSON.parse(readFileSync(report.full, "utf8")) as MatrixReport

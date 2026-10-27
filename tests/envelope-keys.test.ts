@@ -5,6 +5,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
+import { parseArgs, unknownFlags } from "../src/flags.ts"
 import { forwardDiff } from "../src/mutate/patch.ts"
 import { LABEL_LEAK_SUMMARY } from "../src/mutate/sealed.ts"
 
@@ -42,6 +43,8 @@ test("mutate run and tally keep the envelope keys and scrub a home path", { time
     assert.equal(body.schemaVersion, 2)
     assert.equal(body.ok, true, body.summary)
     assert.equal(body.killed, 1, body.summary)
+    assert.equal(body.survived, 0, body.summary)
+    assert.equal(body.nextCall, null)
     assert.ok((body.kills?.[0]?.killedBy ?? []).length > 0)
     assert.ok((body.kills?.[0]?.files ?? []).some((file) => file.file.endsWith("gate.ts")))
     assert.equal(String(body.full ?? "").includes(homedir()), false)
@@ -105,6 +108,55 @@ test("a sealed label that lands in the report is the fixed sentence and the toke
     assert.equal(body.ok, false)
     assert.equal(body.summary, LABEL_LEAK_SUMMARY)
     assert.equal(body.command, "mutate.sealed")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a finished run with a survivor tallies that same out dir", { timeout: 90_000 }, () => {
+  const dir = mkdtempSync(path.join(homedir(), "probatio-env-live-"))
+  try {
+    const out = path.join(dir, "out")
+    writeGate(dir, "tests/gate.test.ts", "one stays open", "assert.equal(gate(1), true)")
+    const result = cli(["mutate", "run", "--package", dir, "--repo", dir, "--patches", path.join(dir, "patches"), "--out", out, "--no-build", "--no-confirm", "--workers", "1"])
+    assert.equal(result.status, 0, result.stderr + result.stdout)
+    const body = JSON.parse(result.stdout) as {
+      ok: boolean
+      summary: string
+      survived: number
+      budgetHit: boolean
+      nextCall: { argv: string[] } | null
+    }
+    assert.equal(body.ok, true, body.summary)
+    assert.equal(body.budgetHit, false, body.summary)
+    assert.ok(body.survived >= 1, body.summary)
+    const argv = body.nextCall?.argv ?? []
+    assert.deepEqual(argv.slice(0, 3), ["mutate", "tally", "--out"])
+    assert.equal(argv[3], out)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("an unknown flag is refused before the suite starts", () => {
+  const parsed = parseArgs(["mutate", "run", "--no-confirm", "--max-minute", "2", "--human"])
+  assert.equal(parsed.human, true)
+  assert.equal(parsed.flags.get("confirm")?.[0], false)
+  assert.deepEqual(unknownFlags(parsed.flags, ["confirm", "package", "patches", "out"]), ["max-minute"])
+  const dir = mkdtempSync(path.join(homedir(), "probatio-env-flag-"))
+  try {
+    const result = cli(["mutate", "run", "--package", dir, "--patches", dir, "--out", dir, "--no-confirm", "--max-minute", "2"])
+    assert.notEqual(result.status, 0)
+    assert.equal(result.stderr.includes("start"), false, result.stderr)
+    const body = JSON.parse(result.stdout) as { ok: boolean; summary: string; nextCall: unknown }
+    assert.equal(body.ok, false)
+    assert.match(body.summary, /--max-minute/)
+    assert.equal(body.summary.includes("--confirm"), false, body.summary)
+    assert.equal(body.nextCall, null)
+    const schema = cli(["schema", "mutate.run"])
+    assert.equal(schema.status, 0, schema.stderr + schema.stdout)
+    const known = JSON.parse(schema.stdout) as { ok: boolean }
+    assert.equal(known.ok, true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

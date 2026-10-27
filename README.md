@@ -70,7 +70,7 @@ A blind run of the whole loop (gaps, new tests, then a hidden real bug) on Commo
 Known limits:
 
 - The sealed list (`seal`) is a plain id list in the state dir. An agent that can read that directory can see it. Keep the state dir and every `mutate sealed` label file outside the workspace of the agents being scored.
-- `mutate sealed` checks whether the fix commit edited the killing test (`fixEdited`, `olderTestCatch`). The fix commit is the scored commit, or `--fix <commit>` when later work sits on top of it. It matches a kill to a file by path, class name, or a test name written in that file. A test renamed by the fix can slip past that match.
+- `mutate sealed` checks whether the fix commit edited the killing test (`fixEdited`, `olderTestCatch`). When every kill comes from a test that commit edited, the run is a miss: `ok` is false, `killed` is 0, `miss` is true, and `next` says to record the miss and leave the hidden test hidden. An older test the fix left alone is still a catch. The fix commit is the scored commit, or `--fix <commit>` when later work sits on top of it. It matches a kill to a file by path, class name, or a test name written in that file. A test renamed by the fix can slip past that match.
 - The Java line map comes from JaCoCo, which does not count a line as executed when a call on that line throws. A test that reaches a line only through an exception is not selected for it, so a mutant there can survive a test that would fail. On Commons CSV-271 the map leaves out `testFormatThrowsNullPointerException` at `CSVPrinter.java:284`, and the sealed run reports survived.
 - The default operator set (`core`) is small: condition swaps, relational swaps, booleans, a dropped `!`. `--operators wide` adds arithmetic, integer constants, and (TypeScript only) a dropped call statement, so a clean batch means more. A summary says which set ran.
 
@@ -98,7 +98,7 @@ Node, pytest, Go, Maven/Java, Rust, C#, and Mocha collect a line map on the base
 
 The mutant timeout is the baseline duration times 5, and at least 20 seconds, capped by `--suite-timeout-ms`. A timeout is not a kill. `--budget-ms` stops mutant work after the baseline. The first mutant still runs, except for that no-line-map stop. A kill is the test that failed. A mutant the compiler rejects is `unviable`: the summary says `N did not build`, `unviable` and `unviableIds` list them, and they are neither kills nor gaps. Confirm is on by default and reruns the failing names. Pytest names that `-k` cannot express are passed as node ids. A usage error, including pytest exit 4, is not a kill. `verify-change` does not confirm a second time. Add `--affected` to limit the file list to tests that can see the change. The default, once a line map exists, runs the tests on the changed line.
 
-`tally` reads that run directory. The summary leads with the no-coverage count, then the survivors. `keep` names each test that killed a mutant, once, as an id `--only-test` can run. `noKillsYet` names tests that saw no mutant die in this batch. That is not a reason to delete them: one batch is not evidence, and the Auspex experiment caught 10 of 18 sealed bugs after pruning by kill evidence. `pruning.advice` stays empty and `deletedTests` is 0. A gap is a survivor. An unseen line is not a gap and not a pass. A timeout is neither a kill nor a gap.
+`tally` reads that run directory. The summary leads with the no-coverage count, then the survivors, then how many tests killed a mutant and how many saw no kill in this batch. `keep` names each test that killed a mutant, once, as an id `--only-test` can run. `noKillsYet` names tests that saw no mutant die in this batch. That is not a reason to delete them: one batch is not evidence, and the Auspex experiment caught 10 of 18 sealed bugs after pruning by kill evidence. `pruning.advice` stays empty and `deletedTests` is 0. A gap is a survivor. An unseen line is not a gap and not a pass. A timeout is neither a kill nor a gap.
 
 `nextCall` writes to a fresh out dir next to the old one, because the old out dir would skip every finished mutant and repeat the old result. With a gap, it reruns the batch on `HEAD` (`<out>.after-gaps`) once the new test is committed. With no gap, it rescores the keep ids at the same commit with `--only-test` (`<out>.rescore`).
 
@@ -130,7 +130,7 @@ A fix commit has a `Fixes-bug:` trailer, or it changes both `src` and a test. A 
 npx probatio ledger check --package . --ledger ledger --out .probatio/ledger-check
 ```
 
-Runs every ledger bug that applies (history reverts and hand-made mutants) against the suite, with confirm on, and compares each outcome with `ledger/<id>.golden.json`. A bug that was caught and is not caught now is a regression: `ok` is false and `next` says to find the test that stopped guarding it. Any other change (a survivor now caught, a patch that no longer applies) also fails until it is re-recorded with `--update`, and a changed row needs `Golden-Change: <id>: <why>` in `--message`. A bug with no golden yet is recorded by `--update`. A hand-made mutant whose header says `source=hand fix=<commit>` replaces that fix's history revert, which is how a revert that does not build still guards its bug. Run it where the toolchain is complete: a test that skips for a missing tool can turn a kill into a survivor. This repository's goldens are the outcomes on the CI toolchain job's tools. This repository runs it on every push to `main` and nightly (`.github/workflows/self-score.yml`).
+Runs every ledger bug that applies (history reverts and hand-made mutants) against the suite, with confirm on, and compares each outcome with `ledger/<id>.golden.json`. A bug that was caught and is not caught now is a regression: `ok` is false, the golden stays `"outcome": "killed"`, and `next` says to find the test that stopped guarding it. `--update` and a `Golden-Change:` line do not retire that regression. Any other change (a survivor now caught, a patch that no longer applies) fails until it is re-recorded with `--update`, and a changed row needs `Golden-Change: <id>: <why>` in `--message`. The why is not a killer name. A row that is still killed may be refreshed from this run, and the killers written are the tests that killed it. A bug with no golden yet is recorded by `--update`. A hand-made mutant whose header says `source=hand fix=<commit>` replaces that fix's history revert, which is how a revert that does not build still guards its bug. Run it where the toolchain is complete: a test that skips for a missing tool can turn a kill into a survivor. This repository's goldens are the outcomes on the CI toolchain job's tools. This repository runs it on every push to `main` and nightly (`.github/workflows/self-score.yml`).
 
 ## matrix
 
@@ -138,7 +138,7 @@ Runs every ledger bug that applies (history reverts and hand-made mutants) again
 npx probatio matrix report --scores round2-union-scores.tsv --direct round2-direct-scores.txt --patches mutants/holdout --patches mutants/train --out .probatio/matrix
 ```
 
-Reads those recorded tables. It does not rerun the mutants. The headline is the gap list: `file:line`, the top 10, how many are left, and the path to the full JSON. A test that killed nothing can be named. The file is not deleted.
+Reads those recorded tables. It does not rerun the mutants. The headline is the gap list: `file:line`, the top 10, how many are left, and the path to the full JSON. Pruning advice is empty and `deletedTests` is 0. A test that killed nothing is not named. No test is deleted.
 
 ## golden
 
@@ -177,7 +177,7 @@ Lists the tests that can see the diff, runs mutants on the changed lines, and re
 
 ## queue
 
-An item is `.probatio/queue/<id>.json`. `queue claim` renames it to `claimed/<agent>-<id>.json` with a lease. `queue reap` moves an expired lease back. `check-kill <id>` runs the tests that directly import the mutated file and confirms the killing test again. It is done only when that mutant dies and that suite is still green. `verify-change` is the edit-sized run: it uses the line map and does not confirm a second time.
+An item is `.probatio/queue/<id>.json`. `queue claim` renames it to `claimed/<agent>-<id>.json` with a lease. `queue reap` moves an expired lease back. `check-kill <id>` runs that one mutant with confirm left on. The baseline is the full discovered suite, not only the tests that import the mutated file. It is done only when the outcome is killed after confirm and that full suite baseline is green. A mutant that did not build is not done. `verify-change` is the edit-sized run: it uses the line map and does not confirm a second time.
 
 ## MCP
 

@@ -3,6 +3,7 @@ import type { FoundMutants, MutantPoint, OperatorSet } from "./operators.js"
 
 type Kind =
   | "c"
+  | "java"
   | "rust"
   | "go"
   | "python"
@@ -92,6 +93,7 @@ export function textKind(file: string): Kind | null {
     case ".go":
       return "go"
     case ".java":
+      return "java"
     case ".c":
     case ".h":
     case ".cpp":
@@ -158,7 +160,7 @@ export function findTextMutants(file: string, text: string, operators: OperatorS
   return { points, violations: [] }
 }
 
-const DROP_KINDS = new Set<Kind>(["c", "csharp", "js", "rust"])
+const DROP_KINDS = new Set<Kind>(["c", "java", "csharp", "js", "rust"])
 const NOT_DROPPED = /^(return|throw|break|continue|goto|case|default|yield|else|if|for|while|do|switch|try|catch|finally|new|package|import|using|let|const|var|val|super|assert)\b/
 const CALL = /^(this\.)?[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*\s*\(.*\)\s*;$/
 const ASSIGN = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*|\[[^\]]*\])*\s*([-+*/%|&^]|<<|>>)?=(?!=).+;$/
@@ -365,6 +367,7 @@ function blocked(text: string, index: number, original: string): boolean {
 }
 
 function codeMask(text: string, kind: Kind): Uint8Array {
+  if (kind === "js") return markJs(text)
   const code = new Uint8Array(text.length)
   let index = 0
   while (index < text.length) {
@@ -379,10 +382,71 @@ function codeMask(text: string, kind: Kind): Uint8Array {
   return code
 }
 
+/** JS strings and comments stay hidden. A template literal hides its text and leaves `${...}` as code. */
+function markJs(text: string): Uint8Array {
+  const code = new Uint8Array(text.length)
+  let index = 0
+  while (index < text.length) {
+    const hidden = skipC(text, index, { nested: false, rust: false, raw: false })
+    if (hidden > index) {
+      index = hidden
+      continue
+    }
+    if (text[index] === "`") {
+      index = markTemplate(text, code, index)
+      continue
+    }
+    code[index] = 1
+    index += 1
+  }
+  return code
+}
+
+function markTemplate(text: string, code: Uint8Array, index: number): number {
+  let cursor = index + 1
+  while (cursor < text.length) {
+    if (text[cursor] === "\\") {
+      cursor += cursor + 1 < text.length ? 2 : 1
+      continue
+    }
+    if (text[cursor] === "`") return cursor + 1
+    if (text[cursor] === "$" && text[cursor + 1] === "{") {
+      cursor = markHole(text, code, cursor + 2)
+      continue
+    }
+    cursor += 1
+  }
+  return text.length
+}
+
+function markHole(text: string, code: Uint8Array, start: number): number {
+  let depth = 1
+  let cursor = start
+  while (cursor < text.length && depth > 0) {
+    if (text[cursor] === "`") {
+      cursor = markTemplate(text, code, cursor)
+      continue
+    }
+    const hidden = skipC(text, cursor, { nested: false, rust: false, raw: false })
+    if (hidden > cursor) {
+      cursor = hidden
+      continue
+    }
+    if (text[cursor] === "{") depth += 1
+    else if (text[cursor] === "}") {
+      depth -= 1
+      if (depth === 0) return cursor + 1
+    }
+    code[cursor] = 1
+    cursor += 1
+  }
+  return cursor
+}
+
 function skipHidden(text: string, index: number, kind: Kind): number {
   if (kind === "python") return skipPython(text, index)
   if (kind === "cobol") return skipCobol(text, index)
-  if (kind === "js") return skipJs(text, index)
+  if (kind === "java") return skipJava(text, index)
   if (kind === "swift") return skipSwift(text, index)
   if (kind === "csharp") return skipCSharp(text, index)
   if (kind === "asm-x86_64") return skipAsm(text, index, { hash: false, semi: true, slash: true })
@@ -393,11 +457,12 @@ function skipHidden(text: string, index: number, kind: Kind): number {
   return skipC(text, index, { nested: false, rust: false, raw: false })
 }
 
-function skipJs(text: string, index: number): number {
-  const hidden = skipC(text, index, { nested: false, rust: false, raw: false })
-  if (hidden > index) return hidden
-  if (text[index] === "`") return skipTemplate(text, index)
-  return index
+function skipJava(text: string, index: number): number {
+  if (text.startsWith("//", index) || text.startsWith("/*", index)) {
+    return skipC(text, index, { nested: false, rust: false, raw: false })
+  }
+  if (text.startsWith('"""', index)) return skipQuotes(text, index, '"""', true)
+  return skipC(text, index, { nested: false, rust: false, raw: false })
 }
 
 function skipSwift(text: string, index: number): number {
@@ -406,6 +471,7 @@ function skipSwift(text: string, index: number): number {
 }
 
 function skipCSharp(text: string, index: number): number {
+  if (text.startsWith('"""', index)) return skipQuotes(text, index, '"""', true)
   if (text.startsWith('@"', index) || text.startsWith('$@"', index)) {
     const start = text[index] === "@" ? index + 1 : index + 2
     let cursor = start + 1
@@ -420,19 +486,6 @@ function skipCSharp(text: string, index: number): number {
     return text.length
   }
   return skipC(text, index, { nested: false, rust: false, raw: false })
-}
-
-function skipTemplate(text: string, index: number): number {
-  let cursor = index + 1
-  while (cursor < text.length) {
-    if (text[cursor] === "\\") {
-      cursor += 2
-      continue
-    }
-    if (text[cursor] === "`") return cursor + 1
-    cursor += 1
-  }
-  return text.length
 }
 
 function skipAsm(text: string, index: number, mode: { hash: boolean; semi: boolean; slash: boolean }): number {
