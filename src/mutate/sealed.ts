@@ -125,13 +125,15 @@ export type SealedCatchJudgment = SealedCatchInput & {
 /**
  * Every kill from a test the fix commit edited is a miss, not a catch.
  * An older test the fix left alone (`olderTestCatch`) stays a catch.
+ * A run that still has mutants in `notStarted` is not finished, so those kills are not a miss yet.
  */
 export function judgeSealedCatch(
   report: SealedCatchInput,
   kills: Array<{ killedBy: string[] }>,
   edited: { files: string[]; olderTestCatch: boolean },
+  notStarted: readonly string[] = [],
 ): SealedCatchJudgment {
-  const fromFix = kills.length > 0 && !edited.olderTestCatch
+  const fromFix = notStarted.length === 0 && kills.length > 0 && !edited.olderTestCatch
   if (!fromFix) {
     return { ...report, miss: false, fixEdited: edited.files, olderTestCatch: edited.olderTestCatch }
   }

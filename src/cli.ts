@@ -357,6 +357,7 @@ async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
   if (fixSha && fixSha.status !== 0) throw new Error(`--fix ${fixRef} does not resolve`)
   const commit = fixSha ? fixSha.stdout.trim() : scored
   const edited = report.ok && commit ? fixEditedKillers(repoDir, packageDir, commit, hide, kills) : { files: [], olderTestCatch: false }
+  const notStarted = Array.isArray(report.notStarted) ? report.notStarted.filter((id): id is string => typeof id === "string") : []
   const judged: Envelope = {
     ...report,
     ...judgeSealedCatch(
@@ -369,6 +370,7 @@ async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
       },
       kills,
       edited,
+      notStarted,
     ),
   }
   const body = JSON.stringify(judged)
@@ -382,8 +384,8 @@ async function sealedCommand(flags: ReturnType<typeof parseArgs>["flags"]): Prom
       nextCall: null,
     }
   }
-  // A miss (ok false) keeps the nextCall the judgment set. Do not replace it with tally.
-  if (report.budgetHit === true && judged.ok) {
+  // A finished miss has ok false, so nextCall stays null. Mutants still in notStarted are not that miss.
+  if ((report.budgetHit === true || notStarted.length > 0) && judged.ok) {
     const patchDirs = texts(flags, "patches").map((dir) => path.resolve(dir))
     return {
       ...judged,

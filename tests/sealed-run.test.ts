@@ -146,6 +146,76 @@ test("a sealed kill by a test the fix commit edited is not called a catch by old
   }
 })
 
+test("a sealed budget stop after a fix-edited kill resumes and does not record a miss", { timeout: 120_000 }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "probatio-sealed-budget-"))
+  const labelFile = path.join(dir, "label.txt")
+  writeFileSync(labelFile, "bug_id=seal-budget-4c2\nissue_id=issue-budget-4c2\nexpected_fail=zero stays shut\n")
+  const buggy = source.replace("n > 0", "n >= 0")
+  const other = source.replace("n > 0", "n > 1")
+  const openTest = (extra: string) =>
+    `import test from "node:test"\nimport assert from "node:assert/strict"\nimport { gate } from "../src/gate.ts"\ntest("one stays open", () => {\n  assert.equal(gate(1), true)\n${extra}})\n`
+  mkdirSync(path.join(dir, "src"))
+  mkdirSync(path.join(dir, "tests"))
+  mkdirSync(path.join(dir, "patches"))
+  writeFileSync(path.join(dir, "package.json"), '{ "type": "module" }\n')
+  writeFileSync(path.join(dir, "src", "gate.ts"), buggy)
+  writeFileSync(path.join(dir, "tests", "open.test.ts"), openTest(""))
+  writeFileSync(
+    path.join(dir, "tests", "extra.test.ts"),
+    "import test from \"node:test\"\nimport assert from \"node:assert/strict\"\ntest(\"extra stays\", () => { assert.equal(1, 1) })\n",
+  )
+  git(dir, ["init", "-q"])
+  git(dir, ["add", "."])
+  git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "before the fix"])
+  writeFileSync(path.join(dir, "src", "gate.ts"), source)
+  writeFileSync(path.join(dir, "tests", "open.test.ts"), openTest("  assert.equal(gate(0), false)\n"))
+  writeFileSync(
+    path.join(dir, "tests", "shut.test.ts"),
+    "import test from \"node:test\"\nimport assert from \"node:assert/strict\"\nimport { gate } from \"../src/gate.ts\"\ntest(\"zero stays shut\", () => { assert.equal(gate(0), false) })\n",
+  )
+  git(dir, ["add", "."])
+  git(dir, ["-c", "user.email=probatio@example.com", "-c", "user.name=probatio", "commit", "-qm", "fix"])
+  writeFileSync(path.join(dir, "patches", "m1.patch"), forwardDiff("src/gate.ts", source, buggy))
+  writeFileSync(path.join(dir, "patches", "m2.patch"), forwardDiff("src/gate.ts", source, other))
+  const out = path.join(dir, "out")
+  try {
+    const run = sealed(dir, labelFile, out, ["--hide", "tests/extra.test.ts", "--budget-ms", "1"])
+    assert.equal(run.status, 0, run.stderr + run.stdout)
+    const body = JSON.parse(run.stdout) as {
+      ok: boolean
+      killed: number
+      miss?: boolean
+      summary: string
+      next: string
+      notStarted?: string[]
+      budgetHit?: boolean
+      nextCall: { argv: string[] } | null
+    }
+    assert.equal(body.ok, true, body.summary)
+    assert.equal(body.miss, false, body.summary)
+    assert.equal(body.killed, 1, body.summary)
+    assert.equal(body.budgetHit, true, body.summary)
+    assert.ok(body.notStarted?.includes("m2"), body.summary)
+    assert.equal(existsSync(path.join(out, "results", "m1.json")), true)
+    assert.equal(existsSync(path.join(out, "results", "m2.json")), false)
+    const argv = body.nextCall?.argv ?? []
+    assert.deepEqual(argv.slice(0, 2), ["mutate", "sealed"])
+    assert.equal(argv.filter((arg) => arg === "--hide").length, 2)
+    assert.ok(argv.includes("tests/shut.test.ts"))
+    assert.ok(argv.includes("tests/extra.test.ts"))
+    assert.equal(argv[argv.indexOf("--out") + 1], out)
+    assert.equal(argv[argv.indexOf("--budget-ms") + 1], "1")
+    assert.equal(argv[argv.indexOf("--label") + 1], labelFile)
+    assert.equal(argv.includes("run"), false)
+    assert.equal(labelLeaked(run.stdout, readSealedLabel(labelFile)), false)
+    assert.equal(existsSync(path.join(dir, "tests", "shut.test.ts")), true)
+    assert.equal(body.summary.includes("Record this as a miss"), false)
+    assert.equal(body.next.includes("Record this as a miss"), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("judgeSealedCatch is a miss only when no older test caught the bug", () => {
   const base = { ok: true, killed: 1, summary: "1 killed", next: "Killed by a test.", nextCall: { argv: ["mutate", "run"] } }
   const caught = judgeSealedCatch(base, [{ killedBy: ["tests/old.test.ts"] }], { files: [], olderTestCatch: true })
@@ -165,6 +235,17 @@ test("judgeSealedCatch is a miss only when no older test caught the bug", () => 
   assert.equal(quiet.miss, false)
   assert.equal(quiet.ok, true)
   assert.equal(quiet.killed, 0)
+  const partial = judgeSealedCatch(
+    base,
+    [{ killedBy: ["tests/open.test.ts"] }],
+    { files: ["tests/open.test.ts"], olderTestCatch: false },
+    ["m2"],
+  )
+  assert.equal(partial.ok, true)
+  assert.equal(partial.killed, 1)
+  assert.equal(partial.miss, false)
+  assert.deepEqual(partial.nextCall, base.nextCall)
+  assert.equal(partial.summary.includes("0 killed"), false)
 })
 
 function sealed(dir: string, label: string, out: string, extra: string[] = []) {
