@@ -1,6 +1,8 @@
 # Releasing Probatio
 
-One version, one commit, one tag, in this order. `npm publish` runs `scripts/release-check.mjs` first (`prepublishOnly`) and refuses when a step is missing. `npm run release:check` runs the same checks without publishing.
+The program in this repository is the Rust binary. The steps below describe the old npm release and are not the current publish path. A release of the binary still needs a green `cargo test` and a reason in the CHANGELOG.
+
+One version, one commit, one tag, in this order. The old `npm publish` ran `scripts/release-check.mjs` first (`prepublishOnly`) and refused when a step was missing.
 
 1. **Changes land on `main` and both workflows go green on that commit.** `test` (core, pack on Node 22 and 24, toolchain, macos) and `self-score` (Probatio's own ledger: every fixed bug keeps the outcome recorded in `ledger/<id>.golden.json`). A red self-score means a fixed bug is back in reach of the suite, or a ledger patch stopped applying. Fix that first.
 2. **Version commit.** `npm version <x.y.z> --no-git-tag-version`, then add `## <x.y.z>` to `CHANGELOG.md` with what changed for an agent reading the JSON. Bump `SCHEMA_VERSION` in `src/contract.ts` and the `schemaVersion` const in every `schemas/*.schema.json` when a field is renamed, removed, or changes meaning. A new field does not bump it. Commit as `Set version <x.y.z> ...` and push.

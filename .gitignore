@@ -3,3 +3,4 @@ dist/
 .probatio/
 *.tsbuildinfo
 .stele-context/
+/target/

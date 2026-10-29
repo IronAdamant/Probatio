@@ -1,0 +1,19 @@
+[package]
+name = "probatio"
+version = "0.4.0"
+edition = "2021"
+description = "Mutation runner. Scores a test suite by the bugs it catches."
+license = "MIT"
+publish = false
+
+[lib]
+name = "probatio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "probatio"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
