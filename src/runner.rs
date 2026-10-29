@@ -310,8 +310,9 @@ fn apply_and_run(root: &Path, mutant: &LoadedMutant, suite: &str, timeout: Durat
         return error_scored(error.to_string());
     }
     let timed = process::run_shell(suite, Some(root), timeout);
+    let report = format!("{}\n{}", timed.stdout, timed.stderr);
     Scored {
-        kind: decide::classify(timed.timed_out, timed.status, &timed.stderr),
+        kind: decide::classify(timed.timed_out, timed.status, &report),
         duration_ms: duration_ms(timed.duration),
         timed_out: timed.timed_out,
     }
@@ -621,6 +622,25 @@ mod tests {
     }
 
     #[test]
+    fn run_go_build_failure_is_not_a_kill() {
+        let package = temp("gobuild");
+        write_source(&package, one_and());
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let script = "if grep -q '||' src/A.java; then printf '%s\\n' './main.go:3:6: undefined: nope' 'FAIL demo [build failed]' >&2; exit 1; else echo ok; fi";
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", script]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        let value = parsed(&envelope);
+        assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(Value::as_int), Some(0));
+        assert_eq!(value.get("counts").and_then(|counts| counts.get("unviable")).and_then(Value::as_int), Some(1));
+        let result = fs::read_dir(out.join("results")).unwrap().next().unwrap().unwrap().path();
+        let body = json::parse(&fs::read_to_string(result).unwrap()).unwrap();
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("unviable"));
+        assert_ne!(body.get("outcome").and_then(Value::as_str), Some("killed"));
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
     fn run_timeout_is_not_a_kill() {
         let package = temp("timeout");
         write_source(&package, one_and());
@@ -763,6 +783,40 @@ mod tests {
         let source = fs::read_to_string(package.join("src/A.java")).unwrap();
         assert!(source.contains("&&"), "{source}");
         assert!(!source.contains("||"));
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn run_scores_the_uncommitted_line() {
+        let package = temp("dirty");
+        write_source(&package, one_and());
+        git(&package, &["init"]);
+        git(&package, &["add", "src/A.java"]);
+        git_commit(&package, &["commit", "-m", "init"]);
+        let dirty = "class A {\n  boolean f(boolean a, boolean b) { return a && b && c; } // UNCOMMITTED\n}\n";
+        write_source(&package, dirty);
+        let patches = generate_into(&package);
+        let listed = json::parse(&fs::read_to_string(patches.join("mutants.json")).unwrap()).unwrap();
+        let count = match listed.get("mutants") {
+            Some(Value::Array(items)) => items.len(),
+            _ => 0,
+        };
+        assert_eq!(count, 2, "generate should see both && operators in the working tree");
+        let out = package.join("out");
+        let script = "grep -q UNCOMMITTED src/A.java && echo ok";
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", script]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        let value = parsed(&envelope);
+        assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(Value::as_int), Some(0));
+        assert_eq!(value.get("counts").and_then(|counts| counts.get("errored")).and_then(Value::as_int), Some(0));
+        assert_eq!(value.get("counts").and_then(|counts| counts.get("survived")).and_then(Value::as_int), Some(2));
+        for entry in fs::read_dir(out.join("results")).unwrap() {
+            let body = json::parse(&fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+            assert_eq!(body.get("outcome").and_then(Value::as_str), Some("survived"));
+        }
+        let source = fs::read_to_string(package.join("src/A.java")).unwrap();
+        assert!(source.contains("UNCOMMITTED"), "{source}");
+        assert!(source.contains("&& c"), "{source}");
         let _ = fs::remove_dir_all(&package);
     }
 

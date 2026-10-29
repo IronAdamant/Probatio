@@ -130,6 +130,9 @@ fn looks_unviable(stderr: &str) -> bool {
         "does not compile",
         "syntax error",
         "undefined reference",
+        "undefined:",
+        "[build failed]",
+        "build failed",
         "linker",
         "cannot find module",
     ];
@@ -235,8 +238,11 @@ mod tests {
         let unviable = classify(false, Some(1), "error: cannot find module foo");
         let timed = classify(true, None, "");
         let killed = classify(false, Some(1), "assertion failed: expected 1");
+        let go_build = classify(false, Some(1), "./main.go:3:6: undefined: nope\nFAIL\tdemo [build failed]\n");
         assert_eq!(unviable, Verdict::Unviable);
         assert!(!unviable.is_kill());
+        assert_eq!(go_build, Verdict::Unviable);
+        assert!(!go_build.is_kill());
         assert_eq!(timed, Verdict::Timeout);
         assert!(!timed.is_kill());
         assert!(killed.is_kill());

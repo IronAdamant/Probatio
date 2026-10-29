@@ -40,6 +40,62 @@ pub fn add_worktree(repo: &Path, dest: &Path, run_id: &str) -> Result<(), String
         let _ = std::fs::remove_dir_all(dest);
     }
     git(repo, &["worktree", "add", "--detach", &dest.display().to_string(), "HEAD"])?;
+    overlay_working_tree(repo, dest)?;
+    Ok(())
+}
+
+/// HEAD is the checkout. Generate read the working tree, so the worktree has to match it
+/// before a mutant is applied.
+fn overlay_working_tree(repo: &Path, dest: &Path) -> Result<(), String> {
+    copy_over(repo, dest)?;
+    prune_extras(repo, dest, dest)?;
+    Ok(())
+}
+
+fn copy_over(src: &Path, dest: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(src).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".git" || name == "target" || name == "node_modules" || name == "dist" {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let to = dest.join(entry.file_name());
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&to).map_err(|error| error.to_string())?;
+            copy_over(&entry.path(), &to)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), &to).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn prune_extras(src_root: &Path, dest_root: &Path, dir: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path.strip_prefix(dest_root).map_err(|error| error.to_string())?;
+        let source = src_root.join(relative);
+        if !source.exists() {
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).map_err(|error| error.to_string())?;
+            } else {
+                std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+            }
+            continue;
+        }
+        if path.is_dir() && source.is_dir() {
+            prune_extras(src_root, dest_root, &path)?;
+        }
+    }
     Ok(())
 }
 

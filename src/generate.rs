@@ -141,6 +141,8 @@ mod tests {
         ];
         let envelope = generate(&Flags::parse(&args));
         assert!(envelope.ok, "{}", envelope.summary);
+        let value = json::parse(&envelope.render("")).unwrap();
+        json::envelope_fields(&value).unwrap();
         let text = fs::read_to_string(out.join("mutants.json")).unwrap();
         let value = json::parse(&text).unwrap();
         let mutants = value.get("mutants").unwrap();
@@ -152,6 +154,34 @@ mod tests {
             }
             other => panic!("mutants was {other:?}"),
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_returns_an_envelope_when_nbsp_precedes_and() {
+        let root = std::env::temp_dir().join(format!("probatio-gen-nbsp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/A.java"),
+            "class A {\n  boolean f(boolean a, boolean b) { return a\u{00A0}&& b; }\n}\n",
+        )
+        .unwrap();
+        let out = root.join("out");
+        let args = vec![
+            "--package".into(),
+            root.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+        ];
+        let envelope = generate(&Flags::parse(&args));
+        let value = json::parse(&envelope.render("")).unwrap();
+        let (version, ok, summary, next, _next_call) = json::envelope_fields(&value).unwrap();
+        assert_eq!(version, 2);
+        assert!(ok, "{summary}");
+        assert!(!summary.is_empty());
+        assert!(!next.is_empty());
+        assert!(out.join("mutants.json").is_file());
         let _ = fs::remove_dir_all(&root);
     }
 }

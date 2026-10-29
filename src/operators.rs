@@ -117,7 +117,7 @@ fn match_at<'a>(text: &str, code: &[bool], index: usize, kind: Kind) -> Option<&
 }
 
 fn blocked(text: &str, index: usize, original: &str) -> bool {
-    let prev = if index == 0 { ' ' } else { text[index - 1..].chars().next().unwrap_or(' ') };
+    let prev = text[..index].chars().next_back().unwrap_or(' ');
     let next = text[index + original.len()..].chars().next().unwrap_or(' ');
     match original {
         "<" => next == '<' || next == '=' || next == '-' || prev == '<' || !(prev.is_whitespace() && next.is_whitespace()),
@@ -212,5 +212,13 @@ mod tests {
         let applied = apply(text, found[0].start, found[0].end, &found[0].replacement);
         assert!(applied.contains("a || b"));
         assert!(applied.contains("// a && b"));
+    }
+
+    #[test]
+    fn nbsp_before_and_does_not_panic() {
+        let text = "class A {\n  boolean f(boolean a, boolean b) { return a\u{00A0}&& b; }\n}\n";
+        let found = mutants_in("src/A.java", text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].op, "and-to-or");
     }
 }
