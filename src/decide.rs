@@ -207,6 +207,46 @@ pub fn cap_note(max: usize) -> String {
     format!("Selection capped at {max} tests. The result names the cap.")
 }
 
+/// How many mutants with no result this call may score.
+/// `Err` is the real pending count when `--confirm-count` does not match it.
+pub fn chunk_budget(pending: usize, confirm: Option<usize>) -> Result<usize, usize> {
+    match confirm {
+        Some(count) if count == pending => Ok(pending),
+        Some(_) => Err(pending),
+        None => Ok(pending.min(LARGE_BATCH)),
+    }
+}
+
+/// Fill `{tests}` and `{tests,}`. `Ok(true)` means the command had neither token.
+pub fn render_suite(command: &str, tests: &[String]) -> Result<(String, bool), String> {
+    let space = command.contains("{tests}");
+    let comma = command.contains("{tests,}");
+    if !space && !comma {
+        return Ok((command.to_string(), true));
+    }
+    for name in tests {
+        if unsafe_test_name(name) {
+            return Err(name.clone());
+        }
+    }
+    let mut rendered = command.to_string();
+    if comma {
+        rendered = rendered.replace("{tests,}", &tests.join(","));
+    }
+    if space {
+        let quoted = tests.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(" ");
+        rendered = rendered.replace("{tests}", &quoted);
+    }
+    Ok((rendered, false))
+}
+
+fn unsafe_test_name(name: &str) -> bool {
+    name.is_empty()
+        || name.chars().any(|ch| {
+            !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-' && ch != '.' && ch != '/' && ch != ':'
+        })
+}
+
 /// Tally never deletes a test. The zero is the product, not a default the caller may raise.
 pub fn deleted_tests() -> u64 {
     0
@@ -264,6 +304,28 @@ mod tests {
         assert!(scale_stop(false, Some(1_000), 30).is_none());
         assert!(scale_stop(true, Some(20_000), 100).is_none());
         assert!(scale_stop(false, None, 31).is_some());
+    }
+
+    #[test]
+    fn confirm_count_must_match_and_a_plain_call_stops_at_thirty() {
+        assert_eq!(chunk_budget(31, None).unwrap(), 30);
+        assert_eq!(chunk_budget(10, None).unwrap(), 10);
+        assert_eq!(chunk_budget(31, Some(31)).unwrap(), 31);
+        assert_eq!(chunk_budget(31, Some(30)).unwrap_err(), 31);
+    }
+
+    #[test]
+    fn suite_tokens_quote_or_join_and_a_bad_name_refuses() {
+        let names = vec!["Foo".into(), "Bar".into()];
+        let (spaced, whole) = render_suite("echo {tests}", &names).unwrap();
+        assert!(!whole);
+        assert_eq!(spaced, "echo 'Foo' 'Bar'");
+        let (comma, _) = render_suite("mvn -B test -Dtest={tests,}", &names).unwrap();
+        assert_eq!(comma, "mvn -B test -Dtest=Foo,Bar");
+        let (_, whole) = render_suite("echo ok", &names).unwrap();
+        assert!(whole);
+        assert_eq!(render_suite("echo {tests}", &["a'b".into()]).unwrap_err(), "a'b");
+        assert_eq!(render_suite("echo {tests,}", &["a,b".into()]).unwrap_err(), "a,b");
     }
 
     #[test]

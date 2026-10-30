@@ -96,17 +96,18 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "mutate_run",
-            "Score mutants. A red baseline stops with no kill count. More than 30 mutants need a non-empty lineMap, or serial true. serial writes <out>/lines.json and starts one full suite run per mutant. The file does not select tests. Workers stay at 1.",
+            "Score mutants one chunk at a time. A red baseline stops with no kill count. More than 30 mutants need a non-empty lineMap, or serial true. serial writes <out>/lines.json and passes --line-map. One call scores at most 30 mutants that have no result yet, and the same call continues the rest. The line map does not choose tests. confirmCount scores every mutant still waiting only when it equals that count. Workers stay at 1.",
             vec![
                 ("package", "string", "Directory of the project under test."),
                 ("patches", "string", "Directory or mutants.json from mutate_generate."),
                 ("out", "string", "Directory for baseline.json and results/."),
-                ("suiteCommand", "string", "Suite command. Omit it to use the marker at the package root."),
-                ("lineMap", "string", "Path to a non-empty file. Its contents are not read."),
-                ("serial", "boolean", "Write <out>/lines.json when lineMap is omitted, then start the whole batch."),
+                ("suiteCommand", "string", "Suite command. Omit it to use the marker at the package root, or suiteCommand in .probatio.json."),
+                ("lineMap", "string", "Path to a non-empty file. Its contents are not read for test names."),
+                ("serial", "boolean", "Write <out>/lines.json when lineMap is omitted, then score one chunk. The same mutate_run continues."),
                 ("timeoutMs", "integer", "Clock for the baseline and for each mutant. Default 120000."),
-                ("tests", "string", "Path to a file of test names, one per line. The suite command is still run as given."),
+                ("tests", "string", "Path to a file of test names, one per line. {tests} and {tests,} in the suite command are replaced from this list."),
                 ("maxSelected", "integer", "How many of those names are recorded. Default 30."),
+                ("confirmCount", "integer", "Score every mutant that has no result yet, only when this equals that count."),
             ],
             &["package", "patches", "out"],
         ),
@@ -203,6 +204,7 @@ fn run(args: &Value) -> (Envelope, Option<String>) {
     push_int(&mut argv, args, "timeoutMs", "timeout-ms");
     push_arg(&mut argv, args, "tests", "tests");
     push_int(&mut argv, args, "maxSelected", "max-selected");
+    push_int(&mut argv, args, "confirmCount", "confirm-count");
     let note = match ensure_line_map(args) {
         Ok(note) => note,
         Err(message) => return (Envelope::new(false, "mutate.run", message, "Fix the line map path and call mutate_run again."), None),

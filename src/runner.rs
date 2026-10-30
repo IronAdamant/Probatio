@@ -59,53 +59,133 @@ pub fn run(flags: &Flags) -> Envelope {
     let suite = match suite_command(flags, &package) {
         Ok(value) => value,
         Err(message) => {
-            return Envelope::new(
-                false,
-                command,
-                message,
-                "Pass --suite-command for a layout this binary does not discover.",
-            )
+            let next = if message.contains("not valid JSON") {
+                "Fix .probatio.json and run again. Discovery was not used."
+            } else {
+                "Pass --suite-command for a layout this binary does not discover."
+            };
+            return Envelope::new(false, command, message, next);
         }
     };
     let mutants = match load_mutants(&patches) {
         Ok(value) => value,
         Err(message) => {
-            return Envelope::new(
-                false,
-                command,
-                message,
-                "generate writes mutants.json. Point --patches at that directory or file.",
+            return attach_suite(
+                Envelope::new(
+                    false,
+                    command,
+                    message,
+                    "generate writes mutants.json. Point --patches at that directory or file.",
+                ),
+                &suite,
             )
         }
     };
     if mutants.is_empty() {
-        return Envelope::new(false, command, "No mutants in that patch set.", "Nothing was mutated.");
+        return attach_suite(
+            Envelope::new(false, command, "No mutants in that patch set.", "Nothing was mutated."),
+            &suite,
+        );
     }
     if let Err(error) = fs::create_dir_all(&out) {
-        return Envelope::new(false, command, error.to_string(), "The out directory could not be created.");
+        return attach_suite(
+            Envelope::new(false, command, error.to_string(), "The out directory could not be created."),
+            &suite,
+        );
     }
 
-    let timeout = Duration::from_millis(flags.int("timeout-ms", DEFAULT_TIMEOUT_MS).max(1));
+    let timeout_ms = flags.int("timeout-ms", DEFAULT_TIMEOUT_MS).max(1);
+    let timeout = Duration::from_millis(timeout_ms);
     let max_selected = selection_cap(flags);
     let has_line_map = flags.get("line-map").is_some_and(usable_line_map);
     let shared_tests = flags.get("tests").and_then(|path| read_test_list(Path::new(path)));
+    let baseline_tests = shared_tests.clone().unwrap_or_default();
+    let baseline_selection = decide::cap_tests(&baseline_tests, max_selected);
+    let (baseline_suite, whole_suite) = match decide::render_suite(&suite, &baseline_selection.tests) {
+        Ok(rendered) => rendered,
+        Err(name) => {
+            return attach_suite(
+                Envelope::new(
+                    false,
+                    command,
+                    format!("The selected name {name} cannot be placed in the suite command."),
+                    "Nothing was mutated with that command.",
+                ),
+                &suite,
+            )
+        }
+    };
 
-    let baseline = match prepared_baseline(&package, &out, &suite, timeout) {
+    let baseline = match prepared_baseline(&package, &out, &baseline_suite, timeout) {
         Ok(value) => value,
-        Err(envelope) => return envelope,
+        Err(envelope) => return attach_suite(envelope, &suite),
     };
     if let Err(error) = write_baseline(&out, &baseline) {
-        return Envelope::new(false, command, error, "The baseline record could not be written.");
+        return attach_suite(
+            Envelope::new(false, command, error, "The baseline record could not be written."),
+            &suite,
+        );
     }
     if let Some((summary, next)) = decide::baseline_refusal(baseline.kind) {
-        return Envelope::new(false, command, summary, next);
+        return attach_suite(Envelope::new(false, command, summary, next), &suite);
     }
 
     let pending: Vec<&LoadedMutant> = mutants.iter().filter(|mutant| !result_path(&out, &mutant.id).exists()).collect();
     if let Some(message) = decide::scale_stop(has_line_map, baseline.duration_ms, pending.len()) {
         let ids = pending.iter().map(|mutant| mutant.id.as_str()).collect::<Vec<_>>().join("\n");
         let _ = fs::write(out.join("not-started.txt"), format!("{ids}\n"));
-        return Envelope::new(false, command, message, "The ids are in not-started.txt. Nothing was started.");
+        return attach_suite(
+            Envelope::new(false, command, message, "The ids are in not-started.txt. Nothing was started."),
+            &suite,
+        );
+    }
+
+    let confirm = match flags.get("confirm-count") {
+        None => None,
+        Some(text) => match text.parse::<usize>() {
+            Ok(count) => Some(count),
+            Err(_) => {
+                return attach_suite(
+                    Envelope::new(
+                        false,
+                        command,
+                        "--confirm-count is not a count.",
+                        "Pass the number of mutants that have no result yet.",
+                    ),
+                    &suite,
+                )
+            }
+        },
+    };
+    let budget = match decide::chunk_budget(pending.len(), confirm) {
+        Ok(budget) => budget,
+        Err(real) => {
+            return attach_suite(
+                Envelope::new(
+                    false,
+                    command,
+                    format!("--confirm-count does not match the mutants still waiting."),
+                    format!("{real} mutants have no result yet. Nothing new was started."),
+                ),
+                &suite,
+            )
+        }
+    };
+    let batch: Vec<&LoadedMutant> = pending.into_iter().take(budget).collect();
+    for mutant in &batch {
+        let tests = tests_for(mutant, shared_tests.as_deref());
+        let selection = decide::cap_tests(&tests, max_selected);
+        if let Err(name) = decide::render_suite(&suite, &selection.tests) {
+            return attach_suite(
+                Envelope::new(
+                    false,
+                    command,
+                    format!("The selected name {name} cannot be placed in the suite command."),
+                    "Nothing was mutated with that command.",
+                ),
+                &suite,
+            );
+        }
     }
 
     let git = worktree::is_git_repo(&package);
@@ -114,11 +194,15 @@ pub fn run(flags: &Flags) -> Envelope {
         let _ = worktree::remove_leftovers(&package, &run_id);
     }
     if let Err(error) = fs::create_dir_all(out.join("results")) {
-        return Envelope::new(false, command, error.to_string(), "The results directory could not be created.");
+        return attach_suite(
+            Envelope::new(false, command, error.to_string(), "The results directory could not be created."),
+            &suite,
+        );
     }
 
     let mut verdicts = Vec::new();
     let mut any_capped = false;
+    let mut started_this_call = 0usize;
     for mutant in &mutants {
         let path = result_path(&out, &mutant.id);
         if path.exists() {
@@ -127,39 +211,78 @@ pub fn run(flags: &Flags) -> Envelope {
             }
             continue;
         }
-        let tests = if mutant.tests.is_empty() {
-            shared_tests.clone().unwrap_or_default()
-        } else {
-            mutant.tests.clone()
-        };
+        if started_this_call >= budget {
+            continue;
+        }
+        let tests = tests_for(mutant, shared_tests.as_deref());
         let selection = decide::cap_tests(&tests, max_selected);
         if selection.capped {
             any_capped = true;
         }
+        let rendered = match decide::render_suite(&suite, &selection.tests) {
+            Ok((rendered, _)) => rendered,
+            Err(name) => {
+                return attach_suite(
+                    Envelope::new(
+                        false,
+                        command,
+                        format!("The selected name {name} cannot be placed in the suite command."),
+                        "Nothing was mutated with that command.",
+                    ),
+                    &suite,
+                )
+            }
+        };
         let scored = if git {
-            score_git(&package, &run_id, mutant, &suite, timeout)
+            score_git(&package, &run_id, mutant, &rendered, timeout)
         } else {
-            score_copy(&package, mutant, &suite, timeout)
+            score_copy(&package, mutant, &rendered, timeout)
         };
         if let Err(error) = write_result(&path, mutant, &scored, &selection, max_selected) {
-            return Envelope::new(false, command, error, "A mutant result could not be written.");
+            return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
         }
         verdicts.push(scored.kind);
+        started_this_call += 1;
+    }
+
+    let still: Vec<&str> = mutants.iter().filter(|mutant| !result_path(&out, &mutant.id).exists()).map(|mutant| mutant.id.as_str()).collect();
+    let waiting_path = out.join("not-started.txt");
+    if still.is_empty() {
+        let _ = fs::remove_file(&waiting_path);
+    } else {
+        let _ = fs::write(&waiting_path, format!("{}\n", still.join("\n")));
     }
 
     let counts = decide::counts_of(&verdicts);
     let summary = decide::campaign_summary(&counts);
-    let mut next = if any_capped {
+    let waiting = if still.len() == 1 {
+        "1 is still waiting".to_string()
+    } else {
+        format!("{} are still waiting", still.len())
+    };
+    let mut next = if !still.is_empty() {
+        format!("{started_this_call} started this call. {waiting}.")
+    } else if any_capped {
         decide::cap_note(max_selected)
     } else {
-        "Each mutant is a file under results/. A kill is an assertion failure.".into()
+        "Each mutant is a file under results/. A kill is an assertion failure.".to_string()
     };
+    if has_line_map {
+        next.push_str(" The line map allowed this batch. It did not choose tests.");
+    }
+    if whole_suite {
+        next.push_str(" The suite ran whole.");
+    }
     if flags.int("workers", 1) > 1 {
         next.push_str(" Workers stay at 1.");
     }
-    Envelope::new(true, command, summary, next)
+    let mut envelope = attach_suite(Envelope::new(true, command, summary, next), &suite)
         .with_extra("counts", counts_value(&counts))
-        .with_extra("finished", Value::Int(counts.finished as i64))
+        .with_extra("finished", Value::Int(counts.finished as i64));
+    if !still.is_empty() {
+        envelope.next_call = Some(resume_argv(flags, &suite, timeout_ms));
+    }
+    envelope
 }
 
 fn missing(command: &str, message: &str) -> Envelope {
@@ -171,6 +294,50 @@ fn selection_cap(flags: &Flags) -> usize {
     if raw == 0 { decide::DEFAULT_MAX_SELECTED } else { raw as usize }
 }
 
+fn attach_suite(mut envelope: Envelope, suite: &str) -> Envelope {
+    envelope.next = format!("{} The suite command was {}.", envelope.next, suite);
+    envelope.with_extra("suiteCommand", Value::String(suite.to_string()))
+}
+
+fn tests_for(mutant: &LoadedMutant, shared: Option<&[String]>) -> Vec<String> {
+    if !mutant.tests.is_empty() {
+        return mutant.tests.clone();
+    }
+    shared.unwrap_or(&[]).to_vec()
+}
+
+/// Resume argv for the same out dir. The suite command is the template, not a rendered `{tests}` line.
+/// `--confirm-count` is omitted so the next call chunks again.
+fn resume_argv(flags: &Flags, suite: &str, timeout_ms: u64) -> Vec<String> {
+    let mut argv = vec![
+        "mutate".into(),
+        "run".into(),
+        "--package".into(),
+        flags.get("package").unwrap_or("").to_string(),
+        "--patches".into(),
+        flags.get("patches").unwrap_or("").to_string(),
+        "--out".into(),
+        flags.get("out").unwrap_or("").to_string(),
+        "--suite-command".into(),
+        suite.to_string(),
+        "--timeout-ms".into(),
+        timeout_ms.to_string(),
+    ];
+    if let Some(path) = flags.get("line-map") {
+        argv.push("--line-map".into());
+        argv.push(path.to_string());
+    }
+    if let Some(path) = flags.get("tests") {
+        argv.push("--tests".into());
+        argv.push(path.to_string());
+    }
+    if let Some(value) = flags.get("max-selected") {
+        argv.push("--max-selected".into());
+        argv.push(value.to_string());
+    }
+    argv
+}
+
 pub fn suite_command(flags: &Flags, package: &Path) -> Result<String, String> {
     if let Some(command) = flags.get("suite-command") {
         if command.trim().is_empty() {
@@ -178,7 +345,28 @@ pub fn suite_command(flags: &Flags, package: &Path) -> Result<String, String> {
         }
         return Ok(command.to_string());
     }
+    if let Some(command) = project_suite(package)? {
+        return Ok(command);
+    }
     discover(package)
+}
+
+/// A non-empty `suiteCommand` string wins over discovery. Any other key is ignored.
+/// Invalid JSON is an error so the caller does not discover a different command.
+fn project_suite(package: &Path) -> Result<Option<String>, String> {
+    let path = package.join(".probatio.json");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let value = match json::parse(&text) {
+        Ok(value) => value,
+        Err(_) => return Err(".probatio.json is not valid JSON".into()),
+    };
+    match value.get("suiteCommand").and_then(Value::as_str) {
+        Some(command) if !command.trim().is_empty() => Ok(Some(command.to_string())),
+        _ => Ok(None),
+    }
 }
 
 /// Name the suite command from marker files. This does not launch the tool.
@@ -587,6 +775,8 @@ mod tests {
         let envelope = run_with(&package, &patches, &out, &["--suite-command", "echo fail; exit 1"]);
         assert_no_kill_count(&envelope);
         assert!(envelope.summary.contains("already failing"));
+        assert_eq!(parsed(&envelope).get("suiteCommand").and_then(Value::as_str), Some("echo fail; exit 1"));
+        assert!(envelope.next.contains("echo fail; exit 1"));
         assert!(fs::read_dir(out.join("results")).is_err() || fs::read_dir(out.join("results")).unwrap().next().is_none());
         let _ = fs::remove_dir_all(&package);
     }
@@ -715,6 +905,8 @@ mod tests {
         assert!(envelope.summary.contains("No line map"), "{}", envelope.summary);
         assert!(envelope.summary.contains("31"), "{}", envelope.summary);
         assert!(envelope.next.contains("not-started.txt"));
+        assert!(envelope.next.contains(&script), "{}", envelope.next);
+        assert_eq!(parsed(&envelope).get("suiteCommand").and_then(Value::as_str), Some(script.as_str()));
         assert!(!envelope.render("").contains("\"notStarted\""));
         let ids = fs::read_to_string(out.join("not-started.txt")).unwrap();
         assert_eq!(ids.lines().count(), 31);
@@ -739,7 +931,129 @@ mod tests {
             &["--suite-command", "echo ok", "--line-map", &map.display().to_string()],
         );
         assert!(envelope.ok, "{}", envelope.summary);
+        assert_eq!(fs::read_dir(out.join("results")).unwrap().count(), 30);
+        assert!(envelope.next.contains("30 started this call"), "{}", envelope.next);
+        assert!(envelope.next.contains("1 is still waiting"), "{}", envelope.next);
+        assert!(envelope.next.contains("did not choose tests"), "{}", envelope.next);
+        assert_eq!(parsed(&envelope).get("suiteCommand").and_then(Value::as_str), Some("echo ok"));
+        let argv = parsed(&envelope).get("nextCall").and_then(|call| call.get("argv")).cloned();
+        let argv = match argv {
+            Some(Value::Array(items)) => items,
+            other => panic!("missing nextCall argv: {other:?}"),
+        };
+        assert!(argv.iter().all(|item| item.as_str() != Some("--confirm-count")));
+        assert_eq!(fs::read_to_string(out.join("not-started.txt")).unwrap().lines().count(), 1);
+        let second = run_with(
+            &package,
+            &patches,
+            &out,
+            &["--suite-command", "echo ok", "--line-map", &map.display().to_string()],
+        );
+        assert!(second.ok, "{}", second.summary);
+        assert!(second.next_call.is_none(), "{}", second.next);
         assert_eq!(fs::read_dir(out.join("results")).unwrap().count(), 31);
+        assert!(!out.join("not-started.txt").exists());
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn confirm_count_mismatch_writes_no_result_and_a_match_scores_the_batch() {
+        let package = temp("confirm");
+        write_source(&package, &many_ands(31));
+        let patches = generate_into(&package);
+        let map = package.join("lines.json");
+        fs::write(&map, "{\"lines\":[1]}\n").unwrap();
+        let map_arg = map.display().to_string();
+        let refused = package.join("refused");
+        let wrong = run_with(
+            &package,
+            &patches,
+            &refused,
+            &["--suite-command", "echo ok", "--line-map", &map_arg, "--confirm-count", "30"],
+        );
+        assert_no_kill_count(&wrong);
+        assert!(wrong.next.contains("31"), "{}", wrong.next);
+        assert!(wrong.next.contains("echo ok"), "{}", wrong.next);
+        assert!(fs::read_dir(refused.join("results")).is_err());
+        let out = package.join("out");
+        let all = run_with(
+            &package,
+            &patches,
+            &out,
+            &["--suite-command", "echo ok", "--line-map", &map_arg, "--confirm-count", "31"],
+        );
+        assert!(all.ok, "{}", all.summary);
+        assert!(all.next_call.is_none(), "{}", all.next);
+        assert_eq!(fs::read_dir(out.join("results")).unwrap().count(), 31);
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn project_file_suite_loses_to_the_flag_and_invalid_json_refuses() {
+        let package = temp("projfile");
+        fs::write(package.join("package.json"), "{}\n").unwrap();
+        fs::write(
+            package.join(".probatio.json"),
+            "{\n  \"suiteCommand\": \"echo from-file\",\n  \"env\": {\"A\": \"1\"},\n  \"testLine\": \"x\",\n  \"passLine\": \"y\"\n}\n",
+        )
+        .unwrap();
+        let bare = Flags::parse(&[]);
+        assert_eq!(suite_command(&bare, &package).unwrap(), "echo from-file");
+        let flagged = Flags::parse(&["--suite-command".into(), "echo from-flag".into()]);
+        assert_eq!(suite_command(&flagged, &package).unwrap(), "echo from-flag");
+        fs::write(package.join(".probatio.json"), "{\"suiteCommand\":\"\"}\n").unwrap();
+        assert_eq!(suite_command(&bare, &package).unwrap(), "node --test");
+        fs::write(package.join(".probatio.json"), "{\n").unwrap();
+        let err = suite_command(&bare, &package).unwrap_err();
+        assert!(err.contains("not valid JSON"), "{err}");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn a_test_token_runs_the_names_and_a_metacharacter_starts_nothing() {
+        let package = temp("tokens");
+        write_source(&package, one_and());
+        let patches = generate_into(&package);
+        let tests = package.join("tests.txt");
+        fs::write(&tests, "Foo\nBar\n").unwrap();
+        let log = package.join("ran.log");
+        let command = format!("printf '%s\\n' {{tests}} >> '{}'; printf '%s\\n' {{tests}}", log.display());
+        let out = package.join("out");
+        let envelope = run_with(
+            &package,
+            &patches,
+            &out,
+            &["--suite-command", &command, "--tests", &tests.display().to_string()],
+        );
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(!envelope.next.contains("ran whole"), "{}", envelope.next);
+        let ran = fs::read_to_string(&log).unwrap();
+        assert!(ran.contains("Foo"), "{ran}");
+        assert!(ran.contains("Bar"), "{ran}");
+        let comma_log = package.join("comma.log");
+        let comma = format!("printf '%s\\n' {{tests,}} >> '{}'; echo reported", comma_log.display());
+        let comma_out = package.join("comma-out");
+        let comma_envelope = run_with(
+            &package,
+            &patches,
+            &comma_out,
+            &["--suite-command", &comma, "--tests", &tests.display().to_string()],
+        );
+        assert!(comma_envelope.ok, "{}", comma_envelope.summary);
+        assert!(fs::read_to_string(&comma_log).unwrap().contains("Foo,Bar"));
+        let whole = run_with(&package, &patches, &package.join("whole"), &["--suite-command", "echo ok"]);
+        assert!(whole.next.contains("The suite ran whole."), "{}", whole.next);
+        fs::write(&tests, "a'b\n").unwrap();
+        let bad_out = package.join("bad");
+        let bad = run_with(
+            &package,
+            &patches,
+            &bad_out,
+            &["--suite-command", &command, "--tests", &tests.display().to_string()],
+        );
+        assert_no_kill_count(&bad);
+        assert!(bad.summary.contains("a'b"), "{}", bad.summary);
+        assert!(fs::read_dir(bad_out.join("results")).is_err());
         let _ = fs::remove_dir_all(&package);
     }
 

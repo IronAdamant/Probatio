@@ -13,7 +13,7 @@ Probatio scores a test suite. It does not replace the suite, and a kill is not p
 - Do not restore a hidden test. If a sealed run misses, the suite did not see the bug. Leave the hidden test hidden and record the miss.
 - Before calling a sealed kill a catch, check that the fix commit did not also edit the killing test. If it did, the kill came from the fix, and it is a miss.
 - Do not patch a project's files or environment inside Probatio to make one repository pass. A project that needs its own env or test-line format says so in `.probatio.json`.
-- Run a `nextCall` as printed. It writes to a fresh out dir. Reusing an old out dir repeats the old result.
+- Run a `nextCall` as printed. A chunk resume uses the same out dir that call names. A new campaign uses a new out dir. Reusing an out dir keeps the result files already there and scores the mutants that do not have one.
 - Read the contract from `schemas/` or `probatio schema <command>`, not from an example. A changed `schemaVersion` means a field you read may have moved.
 - A red `ledger check` means a fixed bug is back in reach of the suite. Do not re-record it away. Find the test that stopped guarding it, or give the reason in a `Golden-Change:` line.
 - A golden table that kills what a unit test kills is evidence, not permission. `golden compare` deletes nothing, and neither do you without a reason in the commit.

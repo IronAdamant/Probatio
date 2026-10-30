@@ -27,10 +27,10 @@ The package is the directory the user named. It can be this repo or another chec
 2. Tell the user the mutant count and the suite command you will use. Discovery is the marker at the package root: `go.mod` to `go test ./...`, `Cargo.toml` to `cargo test`, `pom.xml` to `mvn -B test`, `package.json` to `node --test`, `pytest.ini` or `pyproject.toml` to `python3 -m pytest`. If none of those is present, stop and ask for the suite command. Do not invent one.
 3. If the count is above 100 and the user did not already ask for the whole repo or a serial campaign, stop and wait.
 4. Call `mutate_run` with `package`, `patches` set to the generate directory, and `out` set to `<package>/.probatio/run`. Set `timeoutMs` to one full suite run with room to spare. The default is 120000. A Maven suite needs 600000 or more.
-5. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, set `serial` to true. That writes `<out>/lines.json` and passes it as `--line-map`. The file is a non-empty permission slip. The binary does not read coverage from it and does not choose tests. The suite command runs once per mutant, one mutant at a time. Workers stay at 1.
+5. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, set `serial` to true. That writes `<out>/lines.json` and passes it as `--line-map`. The file is a non-empty permission slip. The binary does not read coverage from it and does not choose tests. `serial` starts one chunk: at most 30 mutants that have no result yet. The same `mutate_run` call, with the same `out`, continues. `confirmCount` scores every mutant still waiting only when it equals that count. Workers stay at 1.
 6. Read the envelope. `ok` false is a stop. Show `summary` and `next`. A red baseline, a missing report, a timeout, a missing tool, or "No line map" means nothing was mutated. Do not treat any of those as a kill count.
 7. When `ok` is true, call `mutate_tally` on the same `out`. `deletedTests` stays 0. Do not delete a test.
 
-The same `mutate_run` call is the resume. A green `baseline.json` is kept. A mutant that already has `results/<id>.json` is not run again.
+The same `mutate_run` call is the resume. A `nextCall` continues in the out dir it names. A green `baseline.json` is kept. A mutant that already has `results/<id>.json` is not run again.
 
 A long `mutate_run` holds the MCP server until that call returns. If the tool call is cut off, run the same call again.
