@@ -634,6 +634,506 @@ fn shipped_run_substitutes_test_tokens() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn shipped_run_discovers_scripts_test_and_refuses_invalid_package_json() {
+    let root = java_package("scripts", 1);
+    let package = root.display().to_string();
+    let patches = root.join("patches").display().to_string();
+    std::fs::write(
+        root.join("package.json"),
+        "{\"scripts\":{\"test\":\"echo from-script\",\"lint\":\"echo nope\"}}\n",
+    )
+    .unwrap();
+    let from_script = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &root.join("script").display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(from_script.get("ok").and_then(json::Value::as_bool), Some(true), "{from_script:?}");
+    assert_named_suite(&from_script, "echo from-script");
+    assert!(!from_script.get("summary").and_then(json::Value::as_str).unwrap_or("").contains("node --test"));
+
+    let plain = root.join("plain");
+    std::fs::create_dir_all(plain.join("patches")).unwrap();
+    std::fs::write(plain.join("package.json"), "{}\n").unwrap();
+    std::fs::write(plain.join("patches/mutants.json"), "{\"mutants\":[]}\n").unwrap();
+    let plain_value = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &plain.display().to_string(),
+            "--patches",
+            &plain.join("patches").display().to_string(),
+            "--out",
+            &plain.join("out").display().to_string(),
+        ])
+        .1,
+    );
+    assert_named_suite(&plain_value, "node --test");
+
+    for body in ["{\"scripts\":{\"test\":\"\"}}\n", "{\"scripts\":{\"test\":1}}\n"] {
+        let empty = root.join(format!("empty-{}", body.len()));
+        std::fs::create_dir_all(empty.join("patches")).unwrap();
+        std::fs::write(empty.join("package.json"), body).unwrap();
+        std::fs::write(empty.join("patches/mutants.json"), "{\"mutants\":[]}\n").unwrap();
+        let value = one_envelope(
+            &launch(&[
+                "mutate",
+                "run",
+                "--package",
+                &empty.display().to_string(),
+                "--patches",
+                &empty.join("patches").display().to_string(),
+                "--out",
+                &empty.join("out").display().to_string(),
+            ])
+            .1,
+        );
+        assert_named_suite(&value, "node --test");
+    }
+
+    std::fs::write(root.join("package.json"), "{\n").unwrap();
+    let invalid = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &root.join("badpkg").display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_refused_without_kills(&invalid);
+    assert!(invalid.get("suiteCommand").is_none(), "{invalid:?}");
+    let summary = invalid.get("summary").and_then(json::Value::as_str).unwrap_or("");
+    let next = invalid.get("next").and_then(json::Value::as_str).unwrap_or("");
+    assert!(summary.contains("package.json"), "{summary}");
+    assert!(next.contains("Discovery was not used"), "{next}");
+    assert!(!summary.contains("node --test") && !next.contains("node --test"), "{invalid:?}");
+
+    let from_flag = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &root.join("flag").display().to_string(),
+            "--suite-command",
+            "echo from-flag",
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(from_flag.get("ok").and_then(json::Value::as_bool), Some(true), "{from_flag:?}");
+    assert_named_suite(&from_flag, "echo from-flag");
+
+    std::fs::write(root.join(".probatio.json"), "{\"suiteCommand\":\"echo from-file\"}\n").unwrap();
+    let from_file = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &root.join("file").display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(from_file.get("ok").and_then(json::Value::as_bool), Some(true), "{from_file:?}");
+    assert_named_suite(&from_file, "echo from-file");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn shipped_run_uses_node_bin_from_scripts_test() {
+    let root = java_package("nodebin", 1);
+    let package = root.display().to_string();
+    let patches = root.join("patches").display().to_string();
+    let bin = root.join("node_modules/.bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let tool = bin.join("probatio-local-ok");
+    let marker = root.join("ran-marker.txt");
+    std::fs::create_dir_all(bin.join("../probatio-local-dep")).unwrap();
+    std::fs::write(bin.join("../probatio-local-dep/index.js"), "ok\n").unwrap();
+    std::fs::write(&tool, format!("#!/bin/sh\necho from-shipped-bin\ntest -f node_modules/probatio-local-dep/index.js\npwd >> '{}'\n", marker.display())).unwrap();
+    let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tool, permissions).unwrap();
+    std::fs::write(root.join("package.json"), "{\"scripts\":{\"test\":\"probatio-local-ok\"}}\n").unwrap();
+
+    let out = root.join("out");
+    let value = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &out.display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(true), "{value:?}");
+    assert_named_suite(&value, "probatio-local-ok");
+    let baseline = std::fs::read_to_string(out.join("baseline.json")).unwrap();
+    assert!(baseline.contains("\"green\""), "{baseline}");
+    assert!(baseline.contains("probatio-local-ok"), "{baseline}");
+    let lines = marker_lines(&marker);
+    assert!(lines.iter().any(|line| line.contains("probatio-cli-nodebin-")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("probatio-copy-")), "{lines:?}");
+    assert_survived_mutants(&out);
+    assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0), "{value:?}");
+
+    std::fs::write(root.join("package.json"), "{\"scripts\":{\"test\":\"probatio-not-installed\"}}\n").unwrap();
+    let missing_out = root.join("missing");
+    let missing = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &missing_out.display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_refused_without_kills(&missing);
+    assert_named_suite(&missing, "probatio-not-installed");
+    let summary = missing.get("summary").and_then(json::Value::as_str).unwrap_or("");
+    assert!(summary.contains("suite tool is missing"), "{summary}");
+    assert!(!summary.contains("already failing"), "{summary}");
+    let missing_baseline = std::fs::read_to_string(missing_out.join("baseline.json")).unwrap();
+    assert!(missing_baseline.contains("missing-tool"), "{missing_baseline}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn shipped_run_uses_node_bin_from_a_git_worktree() {
+    let root = java_package("nodegit", 1);
+    let package = root.display().to_string();
+    let patches = root.join("patches").display().to_string();
+    git_commit(&root, &["src"]);
+    let bin = root.join("node_modules/.bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let tool = bin.join("probatio-local-ok");
+    let marker = root.join("ran-marker.txt");
+    std::fs::create_dir_all(bin.join("../probatio-local-dep")).unwrap();
+    std::fs::write(bin.join("../probatio-local-dep/index.js"), "ok\n").unwrap();
+    std::fs::write(&tool, format!("#!/bin/sh\necho from-shipped-bin\ntest -f node_modules/probatio-local-dep/index.js\npwd >> '{}'\n", marker.display())).unwrap();
+    let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tool, permissions).unwrap();
+    std::fs::write(root.join("package.json"), "{\"scripts\":{\"test\":\"probatio-local-ok\"}}\n").unwrap();
+
+    let out = root.join("out");
+    let value = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &out.display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(true), "{value:?}");
+    assert_named_suite(&value, "probatio-local-ok");
+    let lines = marker_lines(&marker);
+    assert!(lines.iter().any(|line| line.contains("probatio-cli-nodegit-")), "{lines:?}");
+    assert!(
+        lines.iter().any(|line| line.contains("probatio-") && line.ends_with("-0") && !line.contains("probatio-cli-") && !line.contains("probatio-copy-")),
+        "{lines:?}"
+    );
+    assert_survived_mutants(&out);
+    assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0), "{value:?}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn marker_lines(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn assert_survived_mutants(out: &std::path::Path) {
+    let mut survived = 0usize;
+    for entry in std::fs::read_dir(out.join("results")).unwrap() {
+        let body = json::parse(&std::fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+        assert_eq!(body.get("outcome").and_then(json::Value::as_str), Some("survived"), "{body:?}");
+        survived += 1;
+    }
+    assert!(survived >= 1, "no mutant result in {}", out.display());
+}
+
+fn git_commit(root: &std::path::Path, paths: &[&str]) {
+    let mut init = std::process::Command::new("git");
+    init.arg("-C").arg(root).args(["init"]);
+    assert!(init.status().unwrap().success());
+    let mut add = std::process::Command::new("git");
+    add.arg("-C").arg(root).arg("add").args(paths);
+    assert!(add.status().unwrap().success());
+    let mut commit = std::process::Command::new("git");
+    commit
+        .arg("-C")
+        .arg(root)
+        .arg("-c")
+        .arg("user.email=probatio@example.com")
+        .arg("-c")
+        .arg("user.name=probatio")
+        .args(["commit", "-m", "init"]);
+    assert!(commit.status().unwrap().success());
+}
+
+#[test]
+fn shipped_run_uses_a_files_map_and_records_the_command() {
+    let root = java_package("filesmap", 2);
+    let package = root.display().to_string();
+    let patches = root.join("patches").display().to_string();
+    let source = std::fs::read_to_string(root.join("src/A.java")).unwrap();
+    let listed = json::parse(&std::fs::read_to_string(root.join("patches/mutants.json")).unwrap()).unwrap();
+    let items = match listed.get("mutants") {
+        Some(json::Value::Array(items)) => items.clone(),
+        other => panic!("mutants was {other:?}"),
+    };
+    let mut lines = Vec::new();
+    for item in &items {
+        let start = item.get("start").and_then(json::Value::as_int).unwrap() as usize;
+        lines.push(source.as_bytes()[..start.min(source.len())].iter().filter(|byte| **byte == b'\n').count() + 1);
+    }
+    let covered = *lines.iter().min().unwrap();
+    assert!(lines.iter().any(|line| *line != covered));
+    let map = root.join("map.json");
+    std::fs::write(
+        &map,
+        format!(r#"{{"files":{{"src/A.java":[{{"start":{covered},"end":{covered},"tests":["FooTest"]}}]}}}}"#),
+    )
+    .unwrap();
+    let tests = root.join("tests.txt");
+    std::fs::write(&tests, "Bar\n").unwrap();
+    let log = root.join("ran.log");
+    let command = format!("printf '%s\\n' {{tests}} >> '{}'; printf '%s\\n' {{tests}}", log.display());
+    let out = root.join("out");
+    let value = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &out.display().to_string(),
+            "--suite-command",
+            &command,
+            "--line-map",
+            &map.display().to_string(),
+            "--tests",
+            &tests.display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(value.get("schemaVersion").and_then(json::Value::as_int), Some(2));
+    assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(true), "{value:?}");
+    assert_named_suite(&value, &command);
+    let next = value.get("next").and_then(json::Value::as_str).unwrap_or("");
+    assert!(next.contains("The line map named tests."), "{next}");
+    assert!(!next.contains("did not choose tests"), "{next}");
+    let baseline = json::parse(&std::fs::read_to_string(out.join("baseline.json")).unwrap()).unwrap();
+    assert_eq!(baseline.get("command").and_then(json::Value::as_str), Some(command.as_str()));
+    let mut spawned = 0usize;
+    let mut uncovered = 0usize;
+    for entry in std::fs::read_dir(out.join("results")).unwrap() {
+        let body = json::parse(&std::fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+        match body.get("command").and_then(json::Value::as_str) {
+            Some(rendered) => {
+                assert!(rendered.contains("FooTest"), "{rendered}");
+                assert!(!rendered.contains("Bar"), "{rendered}");
+                spawned += 1;
+            }
+            None => {
+                assert_eq!(body.get("outcome").and_then(json::Value::as_str), Some("no coverage"));
+                uncovered += 1;
+            }
+        }
+    }
+    assert!(spawned >= 1, "{value:?}");
+    assert!(uncovered >= 1, "{value:?}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), spawned + 1);
+    assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0));
+
+    let stopped_out = root.join("stopped");
+    let stopped = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &stopped_out.display().to_string(),
+            "--suite-command",
+            "echo ok",
+            "--line-map",
+            &map.display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_refused_without_kills(&stopped);
+    assert!(stopped.get("next").and_then(json::Value::as_str).unwrap_or("").contains("{tests}"), "{stopped:?}");
+    assert_eq!(result_count(&stopped_out), 0);
+
+    let bad_map = root.join("bad-map.json");
+    std::fs::write(
+        &bad_map,
+        format!(r#"{{"files":{{"src/A.java":[{{"start":{covered},"end":{covered},"tests":["a'b"]}}]}}}}"#),
+    )
+    .unwrap();
+    let bad_out = root.join("bad");
+    let before = std::fs::read_to_string(&log).unwrap();
+    let bad = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &bad_out.display().to_string(),
+            "--suite-command",
+            &command,
+            "--line-map",
+            &bad_map.display().to_string(),
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_refused_without_kills(&bad);
+    assert!(bad.get("summary").and_then(json::Value::as_str).unwrap_or("").contains("a'b"), "{bad:?}");
+    assert_eq!(result_count(&bad_out), 0);
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), before);
+
+    let unnamed_out = root.join("unnamed");
+    let unnamed = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &unnamed_out.display().to_string(),
+            "--suite-command",
+            &command,
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_refused_without_kills(&unnamed);
+    assert!(unnamed.get("summary").and_then(json::Value::as_str).unwrap_or("").contains("asks for test names"), "{unnamed:?}");
+    assert_eq!(result_count(&unnamed_out), 0);
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), before);
+
+    let same = root.join("template");
+    let first = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &same.display().to_string(),
+            "--suite-command",
+            "echo ok",
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_eq!(first.get("ok").and_then(json::Value::as_bool), Some(true), "{first:?}");
+    let saved = json::parse(&std::fs::read_to_string(same.join("baseline.json")).unwrap()).unwrap();
+    assert_eq!(saved.get("command").and_then(json::Value::as_str), Some("echo ok"));
+    let second = one_envelope(
+        &launch(&[
+            "mutate",
+            "run",
+            "--package",
+            &package,
+            "--patches",
+            &patches,
+            "--out",
+            &same.display().to_string(),
+            "--suite-command",
+            "echo fail; exit 1",
+            "--timeout-ms",
+            "5000",
+        ])
+        .1,
+    );
+    assert_refused_without_kills(&second);
+    assert!(second.get("summary").and_then(json::Value::as_str).unwrap_or("").contains("already failing"), "{second:?}");
+    let saved = json::parse(&std::fs::read_to_string(same.join("baseline.json")).unwrap()).unwrap();
+    assert_eq!(saved.get("command").and_then(json::Value::as_str), Some("echo fail; exit 1"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn mcp_call(stdin: &mut impl Write, stdout: &mut impl BufRead, line: &str) -> json::Value {
     writeln!(stdin, "{line}").unwrap();
     stdin.flush().unwrap();

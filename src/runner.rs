@@ -37,6 +37,7 @@ struct Scored {
 struct BaselineRun {
     kind: Baseline,
     duration_ms: Option<u64>,
+    template: Option<String>,
 }
 
 pub fn run(flags: &Flags) -> Envelope {
@@ -59,8 +60,10 @@ pub fn run(flags: &Flags) -> Envelope {
     let suite = match suite_command(flags, &package) {
         Ok(value) => value,
         Err(message) => {
-            let next = if message.contains("not valid JSON") {
+            let next = if message.contains(".probatio.json") && message.contains("not valid JSON") {
                 "Fix .probatio.json and run again. Discovery was not used."
+            } else if message.contains("package.json") && message.contains("not valid JSON") {
+                "Fix package.json and run again. Discovery was not used."
             } else {
                 "Pass --suite-command for a layout this binary does not discover."
             };
@@ -98,10 +101,28 @@ pub fn run(flags: &Flags) -> Envelope {
     let timeout = Duration::from_millis(timeout_ms);
     let max_selected = selection_cap(flags);
     let has_line_map = flags.get("line-map").is_some_and(usable_line_map);
+    let map = match flags.get("line-map") {
+        Some(path) if has_line_map => decide::parse_test_map(&fs::read_to_string(path).unwrap_or_default()),
+        _ => decide::TestMap::slip(),
+    };
     let shared_tests = flags.get("tests").and_then(|path| read_test_list(Path::new(path)));
-    let baseline_tests = shared_tests.clone().unwrap_or_default();
-    let baseline_selection = decide::cap_tests(&baseline_tests, max_selected);
-    let (baseline_suite, whole_suite) = match decide::render_suite(&suite, &baseline_selection.tests) {
+    let baseline_tests = if map.chooses {
+        map.all_names()
+    } else {
+        shared_tests.clone().unwrap_or_default()
+    };
+    if command_asks_for_names(&suite) && baseline_tests.is_empty() && !map.chooses {
+        return attach_suite(
+            Envelope::new(
+                false,
+                command,
+                "The suite command asks for test names and none were given.",
+                "Pass --tests or a files line map. Nothing was mutated.",
+            ),
+            &suite,
+        );
+    }
+    let (baseline_suite, whole_suite) = match decide::render_suite(&suite, &baseline_tests) {
         Ok(rendered) => rendered,
         Err(name) => {
             return attach_suite(
@@ -116,7 +137,7 @@ pub fn run(flags: &Flags) -> Envelope {
         }
     };
 
-    let baseline = match prepared_baseline(&package, &out, &baseline_suite, timeout) {
+    let baseline = match prepared_baseline(&package, &out, &suite, &baseline_suite, timeout) {
         Ok(value) => value,
         Err(envelope) => return attach_suite(envelope, &suite),
     };
@@ -172,8 +193,24 @@ pub fn run(flags: &Flags) -> Envelope {
         }
     };
     let batch: Vec<&LoadedMutant> = pending.into_iter().take(budget).collect();
+    if whole_suite && map.chooses {
+        let named = batch.iter().any(|mutant| {
+            mutant.tests.is_empty() && !names_for_mutant(&package, mutant, &map, shared_tests.as_deref()).is_empty()
+        });
+        if named {
+            return attach_suite(
+                Envelope::new(
+                    false,
+                    command,
+                    "The line map named tests and the suite command has no {tests} token.",
+                    "Put {tests} or {tests,} in the suite command. Nothing was mutated.",
+                ),
+                &suite,
+            );
+        }
+    }
     for mutant in &batch {
-        let tests = tests_for(mutant, shared_tests.as_deref());
+        let tests = names_for_mutant(&package, mutant, &map, shared_tests.as_deref());
         let selection = decide::cap_tests(&tests, max_selected);
         if let Err(name) = decide::render_suite(&suite, &selection.tests) {
             return attach_suite(
@@ -214,7 +251,17 @@ pub fn run(flags: &Flags) -> Envelope {
         if started_this_call >= budget {
             continue;
         }
-        let tests = tests_for(mutant, shared_tests.as_deref());
+        let tests = names_for_mutant(&package, mutant, &map, shared_tests.as_deref());
+        if map.chooses && mutant.tests.is_empty() && tests.is_empty() {
+            let scored = Scored { kind: Verdict::NoCoverage, duration_ms: 0, timed_out: false };
+            let selection = Selection { tests: Vec::new(), selected_count: 0, capped: false };
+            if let Err(error) = write_result(&path, mutant, &scored, &selection, max_selected, None) {
+                return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
+            }
+            verdicts.push(scored.kind);
+            started_this_call += 1;
+            continue;
+        }
         let selection = decide::cap_tests(&tests, max_selected);
         if selection.capped {
             any_capped = true;
@@ -238,7 +285,7 @@ pub fn run(flags: &Flags) -> Envelope {
         } else {
             score_copy(&package, mutant, &rendered, timeout)
         };
-        if let Err(error) = write_result(&path, mutant, &scored, &selection, max_selected) {
+        if let Err(error) = write_result(&path, mutant, &scored, &selection, max_selected, Some(&rendered)) {
             return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
         }
         verdicts.push(scored.kind);
@@ -267,8 +314,10 @@ pub fn run(flags: &Flags) -> Envelope {
     } else {
         "Each mutant is a file under results/. A kill is an assertion failure.".to_string()
     };
-    if has_line_map {
+    if has_line_map && !map.chooses {
         next.push_str(" The line map allowed this batch. It did not choose tests.");
+    } else if map.chooses {
+        next.push_str(" The line map named tests.");
     }
     if whole_suite {
         next.push_str(" The suite ran whole.");
@@ -299,9 +348,17 @@ fn attach_suite(mut envelope: Envelope, suite: &str) -> Envelope {
     envelope.with_extra("suiteCommand", Value::String(suite.to_string()))
 }
 
-fn tests_for(mutant: &LoadedMutant, shared: Option<&[String]>) -> Vec<String> {
+fn command_asks_for_names(command: &str) -> bool {
+    command.contains("{tests}") || command.contains("{tests,}")
+}
+
+fn names_for_mutant(package: &Path, mutant: &LoadedMutant, map: &decide::TestMap, shared: Option<&[String]>) -> Vec<String> {
     if !mutant.tests.is_empty() {
         return mutant.tests.clone();
+    }
+    if map.chooses {
+        let text = fs::read_to_string(package.join(&mutant.file)).unwrap_or_default();
+        return map.names_for(&mutant.file, decide::line_at(&text, mutant.start));
     }
     shared.unwrap_or(&[]).to_vec()
 }
@@ -378,11 +435,24 @@ pub fn discover(package: &Path) -> Result<String, String> {
     } else if package.join("pom.xml").is_file() {
         Ok("mvn -B test".into())
     } else if package.join("package.json").is_file() {
-        Ok("node --test".into())
+        node_suite(package)
     } else if package.join("pytest.ini").is_file() || package.join("pyproject.toml").is_file() {
         Ok("python3 -m pytest".into())
     } else {
         Err("This layout has no suite Probatio can see.".into())
+    }
+}
+
+fn node_suite(package: &Path) -> Result<String, String> {
+    let path = package.join("package.json");
+    let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let value = match json::parse(&text) {
+        Ok(value) => value,
+        Err(_) => return Err("package.json is not valid JSON".into()),
+    };
+    match value.get("scripts").and_then(|scripts| scripts.get("test")).and_then(Value::as_str) {
+        Some(command) if !command.trim().is_empty() => Ok(command.to_string()),
+        _ => Ok("node --test".into()),
     }
 }
 
@@ -396,21 +466,30 @@ fn read_test_list(path: &Path) -> Option<Vec<String>> {
     Some(names)
 }
 
-fn prepared_baseline(package: &Path, out: &Path, suite: &str, timeout: Duration) -> Result<BaselineRun, Envelope> {
+fn prepared_baseline(
+    package: &Path,
+    out: &Path,
+    template: &str,
+    rendered: &str,
+    timeout: Duration,
+) -> Result<BaselineRun, Envelope> {
     let path = out.join("baseline.json");
     if let Some(saved) = read_baseline(&path) {
-        if saved.kind == Baseline::Green {
+        if saved.kind == Baseline::Green && saved.template.as_deref() == Some(template) {
             return Ok(saved);
         }
     }
-    let timed = process::run_shell(suite, Some(package), timeout);
-    Ok(baseline_from(&timed))
+    let timed = process::run_shell(rendered, Some(package), timeout);
+    let mut run = baseline_from(&timed);
+    run.template = Some(template.to_string());
+    Ok(run)
 }
 
 fn baseline_from(timed: &TimedRun) -> BaselineRun {
     BaselineRun {
         kind: decide::judge_baseline(timed.spawned, timed.timed_out, timed.status, &timed.stdout, &timed.stderr),
         duration_ms: Some(duration_ms(timed.duration)),
+        template: None,
     }
 }
 
@@ -430,9 +509,11 @@ fn write_baseline(out: &Path, baseline: &BaselineRun) -> Result<(), String> {
         Some(ms) => Value::Int(ms as i64),
         None => Value::Null,
     };
+    let recorded = baseline.template.clone().unwrap_or_default();
     let value = Value::object(vec![
         ("judgement", Value::String(judgement.into())),
         ("durationMs", duration),
+        ("command", Value::String(recorded)),
     ]);
     fs::write(out.join("baseline.json"), json::stringify(&value)).map_err(|error| error.to_string())
 }
@@ -450,7 +531,8 @@ fn read_baseline(path: &Path) -> Option<BaselineRun> {
         _ => return None,
     };
     let duration_ms = value.get("durationMs").and_then(Value::as_int).map(|ms| ms as u64);
-    Some(BaselineRun { kind, duration_ms })
+    let template = value.get("command").and_then(Value::as_str).map(str::to_string);
+    Some(BaselineRun { kind, duration_ms, template })
 }
 
 fn result_path(out: &Path, id: &str) -> PathBuf {
@@ -462,7 +544,11 @@ fn score_git(package: &Path, run_id: &str, mutant: &LoadedMutant, suite: &str, t
     if let Err(message) = worktree::add_worktree(package, &dest, run_id) {
         return error_scored(message);
     }
-    let scored = apply_and_run(&dest, mutant, suite, timeout);
+    if let Err(message) = link_node_modules(package, &dest) {
+        worktree::remove_worktree(package, &dest);
+        return error_scored(message);
+    }
+    let scored = apply_and_run(&dest, package, mutant, suite, timeout);
     worktree::remove_worktree(package, &dest);
     scored
 }
@@ -473,12 +559,16 @@ fn score_copy(package: &Path, mutant: &LoadedMutant, suite: &str, timeout: Durat
     if let Err(message) = copy_tree(package, &dest) {
         return error_scored(message);
     }
-    let scored = apply_and_run(&dest, mutant, suite, timeout);
+    if let Err(message) = link_node_modules(package, &dest) {
+        let _ = fs::remove_dir_all(&dest);
+        return error_scored(message);
+    }
+    let scored = apply_and_run(&dest, package, mutant, suite, timeout);
     let _ = fs::remove_dir_all(&dest);
     scored
 }
 
-fn apply_and_run(root: &Path, mutant: &LoadedMutant, suite: &str, timeout: Duration) -> Scored {
+fn apply_and_run(root: &Path, package: &Path, mutant: &LoadedMutant, suite: &str, timeout: Duration) -> Scored {
     let file = match safe_join(root, &mutant.file) {
         Ok(path) => path,
         Err(message) => return error_scored(message),
@@ -497,7 +587,7 @@ fn apply_and_run(root: &Path, mutant: &LoadedMutant, suite: &str, timeout: Durat
     if let Err(error) = fs::write(&file, updated) {
         return error_scored(error.to_string());
     }
-    let timed = process::run_shell(suite, Some(root), timeout);
+    let timed = process::run_shell_with_bin_root(suite, Some(root), Some(package), timeout);
     let report = format!("{}\n{}", timed.stdout, timed.stderr);
     Scored {
         kind: decide::classify(timed.timed_out, timed.status, &report),
@@ -517,6 +607,17 @@ fn safe_join(root: &Path, file: &str) -> Result<PathBuf, String> {
         return Err("mutant path leaves the package".into());
     }
     Ok(root.join(path))
+}
+
+/// The copy and the git worktree skip `node_modules`. Point at the package tree so a
+/// suite can resolve the dependencies it already has. The link is removed with the tree.
+fn link_node_modules(package: &Path, dest: &Path) -> Result<(), String> {
+    let source = package.join("node_modules");
+    let linked = dest.join("node_modules");
+    if !source.is_dir() || linked.exists() {
+        return Ok(());
+    }
+    std::os::unix::fs::symlink(&source, &linked).map_err(|error| error.to_string())
 }
 
 fn copy_tree(src: &Path, dest: &Path) -> Result<(), String> {
@@ -542,7 +643,14 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_result(path: &Path, mutant: &LoadedMutant, scored: &Scored, selection: &Selection, max_selected: usize) -> Result<(), String> {
+fn write_result(
+    path: &Path,
+    mutant: &LoadedMutant,
+    scored: &Scored,
+    selection: &Selection,
+    max_selected: usize,
+    command: Option<&str>,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -555,6 +663,9 @@ fn write_result(path: &Path, mutant: &LoadedMutant, scored: &Scored, selection: 
         ("timedOut", Value::Bool(scored.timed_out)),
         ("tests", Value::Array(selection.tests.iter().cloned().map(Value::String).collect())),
     ];
+    if let Some(command) = command {
+        entries.push(("command", Value::String(command.to_string())));
+    }
     if selection.capped {
         entries.push(("capNote", Value::String(decide::cap_note(max_selected))));
     }
@@ -1131,6 +1242,146 @@ mod tests {
         let source = fs::read_to_string(package.join("src/A.java")).unwrap();
         assert!(source.contains("UNCOMMITTED"), "{source}");
         assert!(source.contains("&& c"), "{source}");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn package_json_scripts_test_is_the_suite_and_invalid_json_refuses() {
+        let package = temp("nodetest");
+        fs::write(package.join("package.json"), "{\"scripts\":{\"test\":\"echo from-script\",\"lint\":\"nope\"}}\n").unwrap();
+        assert_eq!(discover(&package).unwrap(), "echo from-script");
+        fs::write(package.join("package.json"), "{\"scripts\":{\"test\":\"  \"}}\n").unwrap();
+        assert_eq!(discover(&package).unwrap(), "node --test");
+        fs::write(package.join("package.json"), "{\"scripts\":{\"test\":1}}\n").unwrap();
+        assert_eq!(discover(&package).unwrap(), "node --test");
+        fs::write(package.join("package.json"), "{}\n").unwrap();
+        assert_eq!(discover(&package).unwrap(), "node --test");
+        fs::write(package.join("package.json"), "{\n").unwrap();
+        let err = discover(&package).unwrap_err();
+        assert!(err.contains("package.json"), "{err}");
+        assert!(err.contains("not valid JSON"), "{err}");
+        assert!(!err.contains("node --test"), "{err}");
+        let flagged = Flags::parse(&["--suite-command".into(), "echo from-flag".into()]);
+        assert_eq!(suite_command(&flagged, &package).unwrap(), "echo from-flag");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn a_changed_suite_template_reruns_the_baseline() {
+        let package = temp("template");
+        write_source(&package, one_and());
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let first = run_with(&package, &patches, &out, &["--suite-command", "echo ok"]);
+        assert!(first.ok, "{}", first.summary);
+        let saved = json::parse(&fs::read_to_string(out.join("baseline.json")).unwrap()).unwrap();
+        assert_eq!(saved.get("command").and_then(Value::as_str), Some("echo ok"));
+        let second = run_with(&package, &patches, &out, &["--suite-command", "echo fail; exit 1"]);
+        assert_no_kill_count(&second);
+        assert!(second.summary.contains("already failing"), "{}", second.summary);
+        let saved = json::parse(&fs::read_to_string(out.join("baseline.json")).unwrap()).unwrap();
+        assert_eq!(saved.get("command").and_then(Value::as_str), Some("echo fail; exit 1"));
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn a_files_map_records_the_spawned_command_and_skips_an_uncovered_line() {
+        let package = temp("filesmap");
+        let source = many_ands(2);
+        write_source(&package, &source);
+        let patches = generate_into(&package);
+        let listed = json::parse(&fs::read_to_string(patches.join("mutants.json")).unwrap()).unwrap();
+        let items = match listed.get("mutants") {
+            Some(Value::Array(items)) => items.clone(),
+            other => panic!("mutants was {other:?}"),
+        };
+        let mut lines = Vec::new();
+        for item in &items {
+            let start = item.get("start").and_then(Value::as_int).unwrap() as usize;
+            lines.push(decide::line_at(&source, start));
+        }
+        let covered = *lines.iter().min().unwrap();
+        assert!(lines.iter().any(|line| *line != covered));
+        let map = package.join("map.json");
+        fs::write(
+            &map,
+            format!(
+                r#"{{"files":{{"src/A.java":[{{"start":{covered},"end":{covered},"tests":["FooTest"]}}]}}}}"#
+            ),
+        )
+        .unwrap();
+        let tests = package.join("tests.txt");
+        fs::write(&tests, "Bar\n").unwrap();
+        let log = package.join("ran.log");
+        let command = format!("printf '%s\\n' {{tests}} >> '{}'; printf '%s\\n' {{tests}}", log.display());
+        let out = package.join("out");
+        let envelope = run_with(
+            &package,
+            &patches,
+            &out,
+            &[
+                "--suite-command",
+                &command,
+                "--line-map",
+                &map.display().to_string(),
+                "--tests",
+                &tests.display().to_string(),
+            ],
+        );
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(envelope.next.contains("The line map named tests."), "{}", envelope.next);
+        assert!(!envelope.next.contains("did not choose tests"), "{}", envelope.next);
+        let baseline = json::parse(&fs::read_to_string(out.join("baseline.json")).unwrap()).unwrap();
+        assert_eq!(baseline.get("command").and_then(Value::as_str), Some(command.as_str()));
+        let mut spawned = 0usize;
+        let mut uncovered = 0usize;
+        for entry in fs::read_dir(out.join("results")).unwrap() {
+            let body = json::parse(&fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+            match body.get("command").and_then(Value::as_str) {
+                Some(rendered) => {
+                    assert!(rendered.contains("FooTest"), "{rendered}");
+                    assert!(!rendered.contains("Bar"), "{rendered}");
+                    spawned += 1;
+                }
+                None => {
+                    assert_eq!(body.get("outcome").and_then(Value::as_str), Some("no coverage"));
+                    uncovered += 1;
+                }
+            }
+        }
+        assert!(spawned >= 1);
+        assert!(uncovered >= 1);
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), spawned + 1);
+        let stopped = package.join("stopped");
+        let refusal = run_with(
+            &package,
+            &patches,
+            &stopped,
+            &["--suite-command", "echo ok", "--line-map", &map.display().to_string()],
+        );
+        assert_no_kill_count(&refusal);
+        assert!(refusal.next.contains("{tests}"), "{}", refusal.next);
+        assert!(fs::read_dir(stopped.join("results")).is_err());
+        let bad_map = package.join("bad-map.json");
+        fs::write(
+            &bad_map,
+            format!(r#"{{"files":{{"src/A.java":[{{"start":{covered},"end":{covered},"tests":["a'b"]}}]}}}}"#),
+        )
+        .unwrap();
+        let bad_out = package.join("bad");
+        let bad = run_with(
+            &package,
+            &patches,
+            &bad_out,
+            &["--suite-command", &command, "--line-map", &bad_map.display().to_string()],
+        );
+        assert_no_kill_count(&bad);
+        assert!(bad.summary.contains("a'b"), "{}", bad.summary);
+        assert!(fs::read_dir(bad_out.join("results")).is_err());
+        let unnamed = run_with(&package, &patches, &package.join("unnamed"), &["--suite-command", &command]);
+        assert_no_kill_count(&unnamed);
+        assert!(unnamed.summary.contains("asks for test names"), "{}", unnamed.summary);
+        assert!(!log.exists() || fs::read_to_string(&log).unwrap().lines().count() == spawned + 1);
         let _ = fs::remove_dir_all(&package);
     }
 

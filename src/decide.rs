@@ -1,5 +1,7 @@
 //! Outcome rules. A kill is an assertion failure. It is not a count of everything that went wrong.
 
+use crate::json::{self, Value};
+
 pub const LARGE_BATCH: usize = 30;
 pub const DEFAULT_MAX_SELECTED: usize = 30;
 
@@ -70,6 +72,9 @@ pub fn judge_baseline(spawned: bool, timed_out: bool, code: Option<i32>, stdout:
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
         return Baseline::NoReport;
     }
+    if code == Some(127) && stderr.contains("command not found") {
+        return Baseline::MissingTool;
+    }
     if code == Some(0) {
         Baseline::Green
     } else {
@@ -107,6 +112,9 @@ pub fn classify(timed_out: bool, code: Option<i32>, stderr: &str) -> Verdict {
     }
     if code == Some(0) {
         return Verdict::Survived;
+    }
+    if code == Some(127) && stderr.contains("command not found") {
+        return Verdict::Error;
     }
     if looks_unviable(stderr) {
         return Verdict::Unviable;
@@ -247,6 +255,103 @@ fn unsafe_test_name(name: &str) -> bool {
         })
 }
 
+/// A `files` map names tests. Any other text is a permission slip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestMap {
+    pub chooses: bool,
+    files: Vec<(String, Vec<MappedRange>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MappedRange {
+    start: usize,
+    end: usize,
+    tests: Vec<String>,
+}
+
+impl TestMap {
+    pub fn slip() -> TestMap {
+        TestMap { chooses: false, files: Vec::new() }
+    }
+
+    pub fn names_for(&self, file: &str, line: usize) -> Vec<String> {
+        if !self.chooses {
+            return Vec::new();
+        }
+        let file = normalize_path(file);
+        let Some((_, ranges)) = self.files.iter().find(|(path, _)| path == &file) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for range in ranges {
+            if line >= range.start && line <= range.end {
+                for name in &range.tests {
+                    push_unique(&mut names, name);
+                }
+            }
+        }
+        names
+    }
+
+    pub fn all_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for (_, ranges) in &self.files {
+            for range in ranges {
+                for name in &range.tests {
+                    push_unique(&mut names, name);
+                }
+            }
+        }
+        names
+    }
+}
+
+pub fn parse_test_map(text: &str) -> TestMap {
+    let Ok(value) = json::parse(text) else {
+        return TestMap::slip();
+    };
+    let Some(Value::Object(entries)) = value.get("files") else {
+        return TestMap::slip();
+    };
+    let mut files = Vec::new();
+    for (path, ranges) in entries {
+        let mut parsed = Vec::new();
+        if let Value::Array(items) = ranges {
+            for item in items {
+                let Some(start) = item.get("start").and_then(Value::as_int).filter(|line| *line >= 1) else {
+                    continue;
+                };
+                let Some(end) = item.get("end").and_then(Value::as_int).filter(|line| *line >= start) else {
+                    continue;
+                };
+                let tests = match item.get("tests") {
+                    Some(Value::Array(names)) => names.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                    _ => Vec::new(),
+                };
+                parsed.push(MappedRange { start: start as usize, end: end as usize, tests });
+            }
+        }
+        files.push((normalize_path(path), parsed));
+    }
+    TestMap { chooses: true, files }
+}
+
+pub fn line_at(text: &str, start: usize) -> usize {
+    let bytes = text.as_bytes();
+    let end = start.min(bytes.len());
+    bytes[..end].iter().filter(|byte| **byte == b'\n').count() + 1
+}
+
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn push_unique(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|have| have == name) {
+        names.push(name.to_string());
+    }
+}
+
 /// Tally never deletes a test. The zero is the product, not a default the caller may raise.
 pub fn deleted_tests() -> u64 {
     0
@@ -271,6 +376,10 @@ mod tests {
         assert_eq!(judge_baseline(true, false, Some(0), "", ""), Baseline::NoReport);
         assert_eq!(judge_baseline(true, true, None, "", "partial"), Baseline::TimedOut);
         assert_eq!(judge_baseline(false, false, None, "", ""), Baseline::MissingTool);
+        assert_eq!(
+            judge_baseline(true, false, Some(127), "", "/bin/sh: mocha: command not found\n"),
+            Baseline::MissingTool
+        );
     }
 
     #[test]
@@ -286,6 +395,11 @@ mod tests {
         assert_eq!(timed, Verdict::Timeout);
         assert!(!timed.is_kill());
         assert!(killed.is_kill());
+        let missing_bin = classify(false, Some(127), "/bin/sh: mocha: command not found\n");
+        assert_eq!(missing_bin, Verdict::Error);
+        assert!(!missing_bin.is_kill());
+        let named_in_a_failure = classify(false, Some(1), "assertion failed: command not found");
+        assert!(named_in_a_failure.is_kill());
         let counts = counts_of(&[unviable, timed, killed, Verdict::Survived]);
         assert_eq!(counts.killed, 1);
         assert_eq!(counts.unviable, 1);
@@ -326,6 +440,28 @@ mod tests {
         assert!(whole);
         assert_eq!(render_suite("echo {tests}", &["a'b".into()]).unwrap_err(), "a'b");
         assert_eq!(render_suite("echo {tests,}", &["a,b".into()]).unwrap_err(), "a,b");
+    }
+
+    #[test]
+    fn a_files_map_names_tests_and_a_slip_does_not() {
+        let slip = parse_test_map("{\"lines\":[1]}");
+        assert!(!slip.chooses);
+        assert!(slip.names_for("src/A.java", 3).is_empty());
+        let map = parse_test_map(
+            r#"{"files":{"src/A.java":[{"start":3,"end":3,"tests":["FooTest","FooTest"]},{"start":3,"end":5,"tests":["BarTest"]}],"src\\B.java":[{"start":1,"end":1,"tests":["Other"]}]}}"#,
+        );
+        assert!(map.chooses);
+        assert_eq!(map.names_for("src/A.java", 3), vec!["FooTest".to_string(), "BarTest".to_string()]);
+        assert!(map.names_for("src/A.java", 6).is_empty());
+        assert_eq!(map.names_for("src/B.java", 1), vec!["Other".to_string()]);
+        assert_eq!(
+            map.all_names(),
+            vec!["FooTest".to_string(), "BarTest".to_string(), "Other".to_string()]
+        );
+        assert_eq!(line_at("a\nb\nc", 0), 1);
+        assert_eq!(line_at("a\nb\nc", 2), 2);
+        assert!(!parse_test_map("not json").chooses);
+        assert!(!parse_test_map("{\"files\":[]}").chooses);
     }
 
     #[test]
