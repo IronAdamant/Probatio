@@ -28,21 +28,28 @@ pub fn generate(flags: &Flags) -> Envelope {
     if !root.is_dir() {
         return missing(command, "src is not a directory");
     }
+    let limit = flags.int("max-mutants", u64::MAX) as usize;
     let mut found = Vec::new();
-    if let Err(message) = walk(&root, &package, &mut found) {
-        return Envelope::new(false, command, message, "Fix the source tree and generate again.");
-    }
+    let bounded = match walk(&root, &package, &mut found, limit) {
+        Ok(stopped) => stopped,
+        Err(message) => return Envelope::new(false, command, message, "Fix the source tree and generate again."),
+    };
     found.sort_by(|left, right| left.file.cmp(&right.file).then(left.start.cmp(&right.start)).then(left.op.cmp(&right.op)));
-    let limit = flags.int("max-mutants", u64::MAX);
-    if (found.len() as u64) > limit {
-        found.truncate(limit as usize);
+    if found.len() > limit {
+        found.truncate(limit);
     }
     if let Err(message) = write_mutants(&out, &found) {
         return Envelope::new(false, command, message, "The out directory could not be written.");
     }
-    let summary = format!("{} mutants.", found.len());
+    let summary = if bounded {
+        format!("{} mutants. Bounded by --max-mutants {}.", found.len(), limit)
+    } else {
+        format!("{} mutants.", found.len())
+    };
     let next = if found.is_empty() {
         "Nothing to run.".to_string()
+    } else if bounded {
+        format!("Bounded by --max-mutants {limit}. The walk stopped early. mutate run can score this slice. A kill is an assertion failure.")
     } else {
         "mutate run scores this patch set. A kill is an assertion failure.".to_string()
     };
@@ -66,10 +73,10 @@ fn missing(command: &str, message: &str) -> Envelope {
     Envelope::new(false, command, message.to_string(), "Pass the missing flag and run the command again.")
 }
 
-fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>) -> Result<(), String> {
-    let entries = fs::read_dir(dir).map_err(|error| error.to_string())?;
+fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>, limit: usize) -> Result<bool, String> {
+    let mut entries = fs::read_dir(dir).map_err(|error| error.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with('.') || name == "target" || name == "node_modules" || name == "dist" {
@@ -81,7 +88,9 @@ fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>) -> Result<(), Strin
             continue;
         }
         if file_type.is_dir() {
-            walk(&path, package, found)?;
+            if walk(&path, package, found, limit)? {
+                return Ok(true);
+            }
             continue;
         }
         if !file_type.is_file() {
@@ -94,8 +103,12 @@ fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>) -> Result<(), Strin
         }
         let Ok(text) = fs::read_to_string(&path) else { continue };
         found.extend(operators::mutants_in(&relative, &text));
+        if found.len() >= limit {
+            found.truncate(limit);
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn write_mutants(out: &Path, mutants: &[Mutant]) -> Result<(), String> {
@@ -182,6 +195,40 @@ mod tests {
         assert!(!summary.is_empty());
         assert!(!next.is_empty());
         assert!(out.join("mutants.json").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generate_states_when_max_mutants_stops_the_walk() {
+        let root = std::env::temp_dir().join(format!("probatio-gen-bound-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        let mut body = String::from("class A {\n");
+        for index in 0..5 {
+            body.push_str(&format!("  boolean x{index} = a && b;\n"));
+        }
+        body.push_str("}\n");
+        fs::write(root.join("src/A.java"), body).unwrap();
+        let out = root.join("out");
+        let args = vec![
+            "--package".into(),
+            root.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+            "--max-mutants".into(),
+            "2".into(),
+        ];
+        let envelope = generate(&Flags::parse(&args));
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(envelope.summary.contains("--max-mutants"), "{}", envelope.summary);
+        assert!(envelope.summary.contains('2'), "{}", envelope.summary);
+        assert!(envelope.next.contains("--max-mutants"), "{}", envelope.next);
+        let text = fs::read_to_string(out.join("mutants.json")).unwrap();
+        let value = json::parse(&text).unwrap();
+        match value.get("mutants") {
+            Some(Value::Array(items)) => assert_eq!(items.len(), 2),
+            other => panic!("mutants was {other:?}"),
+        }
         let _ = fs::remove_dir_all(&root);
     }
 }
