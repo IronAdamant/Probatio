@@ -6,6 +6,7 @@ pub mod decide;
 pub mod envelope;
 pub mod generate;
 pub mod json;
+pub mod mcp;
 pub mod operators;
 pub mod process;
 pub mod runner;

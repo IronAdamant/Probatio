@@ -1,0 +1,9 @@
+# This checkout only. A session opened here launches the local binary as an MCP server.
+[mcp_servers.probatio]
+command = "/bin/sh"
+args = ["/Users/aron/Documents/coding_projects/Probatio/.grok/probatio-mcp.sh"]
+cwd = "/Users/aron/Documents/coding_projects/Probatio"
+enabled = true
+startup_timeout_sec = 120
+tool_timeout_sec = 6000
+tool_timeouts = { mutate_run = 86400, mutate_generate = 3600, mutate_tally = 120 }

@@ -56,7 +56,12 @@ pub fn dispatch(args: &[String]) -> Envelope {
         "check-kill" => check_kill(&Flags::parse(rest)),
         "verify-change" => verify_change(&Flags::parse(rest)),
         "schema" => schema(rest),
-        "mcp" => Envelope::new(false, "mcp", "The MCP server is not in this binary.", "Use a command. Each one prints one JSON object."),
+        "mcp" => Envelope::new(
+            false,
+            "mcp",
+            "The MCP server reads stdin. Launch `probatio mcp`.",
+            "This call is not the server. A client speaks JSON-RPC on that process.",
+        ),
         other => Envelope::new(
             false,
             other,

@@ -56,6 +56,46 @@ pub fn stringify(value: &Value) -> String {
     out
 }
 
+/// One JSON value with no extra whitespace. MCP writes one of these per line.
+pub fn stringify_compact(value: &Value) -> String {
+    let mut out = String::new();
+    write_compact(&mut out, value);
+    out
+}
+
+fn write_compact(out: &mut String, value: &Value) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::Int(number) => out.push_str(&number.to_string()),
+        Value::Float(number) => out.push_str(&format_float(*number)),
+        Value::String(text) => push_string(out, text),
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_compact(out, item);
+            }
+            out.push(']');
+        }
+        Value::Object(entries) => {
+            out.push('{');
+            for (index, (key, item)) in entries.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                push_string(out, key);
+                out.push(':');
+                write_compact(out, item);
+            }
+            out.push('}');
+        }
+    }
+}
+
 fn write_pretty(out: &mut String, value: &Value, indent: usize) {
     match value {
         Value::Null => out.push_str("null"),
