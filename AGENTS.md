@@ -63,7 +63,7 @@ Discovery does not launch the tool:
 
 There is no `--only-test` flag. A keep id is a test name the suite can collect. To score names, put `{tests}` or `{tests,}` in the suite command and supply the names from a `files` map or a `--tests` file. Do not invent a flag.
 
-When the package has `node_modules/.bin`, that directory is on the suite process PATH for the baseline and for a mutant worktree or copy. The command string is not rewritten. The worktree (git) and the copy (no git) skip `.git`, `target`, `node_modules`, and `dist`. Each gets a symlink to the package `node_modules` when the destination does not already have one. Removing the worktree or the copy does not delete the package `node_modules`. A shell exit 127 whose stderr contains `command not found` is a missing tool on the baseline (`judgement` `missing-tool`) and outcome `error` on a mutant. An exit 1 whose text happens to contain those words can still be a kill. The binary does not fetch a toolchain.
+When the package has `node_modules/.bin`, that directory is on the suite process PATH for the baseline and for a mutant worktree or copy. The command string is not rewritten. The worktree (git) and the copy (no git) skip `.git`, `target`, `node_modules`, and `dist`. Each gets a symlink to the package `node_modules` when the destination does not already have one. Removing the worktree or the copy does not delete the package `node_modules`. A shell exit 127 whose stderr contains `command not found` or `: not found` is a missing tool on the baseline (`judgement` `missing-tool`) and outcome `error` on a mutant. Bash prints the first phrase. Dash, the usual `/bin/sh` on Ubuntu, prints the second. An exit 1 whose text happens to contain those words can still be a kill. The binary does not fetch a toolchain.
 
 A command with `{tests}` or `{tests,}`, an empty name list, and a line map that does not choose tests, refuses before the baseline.
 
@@ -107,7 +107,7 @@ Read no coverage first, then survivors. Neither is a pass.
 - `no coverage`: nothing executed that line. Leave it.
 - `unviable`: the mutant did not build or link, including a Node test file that no longer links. The summary says "did not build".
 - `timeout`: the baseline clock ran out.
-- `error`: the process failed in a way that is not an assertion. Exit 127 with `command not found` is this.
+- `error`: the process failed in a way that is not an assertion. Exit 127 with `command not found` or `: not found` is this.
 
 A timeout, an unviable mutant, and an error are not kills and not gaps. For a ledger fix, write a hand-made mutant that keeps the API and restores the old behaviour.
 
