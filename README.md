@@ -70,7 +70,7 @@ Discovery does not launch the tool. It only names the command, from the package 
 
 `{tests}` puts each selected name in single quotes. `{tests,}` joins the names with commas. A name may contain ASCII letters, digits, and `_` `-` `.` `/` `:`. Anything else is refused, and so is an empty name. The `suiteCommand` field on the envelope is the template, before the names are filled in. `baseline.json` stores that same template. A result written after the suite started stores the rendered line in `command`. A no-coverage result that never started the suite has no `command` field.
 
-When the package has `node_modules/.bin`, that directory is placed on the suite process `PATH`. That includes a mutant run from a git worktree or a copy. Both skip `node_modules` when they are created, and both get a symlink to the package `node_modules` when they do not already have one. The command string itself is not rewritten. A shell exit 127 whose text says `command not found` means the tool is missing on the baseline, and it is an error on a mutant. The binary does not download a toolchain.
+When the package has `node_modules/.bin`, that directory is placed on the suite process `PATH`. That includes a mutant run from a git worktree or a copy. Both skip `node_modules` when they are created, and both get a symlink to the package `node_modules` when they do not already have one. The command string itself is not rewritten. A shell exit 127 whose text says `command not found` or `: not found` means the tool is missing on the baseline, and it is an error on a mutant. The first is bash. The second is dash, which is `/bin/sh` on Ubuntu. The binary does not download a toolchain.
 
 ### What a result means
 
@@ -79,7 +79,7 @@ When the package has `node_modules/.bin`, that directory is placed on the suite 
 - **no coverage**: nothing executed that line. Leave it. There is no evidence either way.
 - **unviable**: the mutant failed to compile or link. The summary text says "did not build". A Node test file that no longer links counts here.
 - **timeout**: the suite clock ran out. The clock is the baseline's clock.
-- **error**: the suite process failed in some other way. Exit 127 with `command not found` is this.
+- **error**: the suite process failed in some other way. Exit 127 with `command not found` or `: not found` is this.
 
 A killed mutant is an assertion failure. Golden checks and contract checks are what say the expected result is still the expected result.
 

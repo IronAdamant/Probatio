@@ -72,7 +72,7 @@ pub fn judge_baseline(spawned: bool, timed_out: bool, code: Option<i32>, stdout:
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
         return Baseline::NoReport;
     }
-    if code == Some(127) && stderr.contains("command not found") {
+    if shell_reports_missing_command(code, stderr) {
         return Baseline::MissingTool;
     }
     if code == Some(0) {
@@ -113,7 +113,7 @@ pub fn classify(timed_out: bool, code: Option<i32>, stderr: &str) -> Verdict {
     if code == Some(0) {
         return Verdict::Survived;
     }
-    if code == Some(127) && stderr.contains("command not found") {
+    if shell_reports_missing_command(code, stderr) {
         return Verdict::Error;
     }
     if looks_unviable(stderr) {
@@ -123,6 +123,12 @@ pub fn classify(timed_out: bool, code: Option<i32>, stderr: &str) -> Verdict {
         return Verdict::Error;
     }
     Verdict::Killed
+}
+
+/// `/bin/sh` exits 127 when the suite command is not on `PATH`.
+/// Bash writes `command not found`. Dash, the usual `/bin/sh` on Ubuntu, writes `: not found`.
+fn shell_reports_missing_command(code: Option<i32>, text: &str) -> bool {
+    code == Some(127) && (text.contains("command not found") || text.contains(": not found"))
 }
 
 fn looks_unviable(stderr: &str) -> bool {
@@ -380,6 +386,14 @@ mod tests {
             judge_baseline(true, false, Some(127), "", "/bin/sh: mocha: command not found\n"),
             Baseline::MissingTool
         );
+        assert_eq!(
+            judge_baseline(true, false, Some(127), "", "sh: 1: mocha: not found\n"),
+            Baseline::MissingTool
+        );
+        assert_eq!(
+            judge_baseline(true, false, Some(127), "1 failed", "assertion failed"),
+            Baseline::Red
+        );
     }
 
     #[test]
@@ -398,8 +412,14 @@ mod tests {
         let missing_bin = classify(false, Some(127), "/bin/sh: mocha: command not found\n");
         assert_eq!(missing_bin, Verdict::Error);
         assert!(!missing_bin.is_kill());
+        let dash_missing = classify(false, Some(127), "sh: 1: mocha: not found\n");
+        assert_eq!(dash_missing, Verdict::Error);
+        assert!(!dash_missing.is_kill());
         let named_in_a_failure = classify(false, Some(1), "assertion failed: command not found");
         assert!(named_in_a_failure.is_kill());
+        let dash_words_on_a_failure = classify(false, Some(1), "assertion failed: : not found");
+        assert!(dash_words_on_a_failure.is_kill());
+        assert!(classify(false, Some(127), "assertion failed").is_kill());
         let counts = counts_of(&[unviable, timed, killed, Verdict::Survived]);
         assert_eq!(counts.killed, 1);
         assert_eq!(counts.unviable, 1);
