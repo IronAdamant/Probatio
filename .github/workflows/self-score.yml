@@ -6,6 +6,7 @@ name: self-score
 on:
   push:
     branches: [main, next]
+  pull_request:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
