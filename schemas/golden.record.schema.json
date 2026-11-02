@@ -1,6 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/golden.record.schema.json",
+  "flags": [
+    {"name": "package", "required": true},
+    {"name": "out", "required": true},
+    {"name": "dir", "required": false}
+  ],
   "title": "probatio golden.record",
   "description": "Records the calls the unit tests make into a golden table and a replay test. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
@@ -115,12 +120,12 @@
   },
   "then": {
     "required": [
-      "rows",
-      "hidden",
-      "unstable",
-      "modules",
-      "written",
-      "commit"
+      "schemaVersion",
+      "ok",
+      "command",
+      "summary",
+      "next",
+      "nextCall"
     ]
   }
 }

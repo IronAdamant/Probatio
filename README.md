@@ -68,6 +68,8 @@ Discovery does not launch the tool. It only names the command, from the package 
 
 `Cargo.toml` is checked before `package.json`, so a package with both uses `cargo test`. If none of these files is present, the run stops and asks for `--suite-command`.
 
+`python3 -m pytest` and `python3 -m unittest discover` are run by a reporter shipped in the binary. The reporter prints one JSON line, and that line decides the score. A test that ran and failed is a kill, including a failure whose exception is `ValueError`. A mutant that fails to load is "did not build". On a pytest baseline, if `coverage.py` imports, Probatio writes `<out>/lines.json` and uses it as the line map. Names from that map are arguments to the reporter, and the command does not need a `{tests}` token. If `coverage.py` does not import, the map is not written, and more than 30 mutants still stop before the first mutant. A `--line-map` you pass is kept. Any other command, including `pytest` and `.venv/bin/pytest`, is scored from the process exit.
+
 `{tests}` puts each selected name in single quotes. `{tests,}` joins the names with commas. A name may contain ASCII letters, digits, and `_` `-` `.` `/` `:`. Anything else is refused, and so is an empty name. The `suiteCommand` field on the envelope is the template, before the names are filled in. `baseline.json` stores that same template. A result written after the suite started stores the rendered line in `command`. A no-coverage result that never started the suite has no `command` field.
 
 When the package has `node_modules/.bin`, that directory is placed on the suite process `PATH`. That includes a mutant run from a git worktree or a copy. Both skip `node_modules` when they are created, and both get a symlink to the package `node_modules` when they do not already have one. The command string itself is not rewritten. A shell exit 127 whose text says `command not found` or `: not found` means the tool is missing on the baseline, and it is an error on a mutant. The first is bash. The second is dash, which is `/bin/sh` on Ubuntu. The binary does not download a toolchain.
@@ -127,6 +129,8 @@ cargo test {tests}
 python3 -m pytest {tests}
 node --test {tests}
 ```
+
+A line map written by the pytest baseline is the exception: `python3 -m pytest` and `python3 -m unittest discover` receive those names as arguments, with no token in the command. A line map you passed still needs the token.
 
 A command that already contains a token, and that has no names, and whose map does not choose tests, refuses before the baseline.
 

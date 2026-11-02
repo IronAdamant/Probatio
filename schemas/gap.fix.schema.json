@@ -1,6 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/gap.fix.schema.json",
+  "flags": [
+    {"name": "id", "required": true}
+  ],
   "title": "probatio gap.fix",
   "description": "Records a gap as fixed, with the guard that now catches it. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",

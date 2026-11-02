@@ -59,6 +59,8 @@ Discovery does not launch the tool:
 - else `pytest.ini` or `pyproject.toml` then `python3 -m pytest`
 - else stop and ask. Do not invent a command.
 
+When the resolved command is exactly `python3 -m pytest` or `python3 -m unittest discover`, with an optional `{tests}` or `{tests,}` token and no other arguments, the run uses the reporter in the binary. A test that ran and failed is a kill, including `ValueError`. A load failure is unviable. A pytest baseline writes `<out>/lines.json` when `coverage.py` imports, and that map selects tests without a `{tests}` token. If `coverage.py` does not import, the map is not written and the large-batch stop still applies. A caller `--line-map` is not replaced. Any other command is scored from the process exit. The result file may include `killedBy`. The envelope does not.
+
 `{tests,}` is filled in first, then `{tests}`. A command that only has `{tests,}` does not also count as `{tests}`. `{tests}` single-quotes each selected name. `{tests,}` joins names with commas. A name must be ASCII letters, digits, or `_` `-` `.` `/` `:`. An empty name, or any other character, refuses the run. `::command` is not a test id.
 
 There is no `--only-test` flag. A keep id is a test name the suite can collect. To score names, put `{tests}` or `{tests,}` in the suite command and supply the names from a `files` map or a `--tests` file. Do not invent a flag.
@@ -85,7 +87,7 @@ Names for one mutant, in order: the mutant's own test list when it is non-empty,
 
 A mutant the choosing map does not name is outcome `no coverage`, duration 0, no `command` field, and the suite is not started.
 
-A choosing map that names at least one mutant in the batch, together with a suite command that has neither token, refuses after a green baseline and before any result is written. Summary: "The line map named tests and the suite command has no {tests} token."
+A choosing map that names at least one mutant in the batch, together with a suite command that has neither token, refuses after a green baseline and before any result is written. Summary: "The line map named tests and the suite command has no {tests} token." The map at `<out>/lines.json` written from a Python baseline is the exception: the reporter receives the names as arguments, and that refusal does not apply. A line map passed in still needs the token.
 
 No usable line map, and more than 30 mutants pending: stop before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call still scores at most 30 mutants that have no result yet, unless `confirmCount` equals the waiting count. Resume argv never includes `--confirm-count`. `--workers` above 1 is accepted and ignored. The next line says "Workers stay at 1." Peak work is one worktree or copy, plus one suite process.
 
@@ -113,7 +115,7 @@ A timeout, an unviable mutant, and an error are not kills and not gaps. For a le
 
 A result file that already says `flaky` is counted as flaky. The scorer does not assign that outcome itself.
 
-Baseline judgements, and the run stops before any mutant: `green`, `red` ("already failing"), `no-report`, `timed-out`, `missing-tool`. `baseline.json` stores the judgement, `durationMs`, and the template. It does not store stdout or stderr.
+Baseline judgements, and the run stops before any mutant: `green`, `red` ("already failing"), `no-report`, `timed-out`, `missing-tool`. `baseline.json` stores the judgement, `durationMs`, and the template. A Python baseline also stores `lineMap`: `lines.json` when coverage wrote a map, or an empty string when it did not. The file does not store stdout or stderr.
 
 ## Commands
 

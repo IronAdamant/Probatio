@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn large_envelope_survives_a_pipe() {
-        let mut envelope = Envelope::new(true, "schema", "short", "x".repeat(200_000));
+        let mut envelope = Envelope::new(true, "schema", "short", "x".repeat(2_000_000));
         envelope.extra.push(("finished".into(), Value::Int(1)));
         let bytes = envelope.render("");
         let mut fds = [0i32; 2];
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(version, 2);
         assert!(ok);
         assert_eq!(summary, "short");
-        assert_eq!(next.len(), 200_000);
+        assert_eq!(next.len(), 2_000_000);
         assert_eq!(next_call, Value::Null);
         assert!(value.get("notStarted").is_none());
         assert!(value.get("kills").is_none());

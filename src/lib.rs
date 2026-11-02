@@ -2,6 +2,7 @@
 
 pub mod args;
 pub mod commands;
+pub mod coverage;
 pub mod decide;
 pub mod envelope;
 pub mod generate;
@@ -9,6 +10,7 @@ pub mod json;
 pub mod mcp;
 pub mod operators;
 pub mod process;
+pub mod report;
 pub mod runner;
 pub mod worktree;
 

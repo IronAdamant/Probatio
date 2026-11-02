@@ -1,4 +1,5 @@
-//! Text operators. Comments and strings are not mutated. JS and TS use the same set as Java.
+//! Text operators. Comments and strings are not mutated.
+//! JS and TS use this set, so their ids are `m` plus a hash, not TypeScript-compiler node ids.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mutant {
@@ -16,6 +17,8 @@ pub struct Mutant {
 enum Kind {
     CLike,
     Python,
+    Cobol,
+    Asm,
 }
 
 struct Op {
@@ -42,18 +45,45 @@ const WORDS: &[Op] = &[
     Op { original: "false", op: "false-to-true", replacement: "true" },
 ];
 
+const PYTHON_BOOL: &[Op] = &[
+    Op { original: "and", op: "and-to-or", replacement: "or" },
+    Op { original: "or", op: "or-to-and", replacement: "and" },
+];
+
 pub fn kind_of(path: &str) -> bool {
     matches!(
         std::path::Path::new(path).extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()),
         Some(ref ext) if matches!(
             ext.as_str(),
-            "java" | "go" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cc" | "cpp" | "cs" | "swift" | "cob" | "cbl"
+            "java" | "go" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cc" | "cpp" | "cs" | "swift"
+                | "cob" | "cbl" | "cobol" | "s" | "asm" | "nasm" | "yasm"
         )
     )
 }
 
+fn language(file: &str) -> Kind {
+    match std::path::Path::new(file)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("py") => Kind::Python,
+        Some("cob") | Some("cbl") | Some("cobol") => Kind::Cobol,
+        Some("s") | Some("asm") | Some("nasm") | Some("yasm") => Kind::Asm,
+        _ => Kind::CLike,
+    }
+}
+
 pub fn mutants_in(file: &str, text: &str) -> Vec<Mutant> {
-    let kind = if file.ends_with(".py") { Kind::Python } else { Kind::CLike };
+    scan(file, text, false)
+}
+
+/// `wide` adds spaced arithmetic, integer constants, and a dropped statement.
+/// Core stays the default, so a generate with no `--operators` flag does not move earlier counts.
+pub fn scan(file: &str, text: &str, wide: bool) -> Vec<Mutant> {
+    let kind = language(file);
+    let dialect = asm_dialect(file, text);
     let code = mask(text, kind);
     let mut found = Vec::new();
     let mut index = 0;
@@ -62,34 +92,427 @@ pub fn mutants_in(file: &str, text: &str) -> Vec<Mutant> {
             index += 1;
             continue;
         }
+        if kind == Kind::Cobol {
+            if let Some((op, len, replacement)) = cobol_word(text, index) {
+                let end = index + len;
+                if code[index..end].iter().all(|bit| *bit) {
+                    push_mutant(&mut found, file, text, index, end, op, &replacement);
+                    index = end;
+                    continue;
+                }
+            }
+            index += 1;
+            continue;
+        }
+        if kind == Kind::Asm {
+            if let Some((op, len, replacement)) = mnemonic(text, index, dialect) {
+                let end = index + len;
+                if code[index..end].iter().all(|bit| *bit) {
+                    push_mutant(&mut found, file, text, index, end, op, &replacement);
+                    index = end;
+                    continue;
+                }
+            }
+        }
         if let Some(op) = match_at(text, &code, index, kind) {
             let end = index + op.original.len();
-            let line = text[..index].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
-            let id = mutant_id(file, index, &op.op, &op.replacement);
-            found.push(Mutant {
-                id,
-                file: file.to_string(),
-                line,
-                start: index,
-                end,
-                op: op.op.to_string(),
-                original: text[index..end].to_string(),
-                replacement: op.replacement.to_string(),
-            });
+            push_mutant(&mut found, file, text, index, end, op.op, op.replacement);
             index = end;
             continue;
         }
+        if wide {
+            if let Some((op, len, replacement)) = wide_at(text, &code, index, kind) {
+                let end = index + len;
+                push_mutant(&mut found, file, text, index, end, op, &replacement);
+                index = end;
+                continue;
+            }
+        }
         index += 1;
+    }
+    if wide {
+        found.extend(dropped_statements(file, text, &code));
     }
     found
 }
 
-fn match_at<'a>(text: &str, code: &[bool], index: usize, kind: Kind) -> Option<&'a Op> {
-    let ops = if kind == Kind::Python {
-        &OPS[4..]
+fn push_mutant(found: &mut Vec<Mutant>, file: &str, text: &str, index: usize, end: usize, op: &str, replacement: &str) {
+    let line = text[..index].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
+    let id = mutant_id(file, index, op, replacement);
+    found.push(Mutant {
+        id,
+        file: file.to_string(),
+        line,
+        start: index,
+        end,
+        op: op.to_string(),
+        original: text[index..end].to_string(),
+        replacement: replacement.to_string(),
+    });
+}
+
+/// `AND`/`OR` with the source word's case. `AND` is tried before `OR`.
+fn cobol_word(text: &str, index: usize) -> Option<(&'static str, usize, String)> {
+    let rest = text.get(index..)?;
+    let (len, op, upper) = if rest.len() >= 3 && rest.as_bytes()[..3].eq_ignore_ascii_case(b"AND") {
+        (3, "and-to-or", "OR")
+    } else if rest.len() >= 2 && rest.as_bytes()[..2].eq_ignore_ascii_case(b"OR") {
+        (2, "or-to-and", "AND")
     } else {
-        OPS
+        return None;
     };
+    let end = index + len;
+    if !word_edge(text, index, end) {
+        return None;
+    }
+    let source = &text[index..end];
+    let replacement = if source.chars().all(|ch| ch.is_ascii_lowercase()) {
+        upper.to_ascii_lowercase()
+    } else {
+        upper.to_string()
+    };
+    Some((op, len, replacement))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    X86,
+    Arm,
+    Riscv,
+    None,
+}
+
+fn asm_dialect(file: &str, text: &str) -> Dialect {
+    let ext = std::path::Path::new(file).extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    let lower = ext.to_ascii_lowercase();
+    if matches!(lower.as_str(), "asm" | "nasm" | "yasm") {
+        return Dialect::X86;
+    }
+    if lower != "s" {
+        return Dialect::None;
+    }
+    let riscv = has_token(text, &["beq", "bne", "blt", "bge", "bltu", "bgeu", "ecall"]);
+    let arm = text.contains("b.eq")
+        || text.contains("b.ne")
+        || text.contains("b.lt")
+        || text.contains("b.le")
+        || text.contains("b.gt")
+        || text.contains("b.ge")
+        || text.contains("b.hi")
+        || text.contains("b.hs")
+        || text.contains("b.lo")
+        || text.contains("b.ls")
+        || has_token(text, &["adrp", "svc"]);
+    if riscv && !arm {
+        Dialect::Riscv
+    } else if arm && !riscv {
+        Dialect::Arm
+    } else if ext == "s" {
+        Dialect::Arm
+    } else {
+        Dialect::Riscv
+    }
+}
+
+fn has_token(text: &str, words: &[&str]) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
+            let start = index;
+            while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+                index += 1;
+            }
+            let word = &text[start..index];
+            if words.iter().any(|item| *item == word) {
+                return true;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn mnemonic(text: &str, index: usize, dialect: Dialect) -> Option<(&'static str, usize, String)> {
+    let words: &[Op] = match dialect {
+        Dialect::X86 => X86,
+        Dialect::Arm => ARM,
+        Dialect::Riscv => RISCV,
+        Dialect::None => return None,
+    };
+    let rest = text.get(index..)?;
+    for word in words {
+        if rest.len() < word.original.len() {
+            continue;
+        }
+        let slice = &rest[..word.original.len()];
+        let same = if dialect == Dialect::X86 {
+            slice.eq_ignore_ascii_case(word.original)
+        } else {
+            slice == word.original
+        };
+        if !same {
+            continue;
+        }
+        let end = index + word.original.len();
+        if !mnemonic_edge(text, index, end) || text[end..].starts_with(':') {
+            continue;
+        }
+        return Some((word.op, word.original.len(), mirror_case(slice, word.replacement)));
+    }
+    None
+}
+
+const X86: &[Op] = &[
+    Op { original: "jne", op: "neq-to-eq", replacement: "je" },
+    Op { original: "jge", op: "ge-to-gt", replacement: "jg" },
+    Op { original: "jle", op: "le-to-lt", replacement: "jl" },
+    Op { original: "jae", op: "ge-to-gt", replacement: "ja" },
+    Op { original: "jbe", op: "le-to-lt", replacement: "jb" },
+    Op { original: "jnz", op: "neq-to-eq", replacement: "jz" },
+    Op { original: "and", op: "and-to-or", replacement: "or" },
+    Op { original: "je", op: "eq-to-neq", replacement: "jne" },
+    Op { original: "jz", op: "eq-to-neq", replacement: "jnz" },
+    Op { original: "jg", op: "gt-to-ge", replacement: "jge" },
+    Op { original: "jl", op: "lt-to-le", replacement: "jle" },
+    Op { original: "ja", op: "gt-to-ge", replacement: "jae" },
+    Op { original: "jb", op: "lt-to-le", replacement: "jbe" },
+    Op { original: "or", op: "or-to-and", replacement: "and" },
+];
+
+const ARM: &[Op] = &[
+    Op { original: "b.eq", op: "eq-to-neq", replacement: "b.ne" },
+    Op { original: "b.ne", op: "neq-to-eq", replacement: "b.eq" },
+    Op { original: "b.gt", op: "gt-to-ge", replacement: "b.ge" },
+    Op { original: "b.ge", op: "ge-to-gt", replacement: "b.gt" },
+    Op { original: "b.lt", op: "lt-to-le", replacement: "b.le" },
+    Op { original: "b.le", op: "le-to-lt", replacement: "b.lt" },
+    Op { original: "b.hi", op: "gt-to-ge", replacement: "b.hs" },
+    Op { original: "b.hs", op: "ge-to-gt", replacement: "b.hi" },
+    Op { original: "b.lo", op: "lt-to-le", replacement: "b.ls" },
+    Op { original: "b.ls", op: "le-to-lt", replacement: "b.lo" },
+    Op { original: "cbnz", op: "neq-to-eq", replacement: "cbz" },
+    Op { original: "cbz", op: "eq-to-neq", replacement: "cbnz" },
+];
+
+const RISCV: &[Op] = &[
+    Op { original: "bgeu", op: "le-to-lt", replacement: "bltu" },
+    Op { original: "bltu", op: "lt-to-le", replacement: "bgeu" },
+    Op { original: "beq", op: "eq-to-neq", replacement: "bne" },
+    Op { original: "bne", op: "neq-to-eq", replacement: "beq" },
+    Op { original: "bge", op: "le-to-lt", replacement: "blt" },
+    Op { original: "blt", op: "lt-to-le", replacement: "bge" },
+];
+
+fn mnemonic_edge(text: &str, start: usize, end: usize) -> bool {
+    let ident = |ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.';
+    let before = if start == 0 { None } else { text[..start].chars().next_back() };
+    let after = text[end..].chars().next();
+    !before.is_some_and(ident) && !after.is_some_and(ident)
+}
+
+fn mirror_case(source: &str, replacement: &str) -> String {
+    if source.chars().all(|ch| !ch.is_ascii_lowercase()) {
+        replacement.to_ascii_uppercase()
+    } else if source.chars().all(|ch| !ch.is_ascii_uppercase()) {
+        replacement.to_ascii_lowercase()
+    } else {
+        let mut chars = replacement.chars();
+        match chars.next() {
+            Some(first) => first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase(),
+            None => String::new(),
+        }
+    }
+}
+
+fn wide_at(text: &str, code: &[bool], index: usize, kind: Kind) -> Option<(&'static str, usize, String)> {
+    if kind == Kind::Cobol || kind == Kind::Asm {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let ch = bytes.get(index).copied()?;
+    if matches!(ch, b'+' | b'-' | b'*' | b'/' | b'%') {
+        let prev = if index == 0 { b' ' } else { bytes[index - 1] };
+        let next = bytes.get(index + 1).copied().unwrap_or(b' ');
+        if !matches!(prev, b' ' | b'\t') || !matches!(next, b' ' | b'\t') || !code[index] {
+            return None;
+        }
+        let before = text[..index].trim_end().chars().next_back().unwrap_or(' ');
+        if before == ' ' || "=(,[{:?!<>&|+-*/%^~".contains(before) {
+            return None;
+        }
+        let (op, replacement) = match ch {
+            b'+' if string_beside(text, code, index) => return None,
+            b'+' => ("add-to-sub", "-"),
+            b'-' => ("sub-to-add", "+"),
+            b'*' => ("mul-to-div", "/"),
+            b'/' => ("div-to-mul", "*"),
+            _ => ("mod-to-mul", "*"),
+        };
+        return Some((op, 1, replacement.to_string()));
+    }
+    if !ch.is_ascii_digit() {
+        return None;
+    }
+    let prev = if index == 0 { b' ' } else { bytes[index - 1] };
+    if prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b'.' | b'$' | b'#') {
+        return None;
+    }
+    let mut end = index;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    let digits = &text[index..end];
+    let after = bytes.get(end).copied().unwrap_or(b' ');
+    if after.is_ascii_alphanumeric() || matches!(after, b'_' | b'.') || !code[index..end].iter().all(|bit| *bit) {
+        return None;
+    }
+    let replacement = if digits == "0" {
+        "1".to_string()
+    } else if digits == "1" {
+        "0".to_string()
+    } else if digits.len() > 15 || digits.starts_with('0') {
+        return None;
+    } else {
+        let number: u128 = digits.parse().ok()?;
+        (number + 1).to_string()
+    };
+    let op = if digits == "0" {
+        "const-zero-to-one"
+    } else if digits == "1" {
+        "const-one-to-zero"
+    } else {
+        "const-inc"
+    };
+    Some((op, digits.len(), replacement))
+}
+
+fn string_beside(text: &str, code: &[bool], index: usize) -> bool {
+    let bytes = text.as_bytes();
+    for step in [usize::MAX, 1] {
+        let mut at = if step == usize::MAX { index.wrapping_sub(1) } else { index + 1 };
+        if step == usize::MAX && index == 0 {
+            continue;
+        }
+        while at < bytes.len() && matches!(bytes[at], b' ' | b'\t') {
+            if step == usize::MAX {
+                if at == 0 {
+                    break;
+                }
+                at -= 1;
+            } else {
+                at += 1;
+            }
+        }
+        if at < bytes.len() && !code[at] && matches!(bytes[at], b'"' | b'\'' | b'`') {
+            return true;
+        }
+    }
+    false
+}
+
+fn dropped_statements(file: &str, text: &str, code: &[bool]) -> Vec<Mutant> {
+    if !drops_statements(file) {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut offset = 0;
+    for raw in text.split('\n') {
+        let trimmed = raw.trim();
+        if let Some(start_in_raw) = raw.find(trimmed) {
+            let start = offset + start_in_raw;
+            let end = start + trimmed.len();
+            if trimmed.ends_with(';')
+                && end <= code.len()
+                && code[start..end].iter().all(|bit| *bit)
+                && droppable(trimmed)
+            {
+                push_mutant(&mut found, file, text, start, end, "drop-statement", ";");
+            }
+        }
+        offset += raw.len() + 1;
+    }
+    found
+}
+
+fn drops_statements(file: &str) -> bool {
+    matches!(
+        std::path::Path::new(file).extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
+        Some("c" | "h" | "cc" | "cpp" | "hpp" | "hh" | "cxx" | "java" | "cs" | "js" | "mjs" | "cjs" | "rs")
+    )
+}
+
+fn droppable(statement: &str) -> bool {
+    const KEPT: &[&str] = &[
+        "return", "throw", "break", "continue", "goto", "case", "default", "yield", "else", "if", "for", "while", "do",
+        "switch", "try", "catch", "finally", "new", "package", "import", "using", "let", "const", "var", "val", "super",
+        "assert",
+    ];
+    let head = statement.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_').next().unwrap_or("");
+    if KEPT.contains(&head) {
+        return false;
+    }
+    is_call(statement) || is_assign(statement) || is_step(statement)
+}
+
+fn is_call(statement: &str) -> bool {
+    let body = statement.trim_end_matches(';').trim();
+    let rest = body.strip_prefix("this.").unwrap_or(body);
+    let Some(open) = rest.find('(') else { return false };
+    let Some(close) = rest.rfind(')') else { return false };
+    close > open && rest[close + 1..].trim().is_empty() && is_dotted_name(rest[..open].trim())
+}
+
+fn is_assign(statement: &str) -> bool {
+    let body = statement.trim_end_matches(';').trim();
+    let Some(eq) = body.find('=') else { return false };
+    if body.as_bytes().get(eq + 1) == Some(&b'=') {
+        return false;
+    }
+    let left = body[..eq].trim_end();
+    let left = left
+        .trim_end_matches(|ch: char| matches!(ch, '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^'))
+        .trim_end_matches("<<")
+        .trim_end_matches(">>")
+        .trim();
+    !left.is_empty() && !body[eq + 1..].trim().is_empty() && is_dotted_name(left.split('[').next().unwrap_or(left).trim())
+}
+
+fn is_step(statement: &str) -> bool {
+    let body = statement.trim_end_matches(';').trim();
+    if let Some(name) = body.strip_prefix("++").or_else(|| body.strip_prefix("--")) {
+        return is_dotted_name(name.trim());
+    }
+    if let Some(name) = body.strip_suffix("++").or_else(|| body.strip_suffix("--")) {
+        return is_dotted_name(name.trim());
+    }
+    false
+}
+
+fn is_dotted_name(text: &str) -> bool {
+    !text.is_empty()
+        && text.split('.').all(|part| {
+            let part = part.trim();
+            let mut chars = part.chars();
+            matches!(chars.next(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_' || ch == '$')
+                && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+        })
+}
+
+fn match_at<'a>(text: &str, code: &[bool], index: usize, kind: Kind) -> Option<&'a Op> {
+    if kind == Kind::Python {
+        for word in PYTHON_BOOL {
+            if !text[index..].starts_with(word.original) {
+                continue;
+            }
+            let end = index + word.original.len();
+            if word_edge(text, index, end) && code[index..end].iter().all(|bit| *bit) {
+                return Some(word);
+            }
+        }
+    }
+    let ops = if kind == Kind::Python { &OPS[4..] } else { OPS };
     for op in ops {
         if !text[index..].starts_with(op.original) {
             continue;
@@ -139,23 +562,28 @@ fn word_edge(text: &str, start: usize, end: usize) -> bool {
 }
 
 fn mask(text: &str, kind: Kind) -> Vec<bool> {
+    if kind == Kind::Cobol {
+        return mask_cobol(text);
+    }
     let bytes = text.as_bytes();
     let mut code = vec![false; bytes.len()];
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'#' && kind == Kind::Python {
+        if (kind == Kind::Python && bytes[index] == b'#')
+            || (kind == Kind::Asm && (bytes[index] == b'#' || bytes[index] == b';'))
+        {
             while index < bytes.len() && bytes[index] != b'\n' {
                 index += 1;
             }
             continue;
         }
-        if kind == Kind::CLike && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+        if (kind == Kind::CLike || kind == Kind::Asm) && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
             while index < bytes.len() && bytes[index] != b'\n' {
                 index += 1;
             }
             continue;
         }
-        if kind == Kind::CLike && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+        if (kind == Kind::CLike || kind == Kind::Asm) && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
             index += 2;
             while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
                 index += 1;
@@ -177,6 +605,54 @@ fn mask(text: &str, kind: Kind) -> Vec<bool> {
         }
         code[index] = true;
         index += 1;
+    }
+    code
+}
+
+fn mask_cobol(text: &str) -> Vec<bool> {
+    let bytes = text.as_bytes();
+    let mut code = vec![false; bytes.len()];
+    let mut index = 0;
+    let mut column = 0usize;
+    let mut comment_line = false;
+    while index < bytes.len() {
+        if bytes[index] == b'\n' {
+            index += 1;
+            column = 0;
+            comment_line = false;
+            continue;
+        }
+        if column == 6 && bytes[index] == b'*' {
+            comment_line = true;
+        }
+        if comment_line {
+            index += 1;
+            column += 1;
+            continue;
+        }
+        if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'>') {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes[index] == b'\'' || bytes[index] == b'"' {
+            let quote = bytes[index];
+            index += 1;
+            column += 1;
+            while index < bytes.len() && bytes[index] != quote && bytes[index] != b'\n' {
+                index += 1;
+                column += 1;
+            }
+            if index < bytes.len() && bytes[index] == quote {
+                index += 1;
+                column += 1;
+            }
+            continue;
+        }
+        code[index] = true;
+        index += 1;
+        column += 1;
     }
     code
 }
@@ -220,5 +696,92 @@ mod tests {
         let found = mutants_in("src/A.java", text);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].op, "and-to-or");
+    }
+
+    fn one_live(file: &str, text: &str, op: &str) -> Mutant {
+        let found = mutants_in(file, text);
+        assert_eq!(found.len(), 1, "{file}: {found:?}");
+        assert_eq!(found[0].op, op);
+        let applied = apply(text, found[0].start, found[0].end, &found[0].replacement);
+        assert!(applied.contains(&found[0].replacement), "{applied}");
+        found.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn go_rust_c_and_csharp_skip_comments() {
+        one_live("a.go", "package p\nfunc f(a, b bool) bool { return a && b }\n// a && b\n", "and-to-or");
+        one_live("a.rs", "fn f(a: bool, b: bool) -> bool { a && b }\n// a && b\n", "and-to-or");
+        one_live("a.c", "int f(int a, int b) { return a && b; }\n/* a && b */\n", "and-to-or");
+        one_live("a.cs", "class A { bool F(bool a, bool b) { return a && b; } }\n// a && b\n", "and-to-or");
+    }
+
+    #[test]
+    fn python_and_skips_a_hash_comment_and_an_identifier() {
+        let found = one_live("a.py", "def f(a, b):\n    return a and b  # a and b\n", "and-to-or");
+        assert_eq!(found.replacement, "or");
+        let applied = apply("def f(a, b):\n    return a and b  # a and b\n", found.start, found.end, &found.replacement);
+        assert!(applied.contains("# a and b"));
+        assert!(mutants_in("a.py", "land = 1\n").is_empty());
+    }
+
+    #[test]
+    fn js_and_ts_ids_differ_from_compiler_node_ids() {
+        for file in ["a.js", "a.ts"] {
+            let text = "function f(a, b) { return a && b; }\n// a && b\n";
+            let found = one_live(file, text, "and-to-or");
+            assert!(found.id.starts_with('m'), "{}", found.id);
+            assert_eq!(found.id, mutant_id(file, found.start, "and-to-or", "||"));
+            assert!(found.id.chars().all(|ch| ch == 'm' || ch.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn cobol_and_keeps_case_and_skips_comments() {
+        let found = one_live("a.cob", "       IF A AND B\n", "and-to-or");
+        assert_eq!(found.original, "AND");
+        assert_eq!(found.replacement, "OR");
+        let lower = one_live("a.cbl", "       if a and b\n", "and-to-or");
+        assert_eq!(lower.replacement, "or");
+        assert!(mutants_in("a.cobol", "       IF A AND B\n      * AND stays\n       IF C *> AND no\n").len() == 1);
+    }
+
+    #[test]
+    fn asm_and_skips_semicolon_and_hash_comments() {
+        let found = one_live("a.s", "        and_ok && 1\n; && no\n# && no\n", "and-to-or");
+        let applied = apply("        and_ok && 1\n; && no\n# && no\n", found.start, found.end, &found.replacement);
+        assert!(applied.contains("; && no"));
+        assert!(applied.contains("# && no"));
+        assert!(kind_of("src/a.s") && kind_of("src/a.S") && kind_of("src/a.asm") && kind_of("src/a.cobol"));
+    }
+
+    #[test]
+    fn wide_is_off_unless_asked_and_skips_a_comment() {
+        let text = "int f(int a, int b) { return a + b; }\n// a + b\n";
+        assert!(mutants_in("A.java", text).iter().all(|item| item.op != "add-to-sub"));
+        let found = scan("A.java", text, true);
+        let add = found.iter().find(|item| item.op == "add-to-sub").unwrap();
+        assert_eq!(add.replacement, "-");
+        assert_eq!(found.iter().filter(|item| item.op == "add-to-sub").count(), 1);
+    }
+
+    #[test]
+    fn wide_drops_a_call_and_bumps_a_constant() {
+        let found = scan("A.java", "void f() {\n    foo();\n}\nint n = 2;\nreturn 1;\n", true);
+        assert!(found.iter().any(|item| item.op == "drop-statement" && item.original == "foo();"));
+        assert!(found.iter().any(|item| item.op == "const-inc" && item.original == "2" && item.replacement == "3"));
+        assert!(found.iter().any(|item| item.op == "const-one-to-zero"));
+        assert!(!found.iter().any(|item| item.original.starts_with("return")));
+    }
+
+    #[test]
+    fn asm_mnemonics_follow_the_dialect() {
+        let x86 = mutants_in("a.asm", "  je target\n; je no\n");
+        assert_eq!(x86.len(), 1);
+        assert_eq!(x86[0].op, "eq-to-neq");
+        assert_eq!(x86[0].replacement, "jne");
+        let arm = mutants_in("a.s", "  b.eq label\n");
+        assert_eq!(arm[0].replacement, "b.ne");
+        let riscv = mutants_in("a.S", "  beq a0, a1, label\n  ecall\n");
+        assert!(riscv.iter().any(|item| item.original == "beq" && item.replacement == "bne"));
     }
 }

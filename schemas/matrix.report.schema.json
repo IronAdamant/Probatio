@@ -1,6 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/matrix.report.schema.json",
+  "flags": [
+    {"name": "out", "required": true}
+  ],
   "title": "probatio matrix.report",
   "description": "Reads recorded score tables. The headline is the gap list. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
@@ -119,11 +122,12 @@
   },
   "then": {
     "required": [
-      "rows",
-      "gaps",
-      "rest",
-      "pruning",
-      "full"
+      "schemaVersion",
+      "ok",
+      "command",
+      "summary",
+      "next",
+      "nextCall"
     ]
   }
 }

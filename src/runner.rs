@@ -11,6 +11,7 @@ use crate::envelope::Envelope;
 use crate::json::{self, Value};
 use crate::operators;
 use crate::process::{self, TimedRun};
+use crate::report;
 use crate::worktree;
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -31,6 +32,19 @@ struct Scored {
     kind: Verdict,
     duration_ms: u64,
     timed_out: bool,
+    killed_by: Vec<String>,
+}
+
+impl Scored {
+    fn new(kind: Verdict, duration_ms: u64, timed_out: bool) -> Scored {
+        Scored { kind, duration_ms, timed_out, killed_by: Vec::new() }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PythonKind {
+    Pytest,
+    Unittest,
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +52,9 @@ struct BaselineRun {
     kind: Baseline,
     duration_ms: Option<u64>,
     template: Option<String>,
+    /// Set after a Python baseline has looked for a coverage map.
+    /// `lines.json` is that map. An empty string means coverage.py wrote nothing.
+    line_map: Option<String>,
 }
 
 pub fn run(flags: &Flags) -> Envelope {
@@ -100,11 +117,13 @@ pub fn run(flags: &Flags) -> Envelope {
     let timeout_ms = flags.int("timeout-ms", DEFAULT_TIMEOUT_MS).max(1);
     let timeout = Duration::from_millis(timeout_ms);
     let max_selected = selection_cap(flags);
-    let has_line_map = flags.get("line-map").is_some_and(usable_line_map);
-    let map = match flags.get("line-map") {
-        Some(path) if has_line_map => decide::parse_test_map(&fs::read_to_string(path).unwrap_or_default()),
-        _ => decide::TestMap::slip(),
+    let caller_line_map = flags.get("line-map").filter(|path| usable_line_map(path)).map(PathBuf::from);
+    let mut has_line_map = caller_line_map.is_some();
+    let mut map = match &caller_line_map {
+        Some(path) => load_map_file(path),
+        None => decide::TestMap::slip(),
     };
+    let python = python_kind(&suite);
     let shared_tests = flags.get("tests").and_then(|path| read_test_list(Path::new(path)));
     let baseline_tests = if map.chooses {
         map.all_names()
@@ -122,25 +141,63 @@ pub fn run(flags: &Flags) -> Envelope {
             &suite,
         );
     }
-    let (baseline_suite, whole_suite) = match decide::render_suite(&suite, &baseline_tests) {
-        Ok(rendered) => rendered,
-        Err(name) => {
-            return attach_suite(
-                Envelope::new(
-                    false,
-                    command,
-                    format!("The selected name {name} cannot be placed in the suite command."),
-                    "Nothing was mutated with that command.",
-                ),
-                &suite,
-            )
+    let whole_suite = !command_asks_for_names(&suite);
+    let baseline_suite = if python.is_some() {
+        suite.clone()
+    } else {
+        match decide::render_suite(&suite, &baseline_tests) {
+            Ok((rendered, _)) => rendered,
+            Err(name) => {
+                return attach_suite(
+                    Envelope::new(
+                        false,
+                        command,
+                        format!("The selected name {name} cannot be placed in the suite command."),
+                        "Nothing was mutated with that command.",
+                    ),
+                    &suite,
+                )
+            }
         }
     };
 
-    let baseline = match prepared_baseline(&package, &out, &suite, &baseline_suite, timeout) {
-        Ok(value) => value,
-        Err(envelope) => return attach_suite(envelope, &suite),
+    let mut baseline = if let Some(kind) = python {
+        match python_baseline(&package, &out, &suite, kind, &baseline_tests, caller_line_map.is_none(), timeout) {
+            Ok(value) => value,
+            Err(envelope) => return attach_suite(envelope, &suite),
+        }
+    } else {
+        match prepared_baseline(&package, &out, &suite, &baseline_suite, timeout) {
+            Ok(value) => value,
+            Err(envelope) => return attach_suite(envelope, &suite),
+        }
     };
+    if python.is_some() && baseline.kind == Baseline::Green && caller_line_map.is_none() {
+        if baseline.line_map.as_deref() == Some("lines.json") {
+            let path = out.join("lines.json");
+            if path.to_str().is_some_and(usable_line_map) {
+                map = load_map_file(&path);
+                has_line_map = true;
+            }
+        } else if baseline.line_map.is_none() {
+            match adopt_coverage(&out) {
+                Some(adopted) => {
+                    baseline.line_map = Some("lines.json".into());
+                    map = adopted;
+                    has_line_map = true;
+                }
+                None => baseline.line_map = Some(String::new()),
+            }
+        }
+    }
+    let caller_is_auto = caller_line_map.as_ref().is_some_and(|path| path == &out.join("lines.json"));
+    let launcher_selects = python.is_some()
+        && map.chooses
+        && baseline.line_map.as_deref() == Some("lines.json")
+        && (caller_line_map.is_none() || caller_is_auto);
+    if launcher_selects {
+        has_line_map = true;
+    }
     if let Err(error) = write_baseline(&out, &baseline) {
         return attach_suite(
             Envelope::new(false, command, error, "The baseline record could not be written."),
@@ -155,10 +212,11 @@ pub fn run(flags: &Flags) -> Envelope {
     if let Some(message) = decide::scale_stop(has_line_map, baseline.duration_ms, pending.len()) {
         let ids = pending.iter().map(|mutant| mutant.id.as_str()).collect::<Vec<_>>().join("\n");
         let _ = fs::write(out.join("not-started.txt"), format!("{ids}\n"));
-        return attach_suite(
-            Envelope::new(false, command, message, "The ids are in not-started.txt. Nothing was started."),
-            &suite,
-        );
+        let mut next = "The ids are in not-started.txt. Nothing was started.".to_string();
+        if python.is_some() && caller_line_map.is_none() {
+            next.push_str(" coverage.py did not write a map.");
+        }
+        return attach_suite(Envelope::new(false, command, message, &next), &suite);
     }
 
     let confirm = match flags.get("confirm-count") {
@@ -193,7 +251,7 @@ pub fn run(flags: &Flags) -> Envelope {
         }
     };
     let batch: Vec<&LoadedMutant> = pending.into_iter().take(budget).collect();
-    if whole_suite && map.chooses {
+    if whole_suite && map.chooses && !launcher_selects {
         let named = batch.iter().any(|mutant| {
             mutant.tests.is_empty() && !names_for_mutant(&package, mutant, &map, shared_tests.as_deref()).is_empty()
         });
@@ -209,6 +267,7 @@ pub fn run(flags: &Flags) -> Envelope {
             );
         }
     }
+    if python.is_none() {
     for mutant in &batch {
         let tests = names_for_mutant(&package, mutant, &map, shared_tests.as_deref());
         let selection = decide::cap_tests(&tests, max_selected);
@@ -223,6 +282,7 @@ pub fn run(flags: &Flags) -> Envelope {
                 &suite,
             );
         }
+    }
     }
 
     let git = worktree::is_git_repo(&package);
@@ -253,7 +313,7 @@ pub fn run(flags: &Flags) -> Envelope {
         }
         let tests = names_for_mutant(&package, mutant, &map, shared_tests.as_deref());
         if map.chooses && mutant.tests.is_empty() && tests.is_empty() {
-            let scored = Scored { kind: Verdict::NoCoverage, duration_ms: 0, timed_out: false };
+            let scored = Scored::new(Verdict::NoCoverage, 0, false);
             let selection = Selection { tests: Vec::new(), selected_count: 0, capped: false };
             if let Err(error) = write_result(&path, mutant, &scored, &selection, max_selected, None) {
                 return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
@@ -266,24 +326,40 @@ pub fn run(flags: &Flags) -> Envelope {
         if selection.capped {
             any_capped = true;
         }
-        let rendered = match decide::render_suite(&suite, &selection.tests) {
-            Ok((rendered, _)) => rendered,
-            Err(name) => {
-                return attach_suite(
-                    Envelope::new(
-                        false,
-                        command,
-                        format!("The selected name {name} cannot be placed in the suite command."),
-                        "Nothing was mutated with that command.",
-                    ),
-                    &suite,
-                )
+        let (rendered, launch) = if let Some(kind) = python {
+            let pass_names = launcher_selects || command_asks_for_names(&suite);
+            let names = if pass_names { selection.tests.clone() } else { Vec::new() };
+            let reporter = match ensure_reporter(&out, kind) {
+                Ok(path) => path,
+                Err(error) => {
+                    return attach_suite(
+                        Envelope::new(false, command, error, "The Python reporter could not be written."),
+                        &suite,
+                    )
+                }
+            };
+            let display = python_display(&reporter, &names);
+            (display, Some(PythonLaunch { reporter, names, kind }))
+        } else {
+            match decide::render_suite(&suite, &selection.tests) {
+                Ok((rendered, _)) => (rendered, None),
+                Err(name) => {
+                    return attach_suite(
+                        Envelope::new(
+                            false,
+                            command,
+                            format!("The selected name {name} cannot be placed in the suite command."),
+                            "Nothing was mutated with that command.",
+                        ),
+                        &suite,
+                    )
+                }
             }
         };
         let scored = if git {
-            score_git(&package, &run_id, mutant, &rendered, timeout)
+            score_git(&package, &run_id, mutant, &rendered, launch.as_ref(), timeout)
         } else {
-            score_copy(&package, mutant, &rendered, timeout)
+            score_copy(&package, mutant, &rendered, launch.as_ref(), timeout)
         };
         if let Err(error) = write_result(&path, mutant, &scored, &selection, max_selected, Some(&rendered)) {
             return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
@@ -319,7 +395,7 @@ pub fn run(flags: &Flags) -> Envelope {
     } else if map.chooses {
         next.push_str(" The line map named tests.");
     }
-    if whole_suite {
+    if whole_suite && !launcher_selects {
         next.push_str(" The suite ran whole.");
     }
     if flags.int("workers", 1) > 1 {
@@ -329,7 +405,8 @@ pub fn run(flags: &Flags) -> Envelope {
         .with_extra("counts", counts_value(&counts))
         .with_extra("finished", Value::Int(counts.finished as i64));
     if !still.is_empty() {
-        envelope.next_call = Some(resume_argv(flags, &suite, timeout_ms));
+        let auto = if launcher_selects { Some(out.join("lines.json")) } else { None };
+        envelope.next_call = Some(resume_argv(flags, &suite, timeout_ms, auto.as_deref()));
     }
     envelope
 }
@@ -365,7 +442,7 @@ fn names_for_mutant(package: &Path, mutant: &LoadedMutant, map: &decide::TestMap
 
 /// Resume argv for the same out dir. The suite command is the template, not a rendered `{tests}` line.
 /// `--confirm-count` is omitted so the next call chunks again.
-fn resume_argv(flags: &Flags, suite: &str, timeout_ms: u64) -> Vec<String> {
+fn resume_argv(flags: &Flags, suite: &str, timeout_ms: u64, auto_line_map: Option<&Path>) -> Vec<String> {
     let mut argv = vec![
         "mutate".into(),
         "run".into(),
@@ -383,6 +460,9 @@ fn resume_argv(flags: &Flags, suite: &str, timeout_ms: u64) -> Vec<String> {
     if let Some(path) = flags.get("line-map") {
         argv.push("--line-map".into());
         argv.push(path.to_string());
+    } else if let Some(path) = auto_line_map {
+        argv.push("--line-map".into());
+        argv.push(path.display().to_string());
     }
     if let Some(path) = flags.get("tests") {
         argv.push("--tests".into());
@@ -438,9 +518,84 @@ pub fn discover(package: &Path) -> Result<String, String> {
         node_suite(package)
     } else if package.join("pytest.ini").is_file() || package.join("pyproject.toml").is_file() {
         Ok("python3 -m pytest".into())
+    } else if package.join("Package.swift").is_file() {
+        Ok("swift test".into())
+    } else if root_file_ends_with(package, &[".sln", ".csproj", ".fsproj"]) {
+        Ok("dotnet test".into())
+    } else if package.join("Makefile").is_file()
+        || package.join("makefile").is_file()
+        || package.join("GNUmakefile").is_file()
+    {
+        Ok("make test".into())
+    } else if package.join(".mocharc.json").is_file()
+        || package.join(".mocharc.js").is_file()
+        || package.join(".mocharc.cjs").is_file()
+        || package.join(".mocharc.yml").is_file()
+        || package.join(".mocharc.yaml").is_file()
+    {
+        Ok("mocha".into())
+    } else if package.join("CMakeLists.txt").is_file() {
+        Ok("ctest --output-on-failure".into())
+    } else if has_unittest(package) {
+        Ok("python3 -m unittest discover".into())
+    } else if root_file_ends_with(package, &[".cob", ".cbl", ".cobol"]) {
+        Ok("cobc -xj".into())
+    } else if root_file_ends_with(package, &[".c", ".cc", ".cpp", ".h", ".hpp"]) {
+        Ok("make test".into())
+    } else if root_file_ends_with(package, &[".s", ".S", ".asm"]) {
+        Ok("make test".into())
     } else {
         Err("This layout has no suite Probatio can see.".into())
     }
+}
+
+/// Regular files in the package root whose names end with one of `suffixes`.
+/// `file_type` does not follow symlinks, and this does not walk child directories.
+fn root_file_ends_with(package: &Path, suffixes: &[&str]) -> bool {
+    let Ok(read) = fs::read_dir(package) else {
+        return false;
+    };
+    read.flatten().any(|entry| {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            return false;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        suffixes.iter().any(|suffix| name.ends_with(suffix))
+    })
+}
+
+/// `test_*.py` in the package root, or in a direct child directory named `tests`.
+fn has_unittest(package: &Path) -> bool {
+    if dir_has_test_py(package) {
+        return true;
+    }
+    let Ok(read) = fs::read_dir(package) else {
+        return false;
+    };
+    for entry in read.flatten() {
+        if entry.file_name().to_string_lossy() != "tests" {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            return dir_has_test_py(&entry.path());
+        }
+    }
+    false
+}
+
+fn dir_has_test_py(dir: &Path) -> bool {
+    let Ok(read) = fs::read_dir(dir) else {
+        return false;
+    };
+    read.flatten().any(|entry| {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            return false;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("test_") && name.ends_with(".py")
+    })
 }
 
 fn node_suite(package: &Path) -> Result<String, String> {
@@ -490,6 +645,7 @@ fn baseline_from(timed: &TimedRun) -> BaselineRun {
         kind: decide::judge_baseline(timed.spawned, timed.timed_out, timed.status, &timed.stdout, &timed.stderr),
         duration_ms: Some(duration_ms(timed.duration)),
         template: None,
+        line_map: None,
     }
 }
 
@@ -510,11 +666,15 @@ fn write_baseline(out: &Path, baseline: &BaselineRun) -> Result<(), String> {
         None => Value::Null,
     };
     let recorded = baseline.template.clone().unwrap_or_default();
-    let value = Value::object(vec![
+    let mut entries = vec![
         ("judgement", Value::String(judgement.into())),
         ("durationMs", duration),
         ("command", Value::String(recorded)),
-    ]);
+    ];
+    if let Some(line_map) = &baseline.line_map {
+        entries.push(("lineMap", Value::String(line_map.clone())));
+    }
+    let value = Value::object(entries);
     fs::write(out.join("baseline.json"), json::stringify(&value)).map_err(|error| error.to_string())
 }
 
@@ -532,14 +692,25 @@ fn read_baseline(path: &Path) -> Option<BaselineRun> {
     };
     let duration_ms = value.get("durationMs").and_then(Value::as_int).map(|ms| ms as u64);
     let template = value.get("command").and_then(Value::as_str).map(str::to_string);
-    Some(BaselineRun { kind, duration_ms, template })
+    let line_map = match value.get("lineMap") {
+        Some(Value::String(text)) => Some(text.clone()),
+        _ => None,
+    };
+    Some(BaselineRun { kind, duration_ms, template, line_map })
 }
 
 fn result_path(out: &Path, id: &str) -> PathBuf {
     out.join("results").join(format!("{id}.json"))
 }
 
-fn score_git(package: &Path, run_id: &str, mutant: &LoadedMutant, suite: &str, timeout: Duration) -> Scored {
+fn score_git(
+    package: &Path,
+    run_id: &str,
+    mutant: &LoadedMutant,
+    suite: &str,
+    python: Option<&PythonLaunch>,
+    timeout: Duration,
+) -> Scored {
     let dest = worktree::worktree_dest(run_id);
     if let Err(message) = worktree::add_worktree(package, &dest, run_id) {
         return error_scored(message);
@@ -548,12 +719,12 @@ fn score_git(package: &Path, run_id: &str, mutant: &LoadedMutant, suite: &str, t
         worktree::remove_worktree(package, &dest);
         return error_scored(message);
     }
-    let scored = apply_and_run(&dest, package, mutant, suite, timeout);
+    let scored = apply_and_run(&dest, package, mutant, suite, python, timeout);
     worktree::remove_worktree(package, &dest);
     scored
 }
 
-fn score_copy(package: &Path, mutant: &LoadedMutant, suite: &str, timeout: Duration) -> Scored {
+fn score_copy(package: &Path, mutant: &LoadedMutant, suite: &str, python: Option<&PythonLaunch>, timeout: Duration) -> Scored {
     let dest = std::env::temp_dir().join(format!("probatio-copy-{}-{}", worktree::run_id_for(package), mutant.id));
     let _ = fs::remove_dir_all(&dest);
     if let Err(message) = copy_tree(package, &dest) {
@@ -563,12 +734,19 @@ fn score_copy(package: &Path, mutant: &LoadedMutant, suite: &str, timeout: Durat
         let _ = fs::remove_dir_all(&dest);
         return error_scored(message);
     }
-    let scored = apply_and_run(&dest, package, mutant, suite, timeout);
+    let scored = apply_and_run(&dest, package, mutant, suite, python, timeout);
     let _ = fs::remove_dir_all(&dest);
     scored
 }
 
-fn apply_and_run(root: &Path, package: &Path, mutant: &LoadedMutant, suite: &str, timeout: Duration) -> Scored {
+fn apply_and_run(
+    root: &Path,
+    package: &Path,
+    mutant: &LoadedMutant,
+    suite: &str,
+    python: Option<&PythonLaunch>,
+    timeout: Duration,
+) -> Scored {
     let file = match safe_join(root, &mutant.file) {
         Ok(path) => path,
         Err(message) => return error_scored(message),
@@ -587,18 +765,17 @@ fn apply_and_run(root: &Path, package: &Path, mutant: &LoadedMutant, suite: &str
     if let Err(error) = fs::write(&file, updated) {
         return error_scored(error.to_string());
     }
-    let timed = process::run_shell_with_bin_root(suite, Some(root), Some(package), timeout);
-    let report = format!("{}\n{}", timed.stdout, timed.stderr);
-    Scored {
-        kind: decide::classify(timed.timed_out, timed.status, &report),
-        duration_ms: duration_ms(timed.duration),
-        timed_out: timed.timed_out,
-    }
+    let timed = if let Some(launch) = python {
+        launch_python(root, package, &launch.reporter, launch.kind, &launch.names, None, timeout)
+    } else {
+        process::run_shell_with_bin_root(suite, Some(root), Some(package), timeout)
+    };
+    score_timed(timed, python.is_some())
 }
 
 fn error_scored(message: String) -> Scored {
     let _ = message;
-    Scored { kind: Verdict::Error, duration_ms: 0, timed_out: false }
+    Scored::new(Verdict::Error, 0, false)
 }
 
 fn safe_join(root: &Path, file: &str) -> Result<PathBuf, String> {
@@ -668,6 +845,12 @@ fn write_result(
     }
     if selection.capped {
         entries.push(("capNote", Value::String(decide::cap_note(max_selected))));
+    }
+    if !scored.killed_by.is_empty() {
+        entries.push((
+            "killedBy",
+            Value::Array(scored.killed_by.iter().cloned().map(Value::String).collect()),
+        ));
     }
     fs::write(path, json::stringify(&Value::Object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect())))
         .map_err(|error| error.to_string())
@@ -800,6 +983,186 @@ fn load_one(value: &Value) -> Result<LoadedMutant, String> {
     })
 }
 
+const PYTEST_REPORTER: &str = include_str!("reporters/pytest_reporter.py");
+const UNITTEST_REPORTER: &str = include_str!("reporters/unittest_reporter.py");
+
+struct PythonLaunch {
+    reporter: PathBuf,
+    names: Vec<String>,
+    kind: PythonKind,
+}
+
+/// The two discovery commands, with an optional `{tests}` or `{tests,}` token and nothing else.
+fn python_kind(command: &str) -> Option<PythonKind> {
+    let without = command.replace("{tests,}", " ").replace("{tests}", " ");
+    let words: Vec<&str> = without.split_whitespace().collect();
+    match words.as_slice() {
+        ["python3", "-m", "pytest"] => Some(PythonKind::Pytest),
+        ["python3", "-m", "unittest", "discover"] => Some(PythonKind::Unittest),
+        _ => None,
+    }
+}
+
+fn python_baseline(
+    package: &Path,
+    out: &Path,
+    template: &str,
+    kind: PythonKind,
+    baseline_tests: &[String],
+    collect: bool,
+    timeout: Duration,
+) -> Result<BaselineRun, Envelope> {
+    let path = out.join("baseline.json");
+    if let Some(saved) = read_baseline(&path) {
+        let same = saved.kind == Baseline::Green && saved.template.as_deref() == Some(template);
+        if same && (!collect || saved.line_map.is_some()) {
+            return Ok(saved);
+        }
+    }
+    let reporter = ensure_reporter(out, kind).map_err(|error| {
+        Envelope::new(false, "mutate.run", error, "The Python reporter could not be written.".to_string())
+    })?;
+    let names: Vec<String> = if command_asks_for_names(template) { baseline_tests.to_vec() } else { Vec::new() };
+    let coverage_path = out.join("coverage-raw.json");
+    let coverage = if collect && kind == PythonKind::Pytest { Some(coverage_path.as_path()) } else { None };
+    let timed = launch_python(package, package, &reporter, kind, &names, coverage, timeout);
+    Ok(BaselineRun {
+        kind: judge_python_baseline(&timed),
+        duration_ms: Some(duration_ms(timed.duration)),
+        template: Some(template.to_string()),
+        line_map: None,
+    })
+}
+
+fn judge_python_baseline(timed: &TimedRun) -> Baseline {
+    if !timed.spawned {
+        return Baseline::MissingTool;
+    }
+    if timed.timed_out {
+        return Baseline::TimedOut;
+    }
+    if timed.status == Some(127) && timed.stderr.contains("command not found") {
+        return Baseline::MissingTool;
+    }
+    match report::parse(&timed.stdout) {
+        Some(report) => report::judge_baseline(&report),
+        None => Baseline::NoReport,
+    }
+}
+
+fn launch_python(
+    root: &Path,
+    bin_root: &Path,
+    reporter: &Path,
+    kind: PythonKind,
+    names: &[String],
+    coverage: Option<&Path>,
+    timeout: Duration,
+) -> TimedRun {
+    let args = reporter_args(reporter, kind, names);
+    let owned = python_env(root, coverage);
+    let env: Vec<(&str, &str)> = owned.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
+    process::run_argv("python3", &args, Some(root), Some(bin_root), timeout, &env)
+}
+
+fn python_env(root: &Path, coverage: Option<&Path>) -> Vec<(String, String)> {
+    let mut env = vec![("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string())];
+    let src = root.join("src");
+    if src.is_dir() {
+        let mut pythonpath = src.display().to_string();
+        if let Ok(existing) = std::env::var("PYTHONPATH") {
+            if !existing.is_empty() {
+                pythonpath.push(':');
+                pythonpath.push_str(&existing);
+            }
+        }
+        env.push(("PYTHONPATH".to_string(), pythonpath));
+    }
+    if let Some(path) = coverage {
+        env.push(("PROBATIO_COVERAGE_MAP".to_string(), path.display().to_string()));
+        env.push(("COVERAGE_CORE".to_string(), "ctrace".to_string()));
+    }
+    env
+}
+
+fn reporter_args(reporter: &Path, kind: PythonKind, names: &[String]) -> Vec<String> {
+    let mut args = vec![reporter.display().to_string()];
+    match kind {
+        PythonKind::Pytest => args.extend(names.iter().cloned()),
+        PythonKind::Unittest => {
+            if !names.is_empty() {
+                args.push("--pattern".into());
+                args.push(unittest_pattern(names));
+            }
+        }
+    }
+    args
+}
+
+fn unittest_pattern(names: &[String]) -> String {
+    let alts = names.iter().map(|name| regex_escape(name)).collect::<Vec<_>>().join("|");
+    format!("^(?:{alts})$")
+}
+
+fn regex_escape(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn python_display(reporter: &Path, names: &[String]) -> String {
+    let mut text = format!("python3 {}", reporter.display());
+    for name in names {
+        text.push(' ');
+        text.push_str(name);
+    }
+    text
+}
+
+fn ensure_reporter(out: &Path, kind: PythonKind) -> Result<PathBuf, String> {
+    fs::create_dir_all(out).map_err(|error| error.to_string())?;
+    let path = out.join("reporter.py");
+    let text = match kind {
+        PythonKind::Pytest => PYTEST_REPORTER,
+        PythonKind::Unittest => UNITTEST_REPORTER,
+    };
+    fs::write(&path, text).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn score_timed(timed: TimedRun, python: bool) -> Scored {
+    let duration_ms = duration_ms(timed.duration);
+    if timed.timed_out {
+        return Scored::new(Verdict::Timeout, duration_ms, true);
+    }
+    if python {
+        if let Some(report) = report::parse(&timed.stdout) {
+            let judged = report::judge_mutant(&report);
+            return Scored { kind: judged.verdict, duration_ms, timed_out: false, killed_by: judged.killed_by };
+        }
+    }
+    let text = format!("{}\n{}", timed.stdout, timed.stderr);
+    Scored::new(decide::classify(false, timed.status, &text), duration_ms, false)
+}
+
+fn load_map_file(path: &Path) -> decide::TestMap {
+    let raw = fs::read_to_string(path).unwrap_or_default();
+    let text = crate::coverage::normalize(&raw).unwrap_or(raw);
+    decide::parse_test_map(&text)
+}
+
+fn adopt_coverage(out: &Path) -> Option<decide::TestMap> {
+    let raw = fs::read_to_string(out.join("coverage-raw.json")).ok()?;
+    let text = crate::coverage::normalize(&raw)?;
+    fs::write(out.join("lines.json"), &text).ok()?;
+    Some(decide::parse_test_map(&text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,6 +1237,98 @@ mod tests {
         assert_eq!(discover(&package).unwrap(), "mvn -B test");
         fs::write(package.join("go.mod"), "module example\n").unwrap();
         assert_eq!(discover(&package).unwrap(), "go test ./...");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn discovery_names_each_marker_without_launching_it() {
+        let root = temp("discover-markers");
+        let cases = [
+            ("go.mod", "module example\n", "go test ./..."),
+            ("Cargo.toml", "[package]\nname = \"ex\"\n", "cargo test"),
+            ("pom.xml", "<project/>", "mvn -B test"),
+            ("package.json", "{\"scripts\":{\"test\":\"npm test\"}}\n", "npm test"),
+            ("package.json", "{}\n", "node --test"),
+            ("pytest.ini", "[pytest]\n", "python3 -m pytest"),
+            ("pyproject.toml", "[project]\nname = \"ex\"\n", "python3 -m pytest"),
+            ("Package.swift", "", "swift test"),
+            ("App.sln", "", "dotnet test"),
+            ("Demo.csproj", "", "dotnet test"),
+            ("Lib.fsproj", "", "dotnet test"),
+            ("Makefile", "test:\n\ttrue\n", "make test"),
+            ("makefile", "test:\n\ttrue\n", "make test"),
+            ("GNUmakefile", "test:\n\ttrue\n", "make test"),
+            (".mocharc.json", "{}\n", "mocha"),
+            (".mocharc.js", "", "mocha"),
+            (".mocharc.cjs", "", "mocha"),
+            (".mocharc.yml", "", "mocha"),
+            (".mocharc.yaml", "", "mocha"),
+            ("CMakeLists.txt", "", "ctest --output-on-failure"),
+            ("test_widget.py", "", "python3 -m unittest discover"),
+            ("tests/test_widget.py", "", "python3 -m unittest discover"),
+            ("prog.cob", "", "cobc -xj"),
+            ("prog.cbl", "", "cobc -xj"),
+            ("prog.cobol", "", "cobc -xj"),
+            ("widget.c", "", "make test"),
+            ("widget.cc", "", "make test"),
+            ("widget.cpp", "", "make test"),
+            ("widget.h", "", "make test"),
+            ("widget.hpp", "", "make test"),
+            ("add.s", "", "make test"),
+            ("add.S", "", "make test"),
+            ("routine.asm", "", "make test"),
+        ];
+        for (index, (marker, body, command)) in cases.iter().enumerate() {
+            let package = root.join(index.to_string());
+            fs::create_dir_all(&package).unwrap();
+            let path = package.join(marker);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, body).unwrap();
+            let found = discover(&package).unwrap_or_else(|error| panic!("{marker}: {error}"));
+            assert_eq!(found, *command, "{marker}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discovery_names_go_mod_ahead_of_a_makefile() {
+        let package = temp("discover-go-make");
+        fs::write(package.join("go.mod"), "module example\n").unwrap();
+        fs::write(package.join("Makefile"), "test:\n\ttrue\n").unwrap();
+        assert_eq!(discover(&package).unwrap(), "go test ./...");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn discovery_names_invalid_package_json_does_not_fall_through() {
+        let package = temp("discover-bad-json");
+        fs::write(package.join("package.json"), "{\n").unwrap();
+        fs::write(package.join("Makefile"), "test:\n\ttrue\n").unwrap();
+        assert_eq!(discover(&package).unwrap_err(), "package.json is not valid JSON");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn discovery_names_unmarked_layout_errors_without_launching() {
+        let package = temp("discover-none");
+        fs::write(package.join("README"), "no suite\n").unwrap();
+        fs::write(package.join("src/widget.c"), "int x;\n").unwrap();
+        fs::write(package.join("src/test_widget.py"), "").unwrap();
+        fs::create_dir_all(package.join("tests/nested")).unwrap();
+        fs::write(package.join("tests/nested/test_widget.py"), "").unwrap();
+        fs::create_dir(package.join("widget.c")).unwrap();
+        std::os::unix::fs::symlink(package.join("src/widget.c"), package.join("linked.c")).unwrap();
+        std::os::unix::fs::symlink(package.join("src/test_widget.py"), package.join("tests/test_widget.py")).unwrap();
+        assert_eq!(discover(&package).unwrap_err(), "This layout has no suite Probatio can see.");
+        let outside = package.join("outside-tests");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("test_widget.py"), "").unwrap();
+        let via = package.join("via");
+        fs::create_dir(&via).unwrap();
+        std::os::unix::fs::symlink(&outside, via.join("tests")).unwrap();
+        assert_eq!(discover(&via).unwrap_err(), "This layout has no suite Probatio can see.");
         let _ = fs::remove_dir_all(&package);
     }
 
@@ -1382,6 +1837,239 @@ mod tests {
         assert_no_kill_count(&unnamed);
         assert!(unnamed.summary.contains("asks for test names"), "{}", unnamed.summary);
         assert!(!log.exists() || fs::read_to_string(&log).unwrap().lines().count() == spawned + 1);
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn python_commands_are_recognized_only_when_they_are_the_discovery_strings() {
+        assert_eq!(python_kind("python3 -m pytest"), Some(PythonKind::Pytest));
+        assert_eq!(python_kind("python3 -m pytest {tests}"), Some(PythonKind::Pytest));
+        assert_eq!(python_kind("python3 -m unittest discover"), Some(PythonKind::Unittest));
+        assert_eq!(python_kind("python3 -m unittest discover {tests,}"), Some(PythonKind::Unittest));
+        assert_eq!(python_kind("pytest"), None);
+        assert_eq!(python_kind(".venv/bin/pytest"), None);
+        assert_eq!(python_kind("python3 -m pytest -q"), None);
+    }
+
+    fn py_package(name: &str, gate: &str, methods: &str) -> PathBuf {
+        let package = temp(name);
+        fs::write(package.join("gate.py"), gate).unwrap();
+        fs::create_dir_all(package.join("tests")).unwrap();
+        fs::write(package.join("tests/__init__.py"), "").unwrap();
+        let body = format!(
+            "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).resolve().parents[1]))\nimport unittest\nimport gate\n\nclass GateTests(unittest.TestCase):\n{methods}\n"
+        );
+        fs::write(package.join("tests/test_gate.py"), body).unwrap();
+        package
+    }
+
+    fn hand_mutant(package: &Path, original: &str, replacement: &str) -> PathBuf {
+        let text = fs::read_to_string(package.join("gate.py")).unwrap();
+        let start = text.find(original).unwrap();
+        let patches = package.join("patches");
+        fs::create_dir_all(&patches).unwrap();
+        let body = format!(
+            "{{\"mutants\":[{{\"id\":\"mhand\",\"file\":\"gate.py\",\"start\":{start},\"end\":{},\"original\":{},\"replacement\":{}}}]}}\n",
+            start + original.len(),
+            json_string(original),
+            json_string(replacement),
+        );
+        fs::write(patches.join("mutants.json"), body).unwrap();
+        patches
+    }
+
+    fn json_string(text: &str) -> String {
+        json::stringify_compact(&Value::String(text.to_string()))
+    }
+
+    fn one_result(out: &Path) -> Value {
+        let mut files = fs::read_dir(out.join("results")).unwrap().map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(files.len(), 1, "{files:?}");
+        json::parse(&fs::read_to_string(&files[0]).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_python_assertion_is_a_kill_and_the_name_stays_off_the_envelope() {
+        let package = py_package(
+            "py-kill",
+            "def gate(n):\n    return n > 0\n",
+            "    def test_zero(self):\n        self.assertFalse(gate.gate(0))\n    def test_one(self):\n        self.assertTrue(gate.gate(1))\n",
+        );
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &[]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(!envelope.render("").contains("killedBy"), "{}", envelope.render(""));
+        assert!(!envelope.summary.contains("test_zero"), "{}", envelope.summary);
+        let body = one_result(&out);
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"));
+        let names = match body.get("killedBy") {
+            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+            other => panic!("killedBy was {other:?}"),
+        };
+        assert!(names.iter().any(|name| name.contains("test_zero")), "{names:?}");
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn a_python_load_failure_does_not_build_and_a_value_error_is_a_kill() {
+        let gate = "def gate(n):\n    return n > 0\n";
+        let methods = "    def test_zero(self):\n        self.assertFalse(gate.gate(0))\n    def test_one(self):\n        self.assertTrue(gate.gate(1))\n";
+        let package = py_package("py-load", gate, methods);
+        let patches = hand_mutant(&package, "return n > 0", "return n >");
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &[]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(envelope.summary.contains("did not build"), "{}", envelope.summary);
+        assert_eq!(one_result(&out).get("outcome").and_then(Value::as_str), Some("unviable"));
+
+        let value_patches = hand_mutant(&package, "return n > 0", "raise ValueError(\"boom\")");
+        let value_out = package.join("value");
+        let value = run_with(&package, &value_patches, &value_out, &[]);
+        assert!(value.ok, "{}", value.summary);
+        assert_eq!(one_result(&value_out).get("outcome").and_then(Value::as_str), Some("killed"));
+
+        let shell_out = package.join("shell");
+        let shell = run_with(
+            &package,
+            &value_patches,
+            &shell_out,
+            &["--suite-command", "python3 -m unittest tests.test_gate"],
+        );
+        assert!(shell.ok, "{}", shell.summary);
+        assert_eq!(one_result(&shell_out).get("outcome").and_then(Value::as_str), Some("unviable"));
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn a_large_python_suite_without_coverage_stops_before_a_mutant() {
+        let mut expr = String::new();
+        for index in 0..20 {
+            if index > 0 {
+                expr.push_str(" and ");
+            }
+            expr.push_str(&format!("n > {index}"));
+        }
+        let package = py_package(
+            "py-large",
+            &format!("def gate(n):\n    return {expr}\n"),
+            "    def test_high(self):\n        self.assertTrue(gate.gate(100))\n    def test_low(self):\n        self.assertFalse(gate.gate(-1))\n",
+        );
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &[]);
+        assert_no_kill_count(&envelope);
+        assert!(envelope.summary.contains("No line map"), "{}", envelope.summary);
+        assert!(envelope.next.contains("coverage.py did not write a map"), "{}", envelope.next);
+        assert!(fs::read_dir(out.join("results")).is_err() || fs::read_dir(out.join("results")).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn a_planted_coverage_map_selects_python_tests_and_a_caller_map_wins() {
+        let gate = "def low(n):\n    return n > 0\n\ndef high(n):\n    return n > 10\n";
+        let methods = "    def test_low(self):\n        self.assertFalse(gate.low(0))\n        self.assertTrue(gate.low(1))\n    def test_high(self):\n        self.assertFalse(gate.high(10))\n        self.assertTrue(gate.high(11))\n";
+        let package = py_package("py-map", gate, methods);
+        let text = fs::read_to_string(package.join("gate.py")).unwrap();
+        let low_line = decide::line_at(&text, text.find("return n > 0").unwrap());
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(
+            out.join("coverage-raw.json"),
+            format!(r#"{{"files":{{"gate.py":{{"{low_line}":["tests.test_gate.GateTests.test_low"]}}}}}}"#),
+        )
+        .unwrap();
+        let envelope = run_with(&package, &patches, &out, &[]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        let listed = json::parse(&fs::read_to_string(patches.join("mutants.json")).unwrap()).unwrap();
+        let items = match listed.get("mutants") {
+            Some(Value::Array(items)) => items.clone(),
+            other => panic!("mutants was {other:?}"),
+        };
+        let mut saw_named = false;
+        let mut saw_dark = false;
+        for item in &items {
+            let id = item.get("id").and_then(Value::as_str).unwrap();
+            let start = item.get("start").and_then(Value::as_int).unwrap() as usize;
+            let line = decide::line_at(&text, start);
+            let body = json::parse(&fs::read_to_string(out.join("results").join(format!("{id}.json"))).unwrap()).unwrap();
+            if line == low_line {
+                let command = body.get("command").and_then(Value::as_str).unwrap_or("");
+                assert!(command.contains("tests.test_gate.GateTests.test_low"), "{command}");
+                saw_named = true;
+            } else {
+                assert_eq!(body.get("outcome").and_then(Value::as_str), Some("no coverage"));
+                assert!(body.get("command").is_none(), "{body:?}");
+                saw_dark = true;
+            }
+        }
+        assert!(saw_named && saw_dark);
+
+        let caller = package.join("caller.json");
+        fs::write(&caller, "{\"files\":{}}\n").unwrap();
+        let caller_out = package.join("caller");
+        fs::create_dir_all(&caller_out).unwrap();
+        fs::write(
+            caller_out.join("coverage-raw.json"),
+            format!(r#"{{"files":{{"gate.py":{{"{low_line}":["tests.test_gate.GateTests.test_low"]}}}}}}"#),
+        )
+        .unwrap();
+        let kept = run_with(
+            &package,
+            &patches,
+            &caller_out,
+            &["--suite-command", "python3 -m unittest discover", "--line-map", &caller.display().to_string()],
+        );
+        assert!(kept.ok, "{}", kept.summary);
+        assert!(!caller_out.join("lines.json").exists());
+        for entry in fs::read_dir(caller_out.join("results")).unwrap() {
+            let body = json::parse(&fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+            assert_eq!(body.get("outcome").and_then(Value::as_str), Some("no coverage"));
+        }
+
+        let named = package.join("named.json");
+        fs::write(
+            &named,
+            format!(r#"{{"files":{{"gate.py":[{{"start":{low_line},"end":{low_line},"tests":["tests.test_gate.GateTests.test_low"]}}]}}}}"#),
+        )
+        .unwrap();
+        let refused = run_with(
+            &package,
+            &patches,
+            &package.join("refused"),
+            &["--suite-command", "python3 -m unittest discover", "--line-map", &named.display().to_string()],
+        );
+        assert_no_kill_count(&refused);
+        assert!(refused.summary.contains("no {{tests}} token") || refused.summary.contains("no {tests} token"), "{}", refused.summary);
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    #[test]
+    fn pytest_coverage_writes_a_line_map_when_the_module_imports() {
+        let pytest = Command::new("python3").args(["-c", "import pytest, coverage"]).status();
+        if !pytest.map(|status| status.success()).unwrap_or(false) {
+            return;
+        }
+        let package = temp("py-cov");
+        fs::write(package.join("pytest.ini"), "[pytest]\n").unwrap();
+        fs::write(package.join("gate.py"), "def gate(n):\n    return n > 0\n").unwrap();
+        fs::create_dir_all(package.join("tests")).unwrap();
+        fs::write(
+            package.join("tests/test_gate.py"),
+            "import gate\n\ndef test_zero():\n    assert gate.gate(0) is False\n\ndef test_one():\n    assert gate.gate(1) is True\n",
+        )
+        .unwrap();
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &[]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(out.join("lines.json").is_file());
+        let body = one_result(&out);
+        assert_ne!(body.get("outcome").and_then(Value::as_str), Some("no coverage"));
+        let command = body.get("command").and_then(Value::as_str).unwrap_or("");
+        assert!(command.contains("test_"), "{command}");
         let _ = fs::remove_dir_all(&package);
     }
 

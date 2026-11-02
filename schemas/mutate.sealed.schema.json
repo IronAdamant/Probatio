@@ -1,6 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.sealed.schema.json",
+  "flags": [
+    {"name": "package", "required": true},
+    {"name": "out", "required": true}
+  ],
   "title": "probatio mutate.sealed",
   "description": "Printed instead of the run report when the sealed label leaked into it. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",

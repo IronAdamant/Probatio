@@ -1,6 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/ledger.check.schema.json",
+  "flags": [
+    {"name": "ledger", "required": true}
+  ],
   "title": "probatio ledger.check",
   "description": "Runs every ledger bug and compares each outcome with ledger/<id>.golden.json. A caught bug that is not caught now is a regression. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
@@ -131,13 +134,12 @@
   },
   "then": {
     "required": [
-      "caught",
-      "total",
-      "regressed",
-      "changed",
-      "unrecorded",
-      "rows",
-      "run"
+      "schemaVersion",
+      "ok",
+      "command",
+      "summary",
+      "next",
+      "nextCall"
     ]
   }
 }

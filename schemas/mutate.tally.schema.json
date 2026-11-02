@@ -1,6 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.tally.schema.json",
+  "flags": [
+    {"name": "out", "required": true},
+    {"name": "state", "required": false},
+    {"name": "root", "required": false}
+  ],
   "title": "probatio mutate.tally",
   "description": "Reads a finished run: how many tests killed a mutant, which tests saw no kill in this batch, and one gap per survivor. Never deletes a test. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
@@ -126,12 +131,12 @@
   },
   "then": {
     "required": [
-      "keep",
-      "noKillsYet",
-      "gaps",
-      "rest",
-      "pruning",
-      "full"
+      "schemaVersion",
+      "ok",
+      "command",
+      "summary",
+      "next",
+      "nextCall"
     ]
   }
 }

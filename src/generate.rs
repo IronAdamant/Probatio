@@ -29,8 +29,20 @@ pub fn generate(flags: &Flags) -> Envelope {
         return missing(command, "src is not a directory");
     }
     let limit = flags.int("max-mutants", u64::MAX) as usize;
+    let wide = match flags.get("operators") {
+        None | Some("core") => false,
+        Some("wide") => true,
+        Some(_) => {
+            return Envelope::new(
+                false,
+                command,
+                "operators must be core or wide.",
+                "core is the default. wide adds arithmetic, integer constants, and dropped statements.",
+            );
+        }
+    };
     let mut found = Vec::new();
-    let bounded = match walk(&root, &package, &mut found, limit) {
+    let bounded = match walk(&root, &package, &mut found, limit, wide) {
         Ok(stopped) => stopped,
         Err(message) => return Envelope::new(false, command, message, "Fix the source tree and generate again."),
     };
@@ -73,7 +85,7 @@ fn missing(command: &str, message: &str) -> Envelope {
     Envelope::new(false, command, message.to_string(), "Pass the missing flag and run the command again.")
 }
 
-fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>, limit: usize) -> Result<bool, String> {
+fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>, limit: usize, wide: bool) -> Result<bool, String> {
     let mut entries = fs::read_dir(dir).map_err(|error| error.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
@@ -88,7 +100,7 @@ fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>, limit: usize) -> Re
             continue;
         }
         if file_type.is_dir() {
-            if walk(&path, package, found, limit)? {
+            if walk(&path, package, found, limit, wide)? {
                 return Ok(true);
             }
             continue;
@@ -102,7 +114,7 @@ fn walk(dir: &Path, package: &Path, found: &mut Vec<Mutant>, limit: usize) -> Re
             continue;
         }
         let Ok(text) = fs::read_to_string(&path) else { continue };
-        found.extend(operators::mutants_in(&relative, &text));
+        found.extend(operators::scan(&relative, &text, wide));
         if found.len() >= limit {
             found.truncate(limit);
             return Ok(true);

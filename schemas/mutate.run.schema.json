@@ -1,6 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.run.schema.json",
+  "flags": [
+    {"name": "package", "required": true},
+    {"name": "patches", "required": true},
+    {"name": "out", "required": true},
+    {"name": "suite-command", "required": false},
+    {"name": "line-map", "required": false},
+    {"name": "timeout-ms", "required": false},
+    {"name": "tests", "required": false},
+    {"name": "max-selected", "required": false},
+    {"name": "confirm-count", "required": false},
+    {"name": "workers", "required": false}
+  ],
   "title": "probatio mutate.run",
   "description": "Scores a batch of mutants against the project's own suite. mutate sealed prints this shape too, with fixEdited, olderTestCatch, and miss. A kill only from tests the fix commit edited is a miss: ok is false and killed is 0. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
@@ -255,21 +267,12 @@
   },
   "then": {
     "required": [
-      "killed",
-      "unviable",
-      "unviableIds",
-      "survived",
-      "flaky",
-      "timeouts",
-      "errors",
-      "noCoverage",
-      "notStarted",
-      "gaps",
-      "rest",
-      "kills",
-      "commit",
-      "runId",
-      "full"
+      "schemaVersion",
+      "ok",
+      "command",
+      "summary",
+      "next",
+      "nextCall"
     ]
   }
 }

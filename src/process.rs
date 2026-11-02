@@ -31,7 +31,21 @@ pub struct TimedRun {
 }
 
 pub fn run_group(program: &str, args: &[String], dir: Option<&Path>, timeout: Duration) -> TimedRun {
-    run_group_with_path(program, args, dir, timeout, None)
+    run_group_with_path(program, args, dir, timeout, None, &[])
+}
+
+/// Argv launch. `env` is added to the inherited environment. It is not a replacement.
+/// `bin_root` and `dir` supply `node_modules/.bin` the same way a shell suite does.
+pub fn run_argv(
+    program: &str,
+    args: &[String],
+    dir: Option<&Path>,
+    bin_root: Option<&Path>,
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> TimedRun {
+    let path = suite_path(bin_root, dir);
+    run_group_with_path(program, args, dir, timeout, path, env)
 }
 
 fn run_group_with_path(
@@ -40,6 +54,7 @@ fn run_group_with_path(
     dir: Option<&Path>,
     timeout: Duration,
     path: Option<OsString>,
+    env: &[(&str, &str)],
 ) -> TimedRun {
     let mut command = Command::new(program);
     command
@@ -50,6 +65,9 @@ fn run_group_with_path(
         .process_group(0);
     if let Some(dir) = dir {
         command.current_dir(dir);
+    }
+    for (key, value) in env {
+        command.env(key, value);
     }
     if let Some(path) = path {
         command.env("PATH", path);
@@ -138,7 +156,7 @@ pub fn run_shell_with_bin_root(
     timeout: Duration,
 ) -> TimedRun {
     let path = suite_path(bin_root, dir);
-    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path)
+    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path, &[])
 }
 
 fn suite_path(bin_root: Option<&Path>, dir: Option<&Path>) -> Option<OsString> {

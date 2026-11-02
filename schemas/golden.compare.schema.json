@@ -1,6 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/golden.compare.schema.json",
+  "flags": [
+    {"name": "golden", "required": true},
+    {"name": "actual", "required": true}
+  ],
   "title": "probatio golden.compare",
   "description": "Scores the same mutants with only the unit tests and with only the golden replay. Nothing is deleted. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
@@ -136,16 +140,12 @@
   },
   "then": {
     "required": [
-      "operators",
-      "unitKills",
-      "goldenKills",
-      "both",
-      "unitOnly",
-      "goldenOnly",
-      "rest",
-      "unit",
-      "golden",
-      "pruning"
+      "schemaVersion",
+      "ok",
+      "command",
+      "summary",
+      "next",
+      "nextCall"
     ]
   }
 }
