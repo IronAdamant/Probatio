@@ -9,7 +9,7 @@ const PACKAGES = {
   "darwin-arm64": "probatio-darwin-arm64",
   "darwin-x64": "probatio-darwin-x64",
   "linux-x64": "probatio-linux-x64",
-  "win32-x64": "probatio-win32-x64",
+  "win32-x64": "@iron_adamant/probatio-win32-x64",
 };
 
 function fail(message) {
@@ -17,13 +17,15 @@ function fail(message) {
   process.exit(1);
 }
 
-function binaryPath() {
-  const key = process.platform + "-" + process.arch;
+function binaryPath(platform, arch) {
+  const hostPlatform = platform || process.platform;
+  const hostArch = arch || process.arch;
+  const key = hostPlatform + "-" + hostArch;
   const name = PACKAGES[key];
   if (!name) {
     fail("no binary for " + key + ". This install ships darwin-arm64, darwin-x64, linux-x64, and win32-x64.");
   }
-  const file = process.platform === "win32" ? "probatio.exe" : "probatio";
+  const file = hostPlatform === "win32" ? "probatio.exe" : "probatio";
   let root;
   try {
     root = path.dirname(require.resolve(name + "/package.json"));
@@ -37,12 +39,14 @@ function binaryPath() {
   return binary;
 }
 
-const child = childProcess.spawn(binaryPath(), process.argv.slice(2), { stdio: "inherit" });
+if (require.main === module) {
+  const child = childProcess.spawn(binaryPath(), process.argv.slice(2), { stdio: "inherit" });
+  child.on("error", function (error) {
+    fail("could not start the binary: " + error.message);
+  });
+  child.on("exit", function (code) {
+    process.exit(code === null ? 1 : code);
+  });
+}
 
-child.on("error", function (error) {
-  fail("could not start the binary: " + error.message);
-});
-
-child.on("exit", function (code) {
-  process.exit(code === null ? 1 : code);
-});
+module.exports = { PACKAGES: PACKAGES, binaryPath: binaryPath };

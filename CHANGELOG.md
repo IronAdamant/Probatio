@@ -8,7 +8,7 @@ The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, the
 
 ## 0.5.0
 
-The npm package installs the Rust binary. `npm install probatio` runs a Node launcher, which starts the binary in the matching platform package: `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, or `probatio-win32-x64`. A `v*` tag builds the GitHub release assets and publishes those packages. The MCP server reports this crate version.
+The npm package installs the Rust binary. `npm install probatio` runs a Node launcher, which starts the binary in the matching platform package: `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, or `@iron_adamant/probatio-win32-x64`. A `v*` tag builds the GitHub release assets and publishes those packages. The MCP server reports this crate version.
 
 Five runs of each command on one machine, median milliseconds with the min and max in parentheses. TypeScript is commit `c5cd175` (`node /tmp/probatio-ts/dist/cli.js`, Node 22.23.4). Rust is `target/release/probatio` from this checkout. The machine was Linux 6.12, x86_64, 4 cores, Intel Xeon, 16 GB.
 

@@ -8,10 +8,10 @@ A release needs a green `cargo test` on Linux, macOS, and Windows, and a reason 
 2. Wait until `test` and `self-score` are green on that commit.
 3. Tag that commit and push the tag: `git tag -a v<version> -m v<version> && git push origin v<version>`.
 4. `.github/workflows/release.yml` builds `x86_64-unknown-linux-musl`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, and `x86_64-pc-windows-msvc`, then attaches those binaries to the GitHub release.
-5. The same workflow publishes `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, and `probatio-win32-x64`, then `probatio`. It uses `NPM_TOKEN` (`secrets.NPM_TOKEN`) and passes `--provenance` when this npm supports that flag. If `NPM_TOKEN` is not set, the job logs `NPM_TOKEN is not set. Skipping npm publish.` and leaves the GitHub release in place. A package version that is already on npm is skipped, so a failed publish can be run again.
+5. The same workflow publishes `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, and `@iron_adamant/probatio-win32-x64`, then `probatio`. The Windows package is scoped because npm refused the unscoped name. It is published with `--access public`. The workflow uses `NPM_TOKEN` (`secrets.NPM_TOKEN`) and passes `--provenance` when this npm supports that flag. If `NPM_TOKEN` is not set, the job logs `NPM_TOKEN is not set. Skipping npm publish.` and leaves the GitHub release in place. A package version that is already on npm is skipped, so a failed publish can be run again.
 6. To publish an existing tag without rebuilding, run the `npm publish` workflow from `main` and pass the tag (`v0.5.0`). It downloads that GitHub release and runs `scripts/npm-publish.sh`. It does not build binaries and it does not create another GitHub release.
 7. A later commit can record the publish date and gitHead. The tag stays on the version commit.
 
-`scripts/npm-pack-local.sh` builds tarballs for a local install check. It does not publish. The `@probatio` npm scope belongs to a different project, so the platform packages are unscoped.
+`scripts/npm-pack-local.sh` builds tarballs for a local install check. It does not publish. The `@probatio` npm scope belongs to a different project. Linux and macOS packages stay unscoped. The Windows package is `@iron_adamant/probatio-win32-x64`.
 
 Do not publish from a laptop, and do not publish a version that has no CHANGELOG entry.
