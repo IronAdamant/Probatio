@@ -145,16 +145,25 @@ fn run_group_with_path(
     let mut stderr = child.stderr.take();
     let stdout_handle = thread::spawn(move || read_pipe(stdout.take()));
     let stderr_handle = thread::spawn(move || read_pipe(stderr.take()));
-    let mut timed_out = false;
+    let timed_out = false;
     let status = loop {
         if start.elapsed() >= timeout {
-            timed_out = true;
-            // Kill the whole tree before waiting. On Windows, `child.kill` leaves
-            // grandchildren holding the pipes, and the reader threads never see EOF.
+            // Kill what we can, then return. Joining the pipe readers waits until every
+            // grandchild closes stdout. Git Bash `sleep` breaks out of `taskkill /T`,
+            // so that join would last as long as the grandchild.
             kill_tree(pid);
             let _ = child.kill();
             let _ = child.wait();
-            break None;
+            drop(stdout_handle);
+            drop(stderr_handle);
+            return TimedRun {
+                spawned: true,
+                status: None,
+                timed_out: true,
+                duration: start.elapsed(),
+                stdout: String::new(),
+                stderr: String::new(),
+            };
         }
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
@@ -163,8 +172,8 @@ fn run_group_with_path(
                 kill_tree(pid);
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stdout_handle.join();
-                let _ = stderr_handle.join();
+                drop(stdout_handle);
+                drop(stderr_handle);
                 return TimedRun {
                     spawned: true,
                     status: None,
