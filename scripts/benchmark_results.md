@@ -2,14 +2,14 @@
 
 Linux 6.12.94+ x86_64, 4 cores, Intel(R) Xeon(R) Processor, 16387280 kB. Rust binary /agent/repos/Probatio/target/release/probatio. TypeScript cli /tmp/probatio-ts/dist/cli.js under node.
 
-Five runs of each command. The cell is median milliseconds, then min-max. Peak RSS is the highest VmHWM in kilobytes seen during those runs. TypeScript is c5cd175. Rust is the release binary built in this checkout. Node was 22.23.4 and pytest was 9.2.0. itsdangerous is a depth-1 clone of pallets/itsdangerous; `freezegun` was installed so the suite could collect. Kill counts matched: JS and Python samples were 2 killed and 4 survived of 6, and itsdangerous was 7 killed and 3 survived of 10. Generate counts matched too (6, 6, and 10).
+Five runs of each command. The cell is median milliseconds, then min-max. Peak RSS is the highest VmHWM in kilobytes seen during those runs. TypeScript is c5cd175. Rust is the release binary built in this checkout. Node was 22.23.4 and pytest was 9.2.0. itsdangerous is a depth-1 clone of pallets/itsdangerous; `freezegun` was installed so the suite could collect. Kill counts matched: JS and Python samples were 2 killed and 4 survived of 6, and itsdangerous was 7 killed and 3 survived of 10. Generate counts matched too (6, 6, and 10). The JS run row was measured again after `node --test` started passing `--test-concurrency` and `--test-timeout`. The kill count stayed 2 killed and 4 survived.
 
 | Command | TypeScript ms | Rust ms | TS peak RSS kB | Rust peak RSS kB |
 | --- | --- | --- | --- | --- |
 | startup schema | 287 (287-297) | 11 (11-11) | 119936 | 1116 |
 | generate JS sample | 307 (307-308) | 11 (11-11) | 121836 | 1104 |
 | generate Python sample | 307 (297-308) | 11 (11-11) | 122316 | 1120 |
-| run JS sample, no confirm | 800 (791-803) | 723 (722-806) | 124232 | 59708 |
+| run JS sample, no confirm | 832 (823-853) | 743 (722-762) | 125924 | 59748 |
 | run Python sample, no confirm | 1429 (1418-1450) | 1130 (1090-1171) | 122440 | 32272 |
 | run Python sample, workers 4, no confirm | 805 (796-851) | 491 (471-495) | 123144 | 32220 |
 | generate itsdangerous src | 369 (360-371) | 21 (21-21) | 131304 | 3620 |

@@ -40,13 +40,28 @@ pub fn add_worktree(repo: &Path, dest: &Path, run_id: &str) -> Result<(), String
 }
 
 /// A second worktree for a parallel worker. It does not remove the other slots.
+/// The checkout is HEAD, then the working tree is copied over it.
 pub fn add_fresh(repo: &Path, dest: &Path) -> Result<(), String> {
+    add_at(repo, dest, "HEAD", true)
+}
+
+/// Check out `commit`. `overlay` copies the working tree on top, which a named commit does not want.
+pub fn add_at(repo: &Path, dest: &Path, commit: &str, overlay: bool) -> Result<(), String> {
     if dest.exists() {
         let _ = std::fs::remove_dir_all(dest);
     }
-    git(repo, &["worktree", "add", "--detach", &dest.display().to_string(), "HEAD"])?;
-    overlay_working_tree(repo, dest)?;
+    git(repo, &["worktree", "add", "--detach", &dest.display().to_string(), commit])?;
+    if overlay {
+        overlay_working_tree(repo, dest)?;
+    }
     Ok(())
+}
+
+pub fn resolve_commit(repo: &Path, commit: &str) -> Result<String, String> {
+    let spec = format!("{commit}^{{commit}}");
+    let sha = git(repo, &["rev-parse", "--verify", &spec]).map_err(|_| "that commit does not resolve".to_string())?;
+    let sha = sha.trim().to_string();
+    if sha.is_empty() { Err("that commit does not resolve".into()) } else { Ok(sha) }
 }
 
 /// HEAD is the checkout. Generate read the working tree, so the worktree has to match it

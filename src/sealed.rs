@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::args::Flags;
 use crate::envelope::Envelope;
@@ -30,6 +31,26 @@ pub fn sealed(flags: &Flags) -> Envelope {
     }
     if !report.ok {
         return report;
+    }
+    if let Some(fix) = flags.get("fix") {
+        let repo = flags.get("repo").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(flags.get("package").unwrap_or(".")));
+        if crate::worktree::resolve_commit(&repo, fix).is_err() {
+            return Envelope::new(false, command, "that commit does not resolve", "Pass --fix as a commit that exists. The hidden test stays hidden.");
+        }
+        let kills = killed_names(&out);
+        let edited = fix_edited_killers(&repo, fix, &flags.texts("hide"), &kills);
+        let not_started = fs::read_to_string(out.join("not-started.txt")).unwrap_or_default();
+        let waiting = not_started.lines().any(|line| !line.trim().is_empty());
+        if !waiting && !kills.is_empty() && !edited.older {
+            let summary = format!(
+                "{} Every kill came from a test edited by the fix commit ({}). That is the fix's own test, so no older test caught the bug.",
+                report.summary, edited.files.join(", ")
+            );
+            return Envelope::new(false, command, summary, "Record this as a miss. Do not restore the hidden test.")
+                .with_extra("killed", Value::Int(0))
+                .with_extra("miss", Value::Bool(true))
+                .with_extra("fixEdited", Value::Array(edited.files.into_iter().map(Value::String).collect()));
+        }
     }
     let killed = report.extra.iter().find(|(key, _)| key == "killed").and_then(|(_, value)| value.as_int()).unwrap_or(0);
     if killed == 0 {
@@ -82,13 +103,11 @@ pub fn check_kill(flags: &Flags) -> Envelope {
         "--timeout-ms".into(),
         flags.get("timeout-ms").or_else(|| flags.get("suite-timeout-ms")).unwrap_or("60000").to_string(),
     ];
-    if !flags.bool("confirm", true) {
-        args.push("--no-confirm".into());
-    }
     if let Some(suite) = flags.get("suite-command") {
         args.push("--suite-command".into());
         args.push(suite.to_string());
     }
+    crate::runner::forward_run_flags(&mut args, flags);
     let report = crate::runner::run(&Flags::parse(&args));
     let suite_green = fs::read_to_string(out.join("baseline.json"))
         .ok()
@@ -185,6 +204,102 @@ fn find_mutant(dir: &Path, id: &str) -> Option<Value> {
     items.iter().find(|item| item.get("id").and_then(Value::as_str) == Some(id)).cloned()
 }
 
+struct Edited {
+    files: Vec<String>,
+    older: bool,
+}
+
+fn killed_names(out: &Path) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let Ok(read) = fs::read_dir(out.join("results")) else { return rows };
+    for entry in read.flatten() {
+        let Ok(text) = fs::read_to_string(entry.path()) else { continue };
+        let Ok(value) = json::parse(&text) else { continue };
+        if value.get("outcome").and_then(Value::as_str) != Some("killed") {
+            continue;
+        }
+        let names = match value.get("killedBy") {
+            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            _ => Vec::new(),
+        };
+        rows.push(names);
+    }
+    rows
+}
+
+fn fix_edited_killers(repo: &Path, commit: &str, hide: &[String], kills: &[Vec<String>]) -> Edited {
+    if kills.is_empty() {
+        return Edited { files: Vec::new(), older: false };
+    }
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["diff", "--name-only", &format!("{commit}^"), commit])
+        .output();
+    let Ok(diff) = diff else {
+        return Edited { files: Vec::new(), older: true };
+    };
+    if !diff.status.success() {
+        return Edited { files: Vec::new(), older: true };
+    }
+    let hidden: Vec<String> = hide.iter().map(|rel| rel.replace('\\', "/")).collect();
+    let edited: Vec<String> = String::from_utf8_lossy(&diff.stdout)
+        .lines()
+        .map(|line| line.trim().replace('\\', "/"))
+        .filter(|line| !line.is_empty() && !hidden.iter().any(|item| item == line))
+        .collect();
+    let mut files = Vec::new();
+    let mut older = false;
+    for kill in kills {
+        if kill.is_empty() {
+            older = true;
+            continue;
+        }
+        for id in kill {
+            if let Some(file) = edited.iter().find(|file| killer_in_file(id, file, repo, commit)) {
+                if !files.contains(file) {
+                    files.push(file.clone());
+                }
+            } else {
+                older = true;
+            }
+        }
+    }
+    files.sort();
+    Edited { files, older }
+}
+
+fn killer_in_file(id: &str, rel: &str, repo: &Path, commit: &str) -> bool {
+    if id.contains(rel) {
+        return true;
+    }
+    let base = Path::new(rel).file_name().and_then(|name| name.to_str()).unwrap_or(rel);
+    if id.starts_with(&format!("{base}::")) {
+        return true;
+    }
+    let stem = base.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(base);
+    if !stem.is_empty() && id.split(|ch: char| matches!(ch, '.' | '#' | ':' | '/')).any(|part| part == stem) {
+        return true;
+    }
+    let leaf = id.rsplit("::").next().unwrap_or(id).rsplit('#').next().unwrap_or(id);
+    let leaf = leaf.trim();
+    if leaf.len() < 4 {
+        return false;
+    }
+    let shown = Command::new("git").arg("-C").arg(repo).args(["show", &format!("{commit}:{rel}")]).output();
+    let Ok(shown) = shown else { return false };
+    if !shown.status.success() {
+        return false;
+    }
+    let body = String::from_utf8_lossy(&shown.stdout);
+    body.contains(&format!("\"{leaf}\""))
+        || body.contains(&format!("'{leaf}'"))
+        || body.contains(&format!("`{leaf}`"))
+        || body.contains(&format!("{leaf}("))
+        || body.contains(&format!("def {leaf}"))
+        || body.contains(&format!("fn {leaf}"))
+}
+
 fn missing(command: &str, message: &str) -> Envelope {
     Envelope::new(false, command, message.to_string(), "Pass the missing flag and run the command again.")
         .with_extra("done", Value::Bool(false))
@@ -232,5 +347,30 @@ mod tests {
         assert!(!envelope.ok, "{}", envelope.summary);
         assert!(envelope.summary.contains("patch is missing"), "{}", envelope.summary);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fix_that_edited_the_killing_test_is_a_miss() {
+        let root = std::env::temp_dir().join(format!("probatio-fix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("tests")).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git").arg("-C").arg(&root).args(args).status().unwrap();
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "a@b.c"]);
+        git(&["config", "user.name", "A"]);
+        fs::write(root.join("tests/old.test.js"), "test('keeps the old gate', () => {});\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "base"]);
+        fs::write(root.join("tests/old.test.js"), "test('keeps the new gate', () => {});\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "fix"]);
+        let edited = fix_edited_killers(&root, "HEAD", &[], &[vec!["tests/old.test.js::keeps the new gate".into()]]);
+        assert!(!edited.older, "{:?}", edited.files);
+        assert_eq!(edited.files, ["tests/old.test.js"]);
+        let kept = fix_edited_killers(&root, "HEAD", &[], &[vec!["tests/untouched.test.js::other".into()]]);
+        assert!(kept.older);
+        let _ = fs::remove_dir_all(&root);
     }
 }

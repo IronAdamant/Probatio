@@ -34,7 +34,7 @@ pub struct TimedRun {
 }
 
 pub fn run_group(program: &str, args: &[String], dir: Option<&Path>, timeout: Duration) -> TimedRun {
-    run_group_with_path(program, args, dir, timeout, None, &[])
+    run_group_with_path(program, args, dir, timeout, None, &[], &[])
 }
 
 /// Argv launch. `env` is added to the inherited environment. It is not a replacement.
@@ -47,8 +47,52 @@ pub fn run_argv(
     timeout: Duration,
     env: &[(&str, &str)],
 ) -> TimedRun {
+    run_argv_prepared(program, args, dir, bin_root, timeout, env, &[])
+}
+
+pub fn run_argv_prepared(
+    program: &str,
+    args: &[String],
+    dir: Option<&Path>,
+    bin_root: Option<&Path>,
+    timeout: Duration,
+    env: &[(&str, &str)],
+    unset: &[&str],
+) -> TimedRun {
     let path = suite_path(bin_root, dir);
-    run_group_with_path(program, args, dir, timeout, path, env)
+    run_group_with_path(program, args, dir, timeout, path, env, unset)
+}
+
+/// Drop the variables a nested suite must not inherit, then the caller's `--unset` keys.
+fn scrub_inherited(command: &mut Command, unset: &[&str]) {
+    let inherited: Vec<String> = std::env::vars()
+        .filter_map(|(key, _)| {
+            if key == "NODE_TEST_CONTEXT"
+                || key.starts_with("NODE_TEST_")
+                || key == "PROBATIO_COVERAGE_MAP"
+                || key == "PROBATIO_PACKAGE_ROOT"
+                || key == "PROBATIO_CHILD_DIR"
+            {
+                Some(key)
+            } else {
+                None
+            }
+        })
+        .collect();
+    for key in inherited {
+        command.env_remove(key);
+    }
+    for key in unset {
+        command.env_remove(key);
+    }
+    if let Ok(options) = std::env::var("NODE_OPTIONS") {
+        let kept: Vec<&str> = options.split_whitespace().filter(|part| !part.ends_with("child-lines.mjs")).collect();
+        if kept.is_empty() {
+            command.env_remove("NODE_OPTIONS");
+        } else if kept.join(" ") != options {
+            command.env("NODE_OPTIONS", kept.join(" "));
+        }
+    }
 }
 
 fn run_group_with_path(
@@ -58,6 +102,7 @@ fn run_group_with_path(
     timeout: Duration,
     path: Option<OsString>,
     env: &[(&str, &str)],
+    unset: &[&str],
 ) -> TimedRun {
     let mut command = Command::new(program);
     command
@@ -73,6 +118,7 @@ fn run_group_with_path(
     for (key, value) in env {
         command.env(key, value);
     }
+    scrub_inherited(&mut command, unset);
     if let Some(path) = path {
         command.env("PATH", path);
     }
@@ -175,8 +221,19 @@ pub fn run_shell_with_env(
     timeout: Duration,
     env: &[(&str, &str)],
 ) -> TimedRun {
+    run_shell_prepared(script, dir, bin_root, timeout, env, &[])
+}
+
+pub fn run_shell_prepared(
+    script: &str,
+    dir: Option<&Path>,
+    bin_root: Option<&Path>,
+    timeout: Duration,
+    env: &[(&str, &str)],
+    unset: &[&str],
+) -> TimedRun {
     let path = suite_path(bin_root, dir);
-    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path, env)
+    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path, env, unset)
 }
 
 fn suite_path(bin_root: Option<&Path>, dir: Option<&Path>) -> Option<OsString> {
@@ -291,5 +348,20 @@ mod tests {
         assert_eq!(result.status, Some(0));
         assert!(result.stdout.contains("ok"));
         let _ = Proc::new("true").status();
+    }
+
+    static NODE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn node_options_drops_the_coverage_hook() {
+        let _guard = NODE_ENV.lock().unwrap_or_else(|poison| poison.into_inner());
+        std::env::set_var("NODE_OPTIONS", "--import /tmp/child-lines.mjs --max-old-space-size=64");
+        std::env::set_var("NODE_TEST_FOO", "1");
+        let timed = run_shell("printf '%s' \"$NODE_OPTIONS|$NODE_TEST_FOO\"", None, Duration::from_secs(5));
+        std::env::remove_var("NODE_OPTIONS");
+        std::env::remove_var("NODE_TEST_FOO");
+        assert!(timed.spawned, "{}", timed.stderr);
+        assert_eq!(timed.stdout, "--import --max-old-space-size=64|", "{}", timed.stderr);
+        assert!(!timed.stdout.contains("child-lines"));
     }
 }

@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::envelope::Envelope;
 use crate::json::{self, Value};
 
-pub fn report(scores: &str, direct: &str, out: &Path, patch_dirs: &[String]) -> Result<Envelope, String> {
+pub fn report(scores: &str, direct: &str, out: &Path, patch_dirs: &[String], kills: Option<&[(String, i64)]>) -> Result<Envelope, String> {
     let mut rows = parse_union(scores)?;
     rows.extend(parse_direct(direct)?);
     if rows.is_empty() {
@@ -69,6 +69,15 @@ pub fn report(scores: &str, direct: &str, out: &Path, patch_dirs: &[String]) -> 
             ]),
         )
         .with_extra("full", Value::String(full.display().to_string()));
+    if let Some(kills) = kills {
+        let total: i64 = kills.iter().map(|(_, count)| *count).sum();
+        envelope = envelope
+            .with_extra("recordedKills", Value::Int(total))
+            .with_extra("killTests", Value::Int(kills.len() as i64));
+        if !kills.is_empty() {
+            envelope.summary = format!("{} Recorded kill counts cover {} tests.", envelope.summary, kills.len());
+        }
+    }
     fs::create_dir_all(out).map_err(|error| error.to_string())?;
     fs::write(&full, envelope.render("")).map_err(|error| error.to_string())?;
     let _ = &mut envelope;
@@ -373,10 +382,14 @@ mod tests {
         fs::write(dir.join("patches/m1.patch"), "--- a/src/a.py\n+++ b/src/a.py\n@@ -3,1 +3,1 @@\n-a and b\n+a or b\n").unwrap();
         let scores = "set\tholdout (4)\nfull\t3\n";
         let direct = "small suite\nholdout: 1/4 missed m1\n";
-        let envelope = report(scores, direct, &dir.join("out"), &[dir.join("patches").display().to_string()]).unwrap();
+        let envelope = report(scores, direct, &dir.join("out"), &[dir.join("patches").display().to_string()], None).unwrap();
         assert!(envelope.ok, "{}", envelope.summary);
         assert!(envelope.summary.contains("1 gaps"), "{}", envelope.summary);
         assert!(dir.join("out/matrix.json").is_file());
+        let kills = vec![("A".into(), 2), ("B".into(), 1)];
+        let counted = report(scores, direct, &dir.join("out2"), &[dir.join("patches").display().to_string()], Some(&kills)).unwrap();
+        assert_eq!(counted.extra.iter().find(|(key, _)| key == "recordedKills").and_then(|(_, value)| value.as_int()), Some(3));
+        assert!(counted.summary.contains("2 tests"), "{}", counted.summary);
         let _ = fs::remove_dir_all(&dir);
     }
 }

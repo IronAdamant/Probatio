@@ -22,8 +22,17 @@ pub fn verify(flags: &Flags) -> Envelope {
     let base = flags.get("base").unwrap_or("HEAD").to_string();
     let commit = flags.get("commit").unwrap_or("HEAD").to_string();
     let max_mutants = flags.int("max-mutants", 4).unwrap_or(4) as usize;
+    let max_tests = flags.parse_int("max-tests").unwrap_or(None).map(|value| value as usize);
     let wide = flags.get("operators") == Some("wide");
-    let repo = git_root(&package);
+    let repo = if let Some(path) = flags.get("repo") {
+        let path = PathBuf::from(path);
+        if !path.is_dir() || git(&path, &["rev-parse", "--is-inside-work-tree"]).is_err() {
+            return Envelope::new(false, command, "repo is not a git repository", "Pass --repo as the git root.");
+        }
+        Some(path)
+    } else {
+        git_root(&package)
+    };
     let Some(repo) = repo else {
         return baseline_only(flags, &package, &out, "package is not inside a git repository. Pass --repo.");
     };
@@ -61,6 +70,9 @@ pub fn verify(flags: &Flags) -> Envelope {
                 chosen.push((point, text.clone()));
             }
         }
+    }
+    if let Some(max_tests) = max_tests {
+        package_files.truncate(max_tests);
     }
     chosen.sort_by(|a, b| a.0.file.cmp(&b.0.file).then(a.0.line.cmp(&b.0.line)).then(a.0.op.cmp(&b.0.op)));
     let not_run = chosen.len().saturating_sub(max_mutants);
@@ -100,6 +112,12 @@ pub fn verify(flags: &Flags) -> Envelope {
         "--timeout-ms".into(),
         flags.get("timeout-ms").unwrap_or("120000").to_string(),
     ];
+    if flags.get("timeout-ms").is_none() {
+        if let Some(minutes) = flags.get("max-minutes") {
+            run_flags.push("--max-minutes".into());
+            run_flags.push(minutes.to_string());
+        }
+    }
     if let Some(suite) = flags.get("suite-command") {
         run_flags.push("--suite-command".into());
         run_flags.push(suite.to_string());

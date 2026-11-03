@@ -40,6 +40,10 @@ pub fn hex12(bytes: &[u8]) -> String {
     hex_prefix(bytes, 12)
 }
 
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex_prefix(bytes, 64)
+}
+
 pub fn hex_prefix(bytes: &[u8], chars: usize) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = sha256(bytes);

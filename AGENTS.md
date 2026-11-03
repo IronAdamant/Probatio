@@ -48,7 +48,7 @@ Resolution order:
 2. A non-empty string `suiteCommand` in `<package>/.probatio.json`.
 3. Discovery at the package root.
 
-Any other key in `.probatio.json` is ignored, including `env`, `testLine`, and `passLine`. Invalid JSON stops the run. The next line says to fix the file. Discovery is not used. A flag or a `.probatio.json` command does not require `package.json` to parse.
+`env` must be an object of strings and is passed to the suite. `testLine` and `passLine` must be regular expressions. A shell suite names a test from each `testLine` match, and a non-zero exit blames the last of those lines unless `passLine` was printed. A pattern that matches nothing is not a report. Any other key is ignored. Invalid JSON, or a pattern that does not compile, stops the run. The next line says to fix the file. Discovery is not used. A flag or a `.probatio.json` command does not require `package.json` to parse.
 
 Discovery does not launch the tool:
 
@@ -165,7 +165,7 @@ Do not publish around the release checks. A release needs a reason in the CHANGE
 - Do not treat a kill as proof the change is safe. Golden and contract checks are what say the expected result is still the expected result.
 - Refuse an unmapped suite. When there is no line map and more than 30 mutants are pending, stop before the first mutant.
 - Do not restore a hidden test.
-- Do not patch a project's files or environment to make one repository pass. `.probatio.json` is read for `suiteCommand` only.
+- Do not patch a project's files or environment to make one repository pass. `.probatio.json` is read for `suiteCommand`, `env`, `testLine`, and `passLine`.
 - A golden table that kills what a unit test kills is evidence. `golden compare` deletes nothing, and neither do you without a reason in the commit.
 
 A trustworthy loop, after the green baseline:

@@ -301,7 +301,7 @@ fn shipped_run_reads_probatio_json_and_the_flag_wins() {
     let patches = root.join("patches").display().to_string();
     std::fs::write(
         root.join(".probatio.json"),
-        "{\n  \"suiteCommand\": \"echo from-file\",\n  \"env\": {\"A\": \"1\"},\n  \"testLine\": \"ignored\",\n  \"passLine\": \"ignored\"\n}\n",
+        "{\n  \"suiteCommand\": \"echo from-file\",\n  \"env\": {\"A\": \"1\"},\n  \"testLine\": \"from-\",\n  \"passLine\": \"from-file\"\n}\n",
     )
     .unwrap();
     std::fs::write(root.join("package.json"), "{}\n").unwrap();

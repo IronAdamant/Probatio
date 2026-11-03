@@ -212,8 +212,7 @@ fn file_text(package: &Path, file: &Path, commit: &str, working_tree: bool) -> R
         let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
         return Ok(Loaded { text, source: "working-tree" });
     };
-    let abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-    let rel = abs.strip_prefix(&root).unwrap_or(file).to_string_lossy().replace('\\', "/");
+    let rel = crate::run_options::git_relative(&root, file);
     let spec = format!("{commit}:{rel}");
     let output = Command::new("git").arg("-C").arg(&root).args(["show", &spec]).output().map_err(|error| error.to_string())?;
     if !output.status.success() {

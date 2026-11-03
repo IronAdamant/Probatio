@@ -178,7 +178,14 @@ fn ledger_build(flags: &Flags) -> Envelope {
         Ok(value) => value,
         Err(message) => return Envelope::new(false, "ledger.build", message, "Fix the command and run it again."),
     };
-    ledger::build(&package, &out, commit, src, max_lines, max_commits)
+    let repo = flags.get("repo").map(PathBuf::from);
+    if let Some(path) = &repo {
+        if !path.is_dir() {
+            return Envelope::new(false, "ledger.build", "repo is not a git repository", "Pass --repo as the git root.");
+        }
+    }
+    let tests_dir = flags.get("tests-dir").unwrap_or("tests");
+    ledger::build(&package, &out, commit, src, tests_dir, max_lines, max_commits, repo.as_deref())
 }
 
 pub fn ledger_check(flags: &Flags) -> Envelope {
@@ -210,7 +217,9 @@ pub fn ledger_check(flags: &Flags) -> Envelope {
     let update = flags.bool("update", false);
     let message = flags.get("message").unwrap_or("");
     let timeout = flags.int("suite-timeout-ms", 120_000).unwrap_or(120_000);
-    ledger::check(&package, &ledger_path, &out, update, message, timeout)
+    let mut extra = Vec::new();
+    crate::runner::forward_run_flags(&mut extra, flags);
+    ledger::check(&package, &ledger_path, &out, update, message, timeout, &extra)
 }
 
 fn matrix(args: &[String]) -> Envelope {
@@ -249,12 +258,15 @@ fn matrix_report(flags: &Flags) -> Envelope {
         Ok(text) => text,
         Err(error) => return Envelope::new(false, "matrix.report", error.to_string(), "Pass --direct that can be read."),
     };
-    if let Some(kills) = flags.get("kills") {
-        if matrix_cmd::read_kills(&PathBuf::from(kills)).is_err() {
-            return Envelope::new(false, "matrix.report", "kill count must be a non-negative integer", "Fix --kills and run again.");
+    let kills = if let Some(kills) = flags.get("kills") {
+        match matrix_cmd::read_kills(&PathBuf::from(kills)) {
+            Ok(rows) => Some(rows),
+            Err(message) => return Envelope::new(false, "matrix.report", message, "Fix --kills and run again."),
         }
-    }
-    match matrix_cmd::report(&scores_text, &direct_text, &out, &flags.texts("patches")) {
+    } else {
+        None
+    };
+    match matrix_cmd::report(&scores_text, &direct_text, &out, &flags.texts("patches"), kills.as_deref()) {
         Ok(envelope) => envelope,
         Err(message) => Envelope::new(false, "matrix.report", message, "Fix the score files and run again."),
     }
@@ -303,7 +315,10 @@ fn golden_record(flags: &Flags) -> Envelope {
     };
     let out_dir = flags.get("dir").or_else(|| flags.get("out")).unwrap_or("tests/golden");
     let timeout = flags.int("suite-timeout-ms", 600_000).unwrap_or(600_000);
-    golden::record(&package, &flags.texts("module"), &flags.texts("tests"), out_dir, timeout)
+    if let Err(message) = golden::pin_commit(&package, flags.get("repo"), flags.get("commit")) {
+        return Envelope::new(false, "golden.record", message, "Fix the command and run it again.");
+    }
+    golden::record(&package, &flags.texts("module"), &flags.texts("tests"), out_dir, timeout, flags.get("repo"), flags.get("commit"))
 }
 
 fn golden_compare(flags: &Flags) -> Envelope {
@@ -320,7 +335,10 @@ fn golden_compare(flags: &Flags) -> Envelope {
         return Envelope::new(false, "golden.compare", "--operators must be core or wide", "Fix the command and run it again.");
     }
     let timeout = flags.int("suite-timeout-ms", 600_000).unwrap_or(600_000);
-    golden::compare(&package, &flags.texts("module"), &flags.texts("tests"), &flags.texts("golden"), &out, operators, timeout)
+    if let Err(message) = golden::pin_commit(&package, flags.get("repo"), flags.get("commit")) {
+        return Envelope::new(false, "golden.compare", message, "Fix the command and run it again.");
+    }
+    golden::compare(&package, &flags.texts("module"), &flags.texts("tests"), &flags.texts("golden"), &out, operators, timeout, flags.get("commit"))
 }
 
 fn gap(args: &[String]) -> Envelope {

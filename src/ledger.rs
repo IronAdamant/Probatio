@@ -8,8 +8,24 @@ use crate::envelope::Envelope;
 use crate::json::{self, Value};
 use crate::memory::golden_changes;
 
-pub fn build(package: &Path, out: &Path, commit: &str, src: &str, max_lines: usize, max_commits: Option<u64>) -> Envelope {
-    let Some(repo) = git_root(package) else {
+pub fn build(
+    package: &Path,
+    out: &Path,
+    commit: &str,
+    src: &str,
+    tests_dir: &str,
+    max_lines: usize,
+    max_commits: Option<u64>,
+    repo_flag: Option<&Path>,
+) -> Envelope {
+    let repo = if let Some(path) = repo_flag {
+        if !path.is_dir() || git(path, &["rev-parse", "--is-inside-work-tree"]).is_err() {
+            return Envelope::new(false, "ledger.build", "repo is not a git repository", "Pass --repo as the git root.");
+        }
+        path.to_path_buf()
+    } else if let Some(root) = git_root(package) {
+        root
+    } else {
         return Envelope::new(false, "ledger.build", "package is not inside a git repository. Pass --repo.", "Fix the command and run it again.");
     };
     let resolved = git(&repo, &["rev-parse", "--verify", &format!("{commit}^{{commit}}")]);
@@ -33,7 +49,7 @@ pub fn build(package: &Path, out: &Path, commit: &str, src: &str, max_lines: usi
             continue;
         }
         scanned += 1;
-        let stat = git(&repo, &["diff", "--numstat", &format!("{commit_id}^"), commit_id, "--", src]).unwrap_or_default();
+        let stat = git(&repo, &["diff", "--numstat", &format!("{commit_id}^"), commit_id, "--", src, tests_dir]).unwrap_or_default();
         let lines = stat.lines().filter_map(|line| line.split('\t').next().and_then(|item| item.parse::<usize>().ok())).sum::<usize>();
         let subject = git(&repo, &["log", "-1", "--format=%s", commit_id]).unwrap_or_default();
         let date = git(&repo, &["log", "-1", "--format=%aI", commit_id]).unwrap_or_default();
@@ -64,6 +80,7 @@ pub fn build(package: &Path, out: &Path, commit: &str, src: &str, max_lines: usi
     let value = Value::object(vec![
         ("commit", Value::String(sha.clone())),
         ("package", Value::String(package.display().to_string())),
+        ("testsDir", Value::String(tests_dir.to_string())),
         ("entries", Value::Array(entries)),
     ]);
     let _ = fs::write(out.join("ledger.json"), json::stringify(&value));
@@ -82,7 +99,7 @@ pub fn build(package: &Path, out: &Path, commit: &str, src: &str, max_lines: usi
     .with_extra("full", Value::String(out.join("ledger.json").display().to_string()))
 }
 
-pub fn check(package: &Path, ledger_dir: &Path, out: &Path, update: bool, message: &str, timeout_ms: u64) -> Envelope {
+pub fn check(package: &Path, ledger_dir: &Path, out: &Path, update: bool, message: &str, timeout_ms: u64, extra: &[String]) -> Envelope {
     let ledger_file = if ledger_dir.is_file() { ledger_dir.to_path_buf() } else { ledger_dir.join("ledger.json") };
     let Ok(text) = fs::read_to_string(&ledger_file) else {
         return Envelope::new(false, "ledger.check", format!("No ledger.json in {}.", ledger_dir.display()), "Run probatio ledger build first.");
@@ -130,7 +147,7 @@ pub fn check(package: &Path, ledger_dir: &Path, out: &Path, update: bool, messag
         json::stringify(&Value::object(vec![("mutants", Value::Array(rows))])),
     );
     let run_out = out.join("run");
-    let report = crate::runner::run(&crate::args::Flags::parse(&[
+    let mut args = vec![
         "--package".into(),
         package.display().to_string(),
         "--patches".into(),
@@ -140,7 +157,9 @@ pub fn check(package: &Path, ledger_dir: &Path, out: &Path, update: bool, messag
         "--timeout-ms".into(),
         timeout_ms.to_string(),
         "--no-confirm".into(),
-    ]));
+    ];
+    args.extend_from_slice(extra);
+    let report = crate::runner::run(&crate::args::Flags::parse(&args));
     if !report.ok {
         return Envelope::new(false, "ledger.check", format!("The ledger run did not score: {}", report.summary), report.next);
     }
@@ -342,14 +361,14 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-m", "swap"]);
         let out = root.join("ledger");
-        let envelope = build(&root, &out, "HEAD", "src", 300, None);
+        let envelope = build(&root, &out, "HEAD", "src", "tests", 300, None, None);
         assert!(envelope.ok, "{}", envelope.summary);
         assert!(envelope.summary.contains("reverse cleanly"), "{}", envelope.summary);
         assert!(out.join("ledger.json").is_file());
         let red = root.join("red.json");
         let body = "{\n  \"status\": \"red\"\n}\n";
         fs::write(&red, body).unwrap();
-        let refused = check(&root, &red, &root.join("check"), false, "", 5_000);
+        let refused = check(&root, &red, &root.join("check"), false, "", 5_000, &[]);
         assert!(!refused.ok);
         assert!(refused.summary.contains("back in reach"), "{}", refused.summary);
         assert_eq!(fs::read_to_string(&red).unwrap(), body);

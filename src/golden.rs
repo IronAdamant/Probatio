@@ -1,7 +1,8 @@
 //! Golden tables. `check` compares rows. `record` logs plain calls. `compare` asks whether the table kills what the unit tests kill.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use crate::envelope::Envelope;
@@ -98,7 +99,34 @@ pub fn check(recorded_path: &Path, actual_path: &Path, update: Option<&str>, mes
         .with_extra("updated", Value::Bool(write && ok)))
 }
 
-pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &str, timeout_ms: u64) -> Envelope {
+pub fn pin_commit(package: &Path, repo: Option<&str>, commit: Option<&str>) -> Result<(), String> {
+    let root = match repo {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if !path.is_dir() || !crate::worktree::is_git_repo(&path) {
+                return Err("repo is not a git repository".into());
+            }
+            path
+        }
+        None => package.to_path_buf(),
+    };
+    if let Some(commit) = commit {
+        crate::worktree::resolve_commit(&root, commit).map(|_| ())
+    } else {
+        Ok(())
+    }
+}
+
+fn git_show(repo: &Path, spec: &str) -> Result<String, String> {
+    let output = Command::new("git").arg("-C").arg(repo).args(["show", spec]).output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &str, timeout_ms: u64, repo: Option<&str>, commit: Option<&str>) -> Envelope {
     let fail = |summary: String| Envelope::new(false, "golden.record", summary, "Fix the command and run it again.");
     if modules.is_empty() {
         return fail("Pass --module with the source file to record.".into());
@@ -127,6 +155,20 @@ pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &st
     let _ = fs::remove_dir_all(&scratch);
     if copy_package(package, &scratch).is_err() {
         return fail("The package could not be copied for recording.".into());
+    }
+    if let Some(commit) = commit {
+        let root = repo.map(PathBuf::from).unwrap_or_else(|| package.to_path_buf());
+        for rel in modules.iter().chain(tests.iter()) {
+            match git_show(&root, &format!("{commit}:{rel}")) {
+                Ok(text) => {
+                    let _ = fs::write(scratch.join(rel), text);
+                }
+                Err(_) => {
+                    let _ = fs::remove_dir_all(&scratch);
+                    return fail(format!("{rel} is not in {commit}."));
+                }
+            }
+        }
     }
     let log = scratch.join("calls.jsonl");
     let recorder = scratch.join("probatio-recorder.mjs");
@@ -220,16 +262,24 @@ pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &st
     envelope
 }
 
-pub fn compare(package: &Path, modules: &[String], tests: &[String], golden: &[String], out: &Path, operators: &str, timeout_ms: u64) -> Envelope {
+pub fn compare(package: &Path, modules: &[String], tests: &[String], golden: &[String], out: &Path, operators: &str, timeout_ms: u64, commit: Option<&str>) -> Envelope {
     if modules.is_empty() || tests.is_empty() || golden.is_empty() {
         return Envelope::new(false, "golden.compare", "Pass --module, --tests, and --golden.", "Fix the command and run it again.");
     }
     let wide = operators == "wide";
     let mut points = Vec::new();
     for module in modules {
-        let path = package.join(module);
-        let Ok(text) = fs::read_to_string(&path) else {
-            return Envelope::new(false, "golden.compare", format!("{module} is not in the package."), "Fix the command and run it again.");
+        let text = if let Some(commit) = commit {
+            match git_show(package, &format!("{commit}:{module}")) {
+                Ok(text) => text,
+                Err(_) => return Envelope::new(false, "golden.compare", format!("{module} is not in {commit}."), "Fix the command and run it again."),
+            }
+        } else {
+            let path = package.join(module);
+            let Ok(text) = fs::read_to_string(&path) else {
+                return Envelope::new(false, "golden.compare", format!("{module} is not in the package."), "Fix the command and run it again.");
+            };
+            text
         };
         points.extend(crate::operators::scan(module, &text, wide));
     }
@@ -337,6 +387,17 @@ fn exported_functions(text: &str) -> Vec<String> {
     names
 }
 
+fn file_url(path: &Path) -> String {
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let text = canon.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text);
+    if text.starts_with('/') {
+        format!("file://{text}")
+    } else {
+        format!("file:///{text}")
+    }
+}
+
 fn wrap_module(root: &Path, module: &str, names: &[String], recorder: &Path) -> Result<(), String> {
     let abs = root.join(module);
     let ext = Path::new(module).extension().and_then(|item| item.to_str()).unwrap_or("js");
@@ -347,7 +408,7 @@ fn wrap_module(root: &Path, module: &str, names: &[String], recorder: &Path) -> 
     let mut lines = vec![
         format!("export * from \"./{real_name}\";"),
         format!("import * as real from \"./{real_name}\";"),
-        format!("import {{ record }} from \"{}\";", recorder.display()),
+        format!("import {{ record }} from \"{}\";", file_url(recorder)),
     ];
     for name in names {
         lines.push(format!("export const {name} = record({module:?}, {name:?}, real.{name});"));
@@ -552,7 +613,7 @@ mod tests {
         fs::create_dir_all(dir.join("test")).unwrap();
         fs::write(dir.join("src/calc.js"), "export function add(a, b) { return a + b; }\n").unwrap();
         fs::write(dir.join("test/calc.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add } from '../src/calc.js';\ntest('adds', () => { assert.equal(add(1, 2), 3); });\n").unwrap();
-        let envelope = record(&dir, &["src/calc.js".into()], &["test/calc.test.js".into()], "tests/golden", 20_000);
+        let envelope = record(&dir, &["src/calc.js".into()], &["test/calc.test.js".into()], "tests/golden", 20_000, None, None);
         if std::process::Command::new("node").arg("--version").output().is_err() {
             return;
         }
