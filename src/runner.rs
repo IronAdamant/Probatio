@@ -2276,8 +2276,9 @@ mod tests {
             patches.display().to_string(),
             "--out".into(),
             out.display().to_string(),
+            // A cold Windows python can use more than 10s before the baseline prints.
             "--timeout-ms".into(),
-            "10000".into(),
+            "60000".into(),
         ];
         args.extend(extra.iter().map(|arg| (*arg).to_string()));
         run(&Flags::parse(&args))

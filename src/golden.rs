@@ -613,7 +613,7 @@ mod tests {
         fs::create_dir_all(dir.join("test")).unwrap();
         fs::write(dir.join("src/calc.js"), "export function add(a, b) { return a + b; }\n").unwrap();
         fs::write(dir.join("test/calc.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add } from '../src/calc.js';\ntest('adds', () => { assert.equal(add(1, 2), 3); });\n").unwrap();
-        let envelope = record(&dir, &["src/calc.js".into()], &["test/calc.test.js".into()], "tests/golden", 20_000, None, None);
+        let envelope = record(&dir, &["src/calc.js".into()], &["test/calc.test.js".into()], "tests/golden", 60_000, None, None);
         if std::process::Command::new("node").arg("--version").output().is_err() {
             return;
         }
