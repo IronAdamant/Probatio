@@ -45,3 +45,5 @@ jobs:
         env:
           PROBATIO_BIN: target/x86_64-unknown-linux-musl/release/probatio
         run: bash scripts/npm-pack-local.sh --smoke
+      - name: Resolve the scoped Windows package
+        run: node scripts/npm-launcher-win32.js

@@ -86,6 +86,7 @@ fi
 
 # Absolute paths. `npm publish npm/linux-x64` is GitHub shorthand for
 # github.com/npm/linux-x64, not this directory.
+# npm/win32-x64 publishes as @iron_adamant/probatio-win32-x64 (--access public).
 for dir in npm/linux-x64 npm/darwin-arm64 npm/darwin-x64 npm/win32-x64 npm; do
   pkg_dir="$root/$dir"
   name=$(node -p "require(process.argv[1]).name" "$pkg_dir/package.json")

@@ -23,7 +23,7 @@
     "probatio-linux-x64": "0.5.0",
     "probatio-darwin-arm64": "0.5.0",
     "probatio-darwin-x64": "0.5.0",
-    "probatio-win32-x64": "0.5.0"
+    "@iron_adamant/probatio-win32-x64": "0.5.0"
   },
   "engines": {
     "node": ">=18"

@@ -23,7 +23,7 @@ cargo build --release
 
 An earlier TypeScript program lived here, and that rewrite is finished. Changelog entries through 0.3.0, and the notes in `docs/` other than [docs/releasing.md](docs/releasing.md), describe that program. The binary, the files in [schemas/](schemas/), and [AGENTS.md](AGENTS.md) are the current contract. Small samples live in [examples/](examples/).
 
-The crate version is 0.5.0. The MCP server reports that version. `npm install probatio` installs a Node launcher and the binary for this machine. The platform packages are `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, and `probatio-win32-x64`. A `v*` tag builds the GitHub release for x86_64 Linux musl, aarch64 macOS, x86_64 macOS, and x86_64 Windows.
+The crate version is 0.5.0. The MCP server reports that version. `npm install probatio` installs a Node launcher and the binary for this machine. The platform packages are `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, and `@iron_adamant/probatio-win32-x64`. A `v*` tag builds the GitHub release for x86_64 Linux musl, aarch64 macOS, x86_64 macOS, and x86_64 Windows.
 
 An agent talks to the binary over stdin with `probatio mcp`, or it calls the same commands itself.
 

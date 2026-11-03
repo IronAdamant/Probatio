@@ -7,7 +7,7 @@ Version 0.5.0 installs the Rust binary. The `probatio` command is a small Node l
 | `probatio-linux-x64` | Linux x64, musl build |
 | `probatio-darwin-arm64` | macOS Apple silicon |
 | `probatio-darwin-x64` | macOS Intel |
-| `probatio-win32-x64` | Windows x64 |
+| `@iron_adamant/probatio-win32-x64` | Windows x64 |
 
 ```bash
 npm install probatio
