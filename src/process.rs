@@ -136,10 +136,10 @@ fn run_group_with_path(
             };
         }
     };
-    let pid = child.id() as i32;
+    let pid = child.id();
     #[cfg(unix)]
     unsafe {
-        setpgid(pid, pid);
+        setpgid(pid as i32, pid as i32);
     }
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
@@ -149,14 +149,10 @@ fn run_group_with_path(
     let status = loop {
         if start.elapsed() >= timeout {
             timed_out = true;
-            #[cfg(unix)]
-            unsafe {
-                kill(-pid, SIGKILL);
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = child.kill();
-            }
+            // Kill the whole tree before waiting. On Windows, `child.kill` leaves
+            // grandchildren holding the pipes, and the reader threads never see EOF.
+            kill_tree(pid);
+            let _ = child.kill();
             let _ = child.wait();
             break None;
         }
@@ -164,6 +160,11 @@ fn run_group_with_path(
             Ok(Some(status)) => break status.code(),
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(error) => {
+                kill_tree(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
                 return TimedRun {
                     spawned: true,
                     status: None,
@@ -183,6 +184,25 @@ fn run_group_with_path(
         duration,
         stdout: stdout_handle.join().unwrap_or_default(),
         stderr: stderr_handle.join().unwrap_or_default(),
+    }
+}
+
+/// Stop `pid` and every process it started. Unix signals the process group.
+/// Windows `TerminateProcess` does not, so `taskkill /T` is what closes the pipes.
+pub fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        let _ = kill(-(pid as i32), SIGKILL);
+        let _ = kill(pid as i32, SIGKILL);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 

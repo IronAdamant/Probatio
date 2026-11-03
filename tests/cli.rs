@@ -2,14 +2,92 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use probatio::json;
 
 fn launch(args: &[&str]) -> (i32, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_probatio")).args(args).output().expect("spawn probatio");
+    let output = output_with_deadline(Command::new(env!("CARGO_BIN_EXE_probatio")).args(args), Duration::from_secs(90), args);
     let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
     let code = output.status.code().unwrap_or(1);
     (code, stdout)
+}
+
+fn output_with_deadline(command: &mut Command, limit: Duration, label: &[&str]) -> std::process::Output {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {label:?}: {error}"));
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => panic!("{label:?}: {error}"),
+        Err(_) => {
+            kill_tree(pid);
+            panic!("{label:?} exceeded {limit:?}");
+        }
+    }
+}
+
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        let _ = kill(-(pid as i32), 9);
+        let _ = kill(pid as i32, 9);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// Kills `pid` if `drop` has not run before `limit`. A blocked read then sees EOF.
+struct Deadline {
+    stop: Option<mpsc::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Deadline {
+    fn arm(pid: u32, limit: Duration) -> Deadline {
+        let (stop, rx) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            if rx.recv_timeout(limit).is_err() {
+                kill_tree(pid);
+            }
+        });
+        Deadline { stop: Some(stop), thread: Some(thread) }
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn json_string(text: &str) -> String {
+    json::stringify_compact(&json::Value::String(text.to_string()))
 }
 
 fn one_envelope(stdout: &str) -> json::Value {
@@ -46,6 +124,13 @@ fn every_command_prints_an_envelope() {
 }
 
 #[test]
+fn a_windows_path_is_legal_json() {
+    let encoded = json_string(r"C:\Users\runner\probatio");
+    let value = json::parse(&format!(r#"{{"package":{encoded}}}"#)).unwrap();
+    assert_eq!(value.get("package").and_then(json::Value::as_str), Some(r"C:\Users\runner\probatio"));
+}
+
+#[test]
 fn mcp_lists_tools_and_a_serial_run_starts() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
         .arg("mcp")
@@ -54,6 +139,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(120));
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
@@ -94,7 +180,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         &mut stdout,
         5,
         "mutate_generate",
-        &format!(r#"{{"package":"{}","out":"{}"}}"#, root.display(), patches.display()),
+        &format!(r#"{{"package":{},"out":{}}}"#, json_string(&root.display().to_string()), json_string(&patches.display().to_string())),
     );
     assert_eq!(generate.get("ok").and_then(json::Value::as_bool), Some(true), "{generate:?}");
 
@@ -104,10 +190,10 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         6,
         "mutate_run",
         &format!(
-            r#"{{"package":"{}","patches":"{}","out":"{}","suiteCommand":"echo ok"}}"#,
-            root.display(),
-            patches.display(),
-            out.display()
+            r#"{{"package":{},"patches":{},"out":{},"suiteCommand":"echo ok","timeoutMs":10000}}"#,
+            json_string(&root.display().to_string()),
+            json_string(&patches.display().to_string()),
+            json_string(&out.display().to_string())
         ),
     );
     assert_eq!(stopped.get("ok").and_then(json::Value::as_bool), Some(false), "{stopped:?}");
@@ -119,10 +205,10 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         7,
         "mutate_run",
         &format!(
-            r#"{{"package":"{}","patches":"{}","out":"{}","suiteCommand":"echo ok","serial":true}}"#,
-            root.display(),
-            patches.display(),
-            out.display()
+            r#"{{"package":{},"patches":{},"out":{},"suiteCommand":"echo ok","serial":true,"timeoutMs":10000}}"#,
+            json_string(&root.display().to_string()),
+            json_string(&patches.display().to_string()),
+            json_string(&out.display().to_string())
         ),
     );
     assert_eq!(started.get("ok").and_then(json::Value::as_bool), Some(true), "{started:?}");
@@ -1128,6 +1214,9 @@ fn mcp_call(stdin: &mut impl Write, stdout: &mut impl BufRead, line: &str) -> js
     stdin.flush().unwrap();
     let mut response = String::new();
     stdout.read_line(&mut response).unwrap();
+    if response.trim().is_empty() {
+        panic!("mcp closed stdout before a reply to {line}");
+    }
     json::parse(response.trim()).unwrap_or_else(|error| panic!("{error}\n{response}"))
 }
 

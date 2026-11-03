@@ -2483,7 +2483,13 @@ mod tests {
             "--suite-command".into(),
             script.into(),
         ];
+        let started = std::time::Instant::now();
         let envelope = run(&Flags::parse(&args));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "the suite process was still alive after the deadline: {:?}",
+            started.elapsed()
+        );
         assert!(envelope.ok, "{}", envelope.summary);
         let value = parsed(&envelope);
         assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(Value::as_int), Some(0));
