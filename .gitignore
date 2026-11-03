@@ -4,3 +4,5 @@ dist/
 *.tsbuildinfo
 .stele-context/
 /target/
+__pycache__/
+*.pyc
