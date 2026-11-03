@@ -1,0 +1,53 @@
+name: npm publish
+
+# Publish an existing GitHub release to npm. It does not build binaries
+# and it does not create or replace the GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, for example v0.5.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Download GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Tag must look like v0.5.0."
+            exit 1
+          fi
+          mkdir -p assets
+          gh release download "$TAG" --dir assets --repo "${{ github.repository }}"
+          ls -l assets
+      - name: Publish npm packages
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PROBATIO_TAG: ${{ inputs.tag }}
+          PROBATIO_ASSETS: assets
+        run: |
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not set. Skipping npm publish."
+            exit 0
+          fi
+          bash scripts/npm-publish.sh
