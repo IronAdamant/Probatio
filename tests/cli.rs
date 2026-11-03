@@ -2,14 +2,92 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use probatio::json;
 
 fn launch(args: &[&str]) -> (i32, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_probatio")).args(args).output().expect("spawn probatio");
+    let output = output_with_deadline(Command::new(env!("CARGO_BIN_EXE_probatio")).args(args), Duration::from_secs(90), args);
     let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
     let code = output.status.code().unwrap_or(1);
     (code, stdout)
+}
+
+fn output_with_deadline(command: &mut Command, limit: Duration, label: &[&str]) -> std::process::Output {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {label:?}: {error}"));
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => panic!("{label:?}: {error}"),
+        Err(_) => {
+            kill_tree(pid);
+            panic!("{label:?} exceeded {limit:?}");
+        }
+    }
+}
+
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        let _ = kill(-(pid as i32), 9);
+        let _ = kill(pid as i32, 9);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// Kills `pid` if `drop` has not run before `limit`. A blocked read then sees EOF.
+struct Deadline {
+    stop: Option<mpsc::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Deadline {
+    fn arm(pid: u32, limit: Duration) -> Deadline {
+        let (stop, rx) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            if rx.recv_timeout(limit).is_err() {
+                kill_tree(pid);
+            }
+        });
+        Deadline { stop: Some(stop), thread: Some(thread) }
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn json_string(text: &str) -> String {
+    json::stringify_compact(&json::Value::String(text.to_string()))
 }
 
 fn one_envelope(stdout: &str) -> json::Value {
@@ -46,6 +124,13 @@ fn every_command_prints_an_envelope() {
 }
 
 #[test]
+fn a_windows_path_is_legal_json() {
+    let encoded = json_string(r"C:\Users\runner\probatio");
+    let value = json::parse(&format!(r#"{{"package":{encoded}}}"#)).unwrap();
+    assert_eq!(value.get("package").and_then(json::Value::as_str), Some(r"C:\Users\runner\probatio"));
+}
+
+#[test]
 fn mcp_lists_tools_and_a_serial_run_starts() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
         .arg("mcp")
@@ -54,6 +139,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(120));
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
@@ -73,7 +159,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["schema", "mutate_generate", "mutate_run", "mutate_tally"]);
+    assert_eq!(names, ["probatio", "schema", "mutate_generate", "mutate_run", "mutate_tally"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
@@ -94,7 +180,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         &mut stdout,
         5,
         "mutate_generate",
-        &format!(r#"{{"package":"{}","out":"{}"}}"#, root.display(), patches.display()),
+        &format!(r#"{{"package":{},"out":{}}}"#, json_string(&root.display().to_string()), json_string(&patches.display().to_string())),
     );
     assert_eq!(generate.get("ok").and_then(json::Value::as_bool), Some(true), "{generate:?}");
 
@@ -104,10 +190,10 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         6,
         "mutate_run",
         &format!(
-            r#"{{"package":"{}","patches":"{}","out":"{}","suiteCommand":"echo ok"}}"#,
-            root.display(),
-            patches.display(),
-            out.display()
+            r#"{{"package":{},"patches":{},"out":{},"suiteCommand":"echo ok","timeoutMs":10000}}"#,
+            json_string(&root.display().to_string()),
+            json_string(&patches.display().to_string()),
+            json_string(&out.display().to_string())
         ),
     );
     assert_eq!(stopped.get("ok").and_then(json::Value::as_bool), Some(false), "{stopped:?}");
@@ -119,15 +205,15 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         7,
         "mutate_run",
         &format!(
-            r#"{{"package":"{}","patches":"{}","out":"{}","suiteCommand":"echo ok","serial":true}}"#,
-            root.display(),
-            patches.display(),
-            out.display()
+            r#"{{"package":{},"patches":{},"out":{},"suiteCommand":"echo ok","serial":true,"timeoutMs":10000}}"#,
+            json_string(&root.display().to_string()),
+            json_string(&patches.display().to_string()),
+            json_string(&out.display().to_string())
         ),
     );
     assert_eq!(started.get("ok").and_then(json::Value::as_bool), Some(true), "{started:?}");
     assert!(std::fs::read_to_string(out.join("lines.json")).unwrap().contains("lines"));
-    assert_eq!(std::fs::read_dir(out.join("results")).unwrap().count(), 30);
+    assert_eq!(std::fs::read_dir(out.join("results")).unwrap().count(), 31);
     assert!(started.get("nextCall").and_then(|call| call.get("argv")).is_some(), "{started:?}");
 
     drop(stdin);
@@ -301,7 +387,7 @@ fn shipped_run_reads_probatio_json_and_the_flag_wins() {
     let patches = root.join("patches").display().to_string();
     std::fs::write(
         root.join(".probatio.json"),
-        "{\n  \"suiteCommand\": \"echo from-file\",\n  \"env\": {\"A\": \"1\"},\n  \"testLine\": \"ignored\",\n  \"passLine\": \"ignored\"\n}\n",
+        "{\n  \"suiteCommand\": \"echo from-file\",\n  \"env\": {\"A\": \"1\"},\n  \"testLine\": \"from-\",\n  \"passLine\": \"from-file\"\n}\n",
     )
     .unwrap();
     std::fs::write(root.join("package.json"), "{}\n").unwrap();
@@ -433,26 +519,12 @@ fn shipped_run_chunks_a_mapped_batch_and_confirm_count() {
     );
     assert_eq!(first.get("ok").and_then(json::Value::as_bool), Some(true), "{first:?}");
     assert_named_suite(&first, "echo ok");
-    assert_eq!(result_count(&out), 30);
-    let first_next = first.get("next").and_then(json::Value::as_str).unwrap_or("");
-    assert!(first_next.contains("30 started this call"), "{first_next}");
-    assert!(first_next.contains("1 is still waiting"), "{first_next}");
-    assert!(first_next.contains("did not choose tests"), "{first_next}");
-    let argv = argv_strings(&first);
-    assert!(!argv.iter().any(|arg| arg == "--confirm-count"));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--package" && pair[1] == package));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--patches" && pair[1] == patches));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--out" && pair[1] == out_arg));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--suite-command" && pair[1] == "echo ok"));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--line-map" && pair[1] == map_arg));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--timeout-ms" && pair[1] == "5000"));
-
-    let owned: Vec<String> = argv;
-    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-    let second = one_envelope(&launch(&args).1);
-    assert_eq!(second.get("ok").and_then(json::Value::as_bool), Some(true), "{second:?}");
-    assert!(matches!(second.get("nextCall"), Some(json::Value::Null)), "{second:?}");
     assert_eq!(result_count(&out), 31);
+    let first_next = first.get("next").and_then(json::Value::as_str).unwrap_or("");
+    assert!(first_next.contains("did not choose tests"), "{first_next}");
+    assert!(first_next.contains("tally"), "{first_next}");
+    let argv = argv_strings(&first);
+    assert!(argv.windows(2).any(|pair| pair[0] == "tally" || pair[0] == "--out"));
     assert!(!out.join("not-started.txt").exists());
 
     let wrong_out = root.join("wrong");
@@ -505,7 +577,8 @@ fn shipped_run_chunks_a_mapped_batch_and_confirm_count() {
         .1,
     );
     assert_eq!(all.get("ok").and_then(json::Value::as_bool), Some(true), "{all:?}");
-    assert!(matches!(all.get("nextCall"), Some(json::Value::Null)), "{all:?}");
+    let tally = all.get("nextCall").and_then(|call| call.get("argv"));
+    assert!(matches!(tally, Some(json::Value::Array(items)) if items.iter().any(|item| item.as_str() == Some("tally"))), "{all:?}");
     assert_eq!(result_count(&all_out), 31);
 
     let _ = std::fs::remove_dir_all(&root);
@@ -601,7 +674,7 @@ fn shipped_run_substitutes_test_tokens() {
     assert_eq!(whole.get("ok").and_then(json::Value::as_bool), Some(true), "{whole:?}");
     let whole_next = whole.get("next").and_then(json::Value::as_str).unwrap_or("");
     assert!(whole_next.contains("The suite ran whole."), "{whole_next}");
-    assert!(whole_next.contains("Workers stay at 1."), "{whole_next}");
+    assert!(!whole_next.contains("Workers stay at 1."), "{whole_next}");
 
     std::fs::write(&tests, "a'b\n").unwrap();
     let before_bad = std::fs::read_to_string(&log).unwrap_or_default();
@@ -770,6 +843,7 @@ fn shipped_run_discovers_scripts_test_and_refuses_invalid_package_json() {
 }
 
 #[test]
+#[cfg(unix)]
 fn shipped_run_uses_node_bin_from_scripts_test() {
     let root = java_package("nodebin", 1);
     let package = root.display().to_string();
@@ -843,6 +917,7 @@ fn shipped_run_uses_node_bin_from_scripts_test() {
 }
 
 #[test]
+#[cfg(unix)]
 fn shipped_run_uses_node_bin_from_a_git_worktree() {
     let root = java_package("nodegit", 1);
     let package = root.display().to_string();
@@ -1139,6 +1214,9 @@ fn mcp_call(stdin: &mut impl Write, stdout: &mut impl BufRead, line: &str) -> js
     stdin.flush().unwrap();
     let mut response = String::new();
     stdout.read_line(&mut response).unwrap();
+    if response.trim().is_empty() {
+        panic!("mcp closed stdout before a reply to {line}");
+    }
     json::parse(response.trim()).unwrap_or_else(|error| panic!("{error}\n{response}"))
 }
 

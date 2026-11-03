@@ -1,5 +1,6 @@
 //! Text operators. Comments and strings are not mutated.
-//! JS and TS use this set, so their ids are `m` plus a hash, not TypeScript-compiler node ids.
+//! `.ts` and `.tsx` also gain negate-condition, negate-ternary, and drop-not.
+//! An id is `m` plus the first 12 hex digits of SHA-256 over file, span, and operator.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mutant {
@@ -55,8 +56,8 @@ pub fn kind_of(path: &str) -> bool {
         std::path::Path::new(path).extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()),
         Some(ref ext) if matches!(
             ext.as_str(),
-            "java" | "go" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cc" | "cpp" | "cs" | "swift"
-                | "cob" | "cbl" | "cobol" | "s" | "asm" | "nasm" | "yasm"
+            "java" | "go" | "rs" | "py" | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "c" | "h" | "cc" | "cpp"
+                | "cxx" | "hpp" | "hh" | "hxx" | "cs" | "swift" | "cob" | "cbl" | "cobol" | "s" | "asm" | "nasm" | "yasm"
         )
     )
 }
@@ -133,12 +134,24 @@ pub fn scan(file: &str, text: &str, wide: bool) -> Vec<Mutant> {
     if wide {
         found.extend(dropped_statements(file, text, &code));
     }
+    if is_typescript(file) {
+        for point in crate::ast_ts::points(file, text) {
+            if !found.iter().any(|item| item.start == point.start && item.op == point.op) {
+                found.push(point);
+            }
+        }
+    }
     found
+}
+
+fn is_typescript(file: &str) -> bool {
+    let lower = file.to_ascii_lowercase();
+    (lower.ends_with(".ts") || lower.ends_with(".tsx") || lower.ends_with(".jsx")) && !lower.ends_with(".d.ts")
 }
 
 fn push_mutant(found: &mut Vec<Mutant>, file: &str, text: &str, index: usize, end: usize, op: &str, replacement: &str) {
     let line = text[..index].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
-    let id = mutant_id(file, index, op, replacement);
+    let id = mutant_id(file, index, end, op);
     found.push(Mutant {
         id,
         file: file.to_string(),
@@ -657,13 +670,8 @@ fn mask_cobol(text: &str) -> Vec<bool> {
     code
 }
 
-pub fn mutant_id(file: &str, start: usize, op: &str, replacement: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in format!("{file}\0{start}\0{op}\0{replacement}").bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("m{hash:012x}")
+pub fn mutant_id(file: &str, start: usize, end: usize, op: &str) -> String {
+    format!("m{}", crate::hash::hex12(format!("{file}\0{start}\0{end}\0{op}").as_bytes()))
 }
 
 pub fn apply(text: &str, start: usize, end: usize, replacement: &str) -> String {
@@ -725,13 +733,31 @@ mod tests {
     }
 
     #[test]
-    fn js_and_ts_ids_differ_from_compiler_node_ids() {
+    fn js_and_ts_ids_are_the_span_hash() {
         for file in ["a.js", "a.ts"] {
             let text = "function f(a, b) { return a && b; }\n// a && b\n";
             let found = one_live(file, text, "and-to-or");
             assert!(found.id.starts_with('m'), "{}", found.id);
-            assert_eq!(found.id, mutant_id(file, found.start, "and-to-or", "||"));
-            assert!(found.id.chars().all(|ch| ch == 'm' || ch.is_ascii_hexdigit()));
+            assert_eq!(found.id, mutant_id(file, found.start, found.end, "and-to-or"));
+            assert_eq!(found.id.len(), 13);
+        }
+    }
+
+    #[test]
+    fn typescript_gains_the_ast_operators() {
+        let text = "function f(a: boolean, n: number) {\n  if (a && n > 0) return !a ? \"x\" : \"y\";\n  return n === 1 ? \"a\" : \"b\";\n}\n";
+        let found = mutants_in("src/gate.ts", text);
+        let ops: Vec<_> = found.iter().map(|item| item.op.as_str()).collect();
+        for op in ["and-to-or", "gt-to-ge", "drop-not", "eq-to-neq", "negate-condition"] {
+            assert!(ops.contains(&op), "{op} missing from {ops:?}");
+        }
+        assert_eq!(ops.iter().filter(|op| **op == "negate-ternary").count(), 2, "{ops:?}");
+    }
+
+    #[test]
+    fn extra_source_extensions_are_recognised() {
+        for file in ["a.mjs", "a.cjs", "a.cxx", "a.hpp", "a.hh", "a.hxx"] {
+            assert!(kind_of(file), "{file}");
         }
     }
 

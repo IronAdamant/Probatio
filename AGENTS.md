@@ -30,7 +30,7 @@ The package is the directory the user named. It can be this repo or another chec
 1. Call `mutate_generate` with `package` and `out`. Use `<package>/.probatio/generate` unless the user named a directory. Pass `src` when they named one directory. Pass `maxMutants` only when they asked for a slice. Generate does not run the suite. The summary states the count, and the bound when the walk stopped early.
 2. Tell the user the mutant count and the suite command you will use. If the count is above 100 and they did not ask for the whole repository or a serial campaign, stop and wait.
 3. Call `mutate_run` with `package`, `patches` set to the generate directory, and `out` set to `<package>/.probatio/run` unless they named one. Set `timeoutMs` to one full suite run with room to spare. The default is 120000. A Maven suite needs 600000 or more.
-4. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, pass a real line map, or set `serial` to true. See "Line map" below. One call scores at most 30 mutants that have no result yet. The same call, with the same `out`, continues. `confirmCount` scores every mutant still waiting only when it equals that count. Workers stay at 1.
+4. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, pass a real line map, or set `serial` to true. See "Line map" below. With a line map, one call scores every mutant that has no result yet. Without one, more than 30 mutants stop before the first mutant. `confirmCount`, when you pass it, must equal the waiting count. `--workers` runs that many worktrees at once. A kill is confirmed by rerunning the killing test unless you pass `--no-confirm`.
 5. Read the envelope. `ok` false is a stop. Show `summary` and `next`. A red baseline, a missing report, a timeout, a missing tool, or "No line map" means nothing was mutated. Do not read a kill count from that run.
 6. When `ok` is true, call `mutate_tally` on the same `out`. `deletedTests` is 0. `noKillsYet` is not a deletion list. Do not delete a test.
 
@@ -48,7 +48,7 @@ Resolution order:
 2. A non-empty string `suiteCommand` in `<package>/.probatio.json`.
 3. Discovery at the package root.
 
-Any other key in `.probatio.json` is ignored, including `env`, `testLine`, and `passLine`. Invalid JSON stops the run. The next line says to fix the file. Discovery is not used. A flag or a `.probatio.json` command does not require `package.json` to parse.
+`env` must be an object of strings and is passed to the suite. `testLine` and `passLine` must be regular expressions. A shell suite names a test from each `testLine` match, and a non-zero exit blames the last of those lines unless `passLine` was printed. A pattern that matches nothing is not a report. Any other key is ignored. Invalid JSON, or a pattern that does not compile, stops the run. The next line says to fix the file. Discovery is not used. A flag or a `.probatio.json` command does not require `package.json` to parse.
 
 Discovery does not launch the tool:
 
@@ -100,7 +100,7 @@ A choosing map that names at least one mutant in the batch, together with a suit
 
 After a green baseline, and only when the caller passed no line map, the run collects for `go test ./...`, `node --test`, `mvn -B test` (or that command with a `{tests}` token), `cargo test`, and pytest. Go reads a cover profile. Node reads the coverage report from `--experimental-test-coverage`. Java reads `target/site/jacoco/jacoco.xml` only when `pom.xml` contains `jacoco` and that file exists. Rust reads `cargo llvm-cov` only when that program is on `PATH`. Pytest keeps the `coverage.py` map, which still names tests. Unittest does not grow a coverage tool. A missing tool or an empty report records `lineMap` as an empty string, leaves the large-batch stop in place, and names the tool in `next`. That second step does not turn a green baseline red. The binary does not download a tool, and it does not stamp one list of test classes onto every line.
 
-No usable line map, and more than 30 mutants pending: stop before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call still scores at most 30 mutants that have no result yet, unless `confirmCount` equals the waiting count. Resume argv never includes `--confirm-count`. `--workers` above 1 is accepted and ignored. The next line says "Workers stay at 1." Peak work is one worktree or copy, plus one suite process.
+No usable line map, and more than 30 mutants pending: stop before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call scores every mutant that has no result yet. `confirmCount`, when passed, must equal that waiting count or the run stops before a mutant. `--workers` above 1 runs that many worktrees or copies, each with its own suite process. A finished run that still has a survivor sets `nextCall` to `mutate tally`.
 
 Usual commands once a map names tests:
 
@@ -142,7 +142,7 @@ CLI. Flags for each one live in `schemas/<name>.schema.json`. Ask with `probatio
 - `ledger check`: a file that is red, or whose JSON status is red, means a fixed bug is back in reach of the suite. Do not re-record it away. Find the test that stopped guarding it, or give the reason in a `Golden-Change:` line.
 - `matrix report`: counts from a finished out dir. The kill list is `matrix.json`, not stdout.
 - `golden check`, `golden record`, `golden compare`: presence, a note, or a comparison. `golden compare` deletes nothing. A difference needs a `Golden-Change:` line before anyone records again.
-- `gap fix`: does not write the missing test. Add a test that fails on that mutant and passes on the unmutated code, then rerun.
+- `gap fix`: records the guard and the commit. It does not invent the missing test. Add a test that fails on that mutant and passes on the unmutated code, then rerun.
 - `gap revert`: does not delete a file.
 - `guard check`: reads a guard file. It does not edit the project.
 - `findings add`: writes a note to `findings.json`.
@@ -165,7 +165,7 @@ Do not publish around the release checks. A release needs a reason in the CHANGE
 - Do not treat a kill as proof the change is safe. Golden and contract checks are what say the expected result is still the expected result.
 - Refuse an unmapped suite. When there is no line map and more than 30 mutants are pending, stop before the first mutant.
 - Do not restore a hidden test.
-- Do not patch a project's files or environment to make one repository pass. `.probatio.json` is read for `suiteCommand` only.
+- Do not patch a project's files or environment to make one repository pass. `.probatio.json` is read for `suiteCommand`, `env`, `testLine`, and `passLine`.
 - A golden table that kills what a unit test kills is evidence. `golden compare` deletes nothing, and neither do you without a reason in the commit.
 
 A trustworthy loop, after the green baseline:

@@ -1,14 +1,22 @@
-//! Every command returns one envelope. None of these names is an unknown command.
+//! Every command returns one envelope. Unknown flags are refused before any work.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::args::Flags;
-use crate::decide::{self, Verdict};
+use crate::args::{self, Flags};
 use crate::envelope::Envelope;
 use crate::generate;
+use crate::golden;
 use crate::json::{self, Value};
+use crate::ledger;
+use crate::matrix_cmd;
+use crate::memory;
+use crate::queue;
 use crate::runner;
+use crate::schema_cmd;
+use crate::sealed;
+use crate::tally;
+use crate::verify;
 
 /// Invocations that must each return an envelope. Flags may be missing on purpose.
 pub const INVOCATIONS: &[&[&str]] = &[
@@ -37,22 +45,25 @@ pub const INVOCATIONS: &[&[&str]] = &[
 ];
 
 pub fn dispatch(args: &[String]) -> Envelope {
-    if args.is_empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+    if args.is_empty() {
+        return usage(false, "Use mutate, ledger, matrix, golden, gap, guard, findings, status, queue, check-kill, verify-change, or schema.");
+    }
+    if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
         return help();
     }
     let group = args[0].as_str();
     let rest = &args[1..];
     match group {
         "mutate" => mutate(rest),
-        "ledger" => ledger(rest),
+        "ledger" => ledger_group(rest),
         "matrix" => matrix(rest),
-        "golden" => golden(rest),
+        "golden" => golden_group(rest),
         "gap" => gap(rest),
         "guard" => guard(rest),
         "findings" => findings(rest),
         "status" => status_command(&Flags::parse(rest)),
         "seal" => seal(&Flags::parse(rest)),
-        "queue" => queue(rest),
+        "queue" => queue_group(rest),
         "check-kill" => check_kill(&Flags::parse(rest)),
         "verify-change" => verify_change(&Flags::parse(rest)),
         "schema" => schema(rest),
@@ -80,306 +91,344 @@ fn help() -> Envelope {
     )
 }
 
+fn usage(ok: bool, summary: &str) -> Envelope {
+    Envelope::new(
+        ok,
+        "mutate.help",
+        summary,
+        "probatio mutate generate writes operator mutants. probatio mutate run confirms each kill twice. probatio mutate tally reads a finished run and does not delete a test.",
+    )
+}
+
+fn refused(command: &str, flags: &Flags) -> Option<Envelope> {
+    let known = args::command_flags(command)?;
+    let names = flags.unknown(known);
+    if names.is_empty() {
+        None
+    } else {
+        Some(Envelope::new(false, command, args::unknown_summary(&names), "Drop the unknown flag and run the command again."))
+    }
+}
+
 fn mutate(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
+    let command = match action {
+        "generate" => "mutate.generate",
+        "run" => "mutate.run",
+        "sealed" => "mutate.sealed",
+        "tally" => "mutate.tally",
+        "" => return missing("mutate", "missing generate, run, sealed, or tally"),
+        other => {
+            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use generate, run, sealed, or tally.");
+        }
+    };
+    if let Some(envelope) = refused(command, &flags) {
+        return envelope;
+    }
     match action {
         "generate" => generate::generate(&flags),
         "run" => runner::run(&flags),
-        "sealed" => sealed(&flags),
-        "tally" => tally(&flags),
-        "" => missing("mutate", "missing generate, run, sealed, or tally"),
-        other => Envelope::new(
-            false,
-            &format!("mutate.{other}"),
-            format!("No mutate handler for {other}."),
-            "Use generate, run, sealed, or tally.",
-        ),
+        "sealed" => sealed::sealed(&flags),
+        "tally" => tally_command(&flags),
+        _ => unreachable!(),
     }
 }
 
-fn missing(command: &str, message: &str) -> Envelope {
-    Envelope::new(false, command, message.to_string(), "Pass the missing flag and run the command again.")
-}
-
-fn need<'a>(flags: &'a Flags, key: &str, command: &str) -> Result<&'a str, Envelope> {
-    flags.need(key).map_err(|message| missing(command, &message))
-}
-
-fn state_dir(flags: &Flags, command: &str) -> Result<PathBuf, Envelope> {
-    flags
-        .get("state")
-        .or_else(|| flags.get("out"))
-        .or_else(|| flags.get("root"))
-        .map(PathBuf::from)
-        .ok_or_else(|| missing(command, "missing --state"))
-}
-
-pub fn tally(flags: &Flags) -> Envelope {
-    let command = "mutate.tally";
-    let out = match state_dir(flags, command) {
-        Ok(path) => path,
-        Err(envelope) => return envelope,
+fn tally_command(flags: &Flags) -> Envelope {
+    let out = match flags.get("out").or_else(|| flags.get("state")).or_else(|| flags.get("root")) {
+        Some(value) => PathBuf::from(value),
+        None => return missing("mutate.tally", "missing --out"),
     };
-    let rows = runner::verdicts_in(&out);
-    if rows.is_empty() {
-        return Envelope::new(false, command, "No mutant results in that directory.", "Run mutate run before tally. Nothing was deleted.");
-    }
-    let mut keep = Vec::new();
-    let mut seen = Vec::new();
-    for (kind, tests) in &rows {
-        for test in tests {
-            if !seen.contains(test) {
-                seen.push(test.clone());
-            }
-            if *kind == Verdict::Killed && !keep.contains(test) {
-                keep.push(test.clone());
-            }
-        }
-    }
-    let no_kills_yet: Vec<String> = seen.into_iter().filter(|test| !keep.contains(test)).collect();
-    let verdicts = rows.iter().map(|(kind, _)| *kind).collect::<Vec<_>>();
-    let counts = decide::counts_of(&verdicts);
-    let deleted = decide::deleted_tests();
-    Envelope::new(true, command, decide::campaign_summary(&counts), "deletedTests is 0. noKillsYet is not a deletion list.")
-        .with_extra("deletedTests", Value::Int(deleted as i64))
-        .with_extra(
-            "pruning",
-            Value::object(vec![
-                ("mode", Value::String("advisory".into())),
-                ("deletedTests", Value::Int(deleted as i64)),
-                ("advice", Value::Array(Vec::new())),
-            ]),
-        )
-        .with_extra("keep", Value::Array(keep.into_iter().map(Value::String).collect()))
-        .with_extra("noKillsYet", Value::Array(no_kills_yet.into_iter().map(Value::String).collect()))
+    tally::tally(&out)
 }
 
-fn sealed(flags: &Flags) -> Envelope {
-    let command = "mutate.sealed";
-    let package = match need(flags, "package", command) {
-        Ok(value) => value,
-        Err(envelope) => return envelope,
-    };
-    let out = match need(flags, "out", command) {
-        Ok(value) => value,
-        Err(envelope) => return envelope,
-    };
-    if !Path::new(package).is_dir() {
-        return missing(command, "package is not a directory");
-    }
-    let record = Value::object(vec![
-        ("caught", Value::Bool(false)),
-        ("restored", Value::Bool(false)),
-        ("package", Value::String(package.into())),
-    ]);
-    if let Err(error) = write_json(&PathBuf::from(out).join("sealed.json"), &record) {
-        return Envelope::new(false, command, error, "The sealed record could not be written.");
-    }
-    Envelope::new(
-        true,
-        command,
-        "The hidden test stayed hidden. No catch was recorded.",
-        "A sealed miss stays a miss. This command does not restore a hidden test.",
-    )
-    .with_extra("miss", Value::Bool(true))
-    .with_extra("caught", Value::Bool(false))
-}
-
-fn ledger(args: &[String]) -> Envelope {
+fn ledger_group(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
+    let command = match action {
+        "build" => "ledger.build",
+        "check" => "ledger.check",
+        "" => return missing("ledger", "missing build or check"),
+        other => return Envelope::new(false, &format!("ledger.{other}"), format!("No ledger handler for {other}."), "Use build or check."),
+    };
+    if let Some(envelope) = refused(command, &flags) {
+        return envelope;
+    }
     match action {
         "build" => ledger_build(&flags),
         "check" => ledger_check(&flags),
-        "" => missing("ledger", "missing build or check"),
-        other => Envelope::new(false, &format!("ledger.{other}"), format!("No ledger handler for {other}."), "Use build or check."),
+        _ => unreachable!(),
     }
 }
 
 fn ledger_build(flags: &Flags) -> Envelope {
-    let command = "ledger.build";
-    let package = match need(flags, "package", command) {
-        Ok(value) => value,
+    let package = match need(flags, "package", "ledger.build") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let out = match need(flags, "out", command) {
-        Ok(value) => value,
+    let out = match need(flags, "out", "ledger.build") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    if !Path::new(package).is_dir() {
-        return missing(command, "package is not a directory");
+    let commit = flags.get("commit").unwrap_or("HEAD");
+    let src = flags.get("src").unwrap_or("src");
+    let max_lines = flags.int("max-lines", 300).unwrap_or(300) as usize;
+    let max_commits = match flags.parse_int("max-commits") {
+        Ok(value) => value,
+        Err(message) => return Envelope::new(false, "ledger.build", message, "Fix the command and run it again."),
+    };
+    let repo = flags.get("repo").map(PathBuf::from);
+    if let Some(path) = &repo {
+        if !path.is_dir() {
+            return Envelope::new(false, "ledger.build", "repo is not a git repository", "Pass --repo as the git root.");
+        }
     }
-    let commit = flags.get("commit").unwrap_or("").to_string();
-    if commit.is_empty() {
-        return missing(command, "missing --commit");
-    }
-    let record = Value::object(vec![
-        ("commit", Value::String(commit)),
-        ("reverted", Value::Bool(false)),
-    ]);
-    if let Err(error) = write_json(&PathBuf::from(out).join("ledger.json"), &record) {
-        return Envelope::new(false, command, error, "The ledger file could not be written.");
-    }
-    Envelope::new(
-        true,
-        command,
-        "Recorded the commit id. The working tree was not reverted.",
-        "A ledger entry is a record. This command does not rewrite the checkout.",
-    )
+    let tests_dir = flags.get("tests-dir").unwrap_or("tests");
+    ledger::build(&package, &out, commit, src, tests_dir, max_lines, max_commits, repo.as_deref())
 }
 
 pub fn ledger_check(flags: &Flags) -> Envelope {
     let command = "ledger.check";
-    let ledger = match need(flags, "ledger", command) {
-        Ok(value) => PathBuf::from(value),
-        Err(envelope) => return envelope,
+    let ledger_path = match flags.get("ledger") {
+        Some(value) => PathBuf::from(value),
+        None => return missing(command, "missing --ledger"),
     };
-    let text = match fs::read_to_string(&ledger) {
-        Ok(text) => text,
-        Err(_) => return Envelope::new(false, command, "The ledger file is missing.", "Pass --ledger. Nothing was re-recorded."),
-    };
-    let red = text.lines().any(|line| line.trim() == "red") || text.contains("\"status\": \"red\"") || text.contains("\"status\":\"red\"");
-    if red {
-        return Envelope::new(
-            false,
-            command,
-            "A fixed bug is back in reach of the suite.",
-            "Do not re-record it away. Find the test that stopped guarding it, or give the reason in a Golden-Change: line.",
-        );
+    if ledger_path.is_file() {
+        if let Ok(text) = fs::read_to_string(&ledger_path) {
+            if text.lines().any(|line| line.trim() == "red") || text.contains("\"status\": \"red\"") || text.contains("\"status\":\"red\"") {
+                return Envelope::new(
+                    false,
+                    command,
+                    "A fixed bug is back in reach of the suite.",
+                    "Do not re-record it away. Find the test that stopped guarding it, or give the reason in a Golden-Change: line.",
+                );
+            }
+        }
     }
-    Envelope::new(true, command, "Ledger entries still stand.", "A red check is a regression. This one was not red, and the file was not rewritten.")
+    let package = match flags.get("package") {
+        Some(value) => PathBuf::from(value),
+        None => return missing(command, "missing --package"),
+    };
+    let out = match flags.get("out") {
+        Some(value) => PathBuf::from(value),
+        None => return missing(command, "missing --out"),
+    };
+    let update = flags.bool("update", false);
+    let message = flags.get("message").unwrap_or("");
+    let timeout = flags.int("suite-timeout-ms", 120_000).unwrap_or(120_000);
+    let mut extra = Vec::new();
+    crate::runner::forward_run_flags(&mut extra, flags);
+    ledger::check(&package, &ledger_path, &out, update, message, timeout, &extra)
 }
 
 fn matrix(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
     match action {
-        "report" => matrix_report(&flags),
+        "report" => {
+            if let Some(envelope) = refused("matrix.report", &flags) {
+                return envelope;
+            }
+            matrix_report(&flags)
+        }
         "" => missing("matrix", "missing report"),
         other => Envelope::new(false, &format!("matrix.{other}"), format!("No matrix handler for {other}."), "Use report."),
     }
 }
 
 fn matrix_report(flags: &Flags) -> Envelope {
-    let command = "matrix.report";
-    let out = match need(flags, "out", command) {
-        Ok(value) => PathBuf::from(value),
+    let scores = match need(flags, "scores", "matrix.report") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let rows = runner::verdicts_in(&out);
-    if rows.is_empty() {
-        return Envelope::new(false, command, "No scores in that directory.", "Pass --out from a finished run. No kill list was printed.");
+    let direct = match need(flags, "direct", "matrix.report") {
+        Ok(path) => path,
+        Err(envelope) => return envelope,
+    };
+    let out = match need(flags, "out", "matrix.report") {
+        Ok(path) => path,
+        Err(envelope) => return envelope,
+    };
+    let scores_text = match fs::read_to_string(&scores) {
+        Ok(text) => text,
+        Err(error) => return Envelope::new(false, "matrix.report", error.to_string(), "Pass --scores that can be read."),
+    };
+    let direct_text = match fs::read_to_string(&direct) {
+        Ok(text) => text,
+        Err(error) => return Envelope::new(false, "matrix.report", error.to_string(), "Pass --direct that can be read."),
+    };
+    let kills = if let Some(kills) = flags.get("kills") {
+        match matrix_cmd::read_kills(&PathBuf::from(kills)) {
+            Ok(rows) => Some(rows),
+            Err(message) => return Envelope::new(false, "matrix.report", message, "Fix --kills and run again."),
+        }
+    } else {
+        None
+    };
+    match matrix_cmd::report(&scores_text, &direct_text, &out, &flags.texts("patches"), kills.as_deref()) {
+        Ok(envelope) => envelope,
+        Err(message) => Envelope::new(false, "matrix.report", message, "Fix the score files and run again."),
     }
-    let counts = decide::counts_of(&rows.iter().map(|(kind, _)| *kind).collect::<Vec<_>>());
-    let summary = decide::campaign_summary(&counts);
-    let _ = write_json(&out.join("matrix.json"), &Value::object(vec![("summary", Value::String(summary.clone()))]));
-    Envelope::new(true, command, summary, "The report is matrix.json. Stdout has the counts, not the kill list.")
 }
 
-fn golden(args: &[String]) -> Envelope {
+fn golden_group(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
+    let command = match action {
+        "check" => "golden.check",
+        "record" => "golden.record",
+        "compare" => "golden.compare",
+        "" => return missing("golden", "missing check, record, or compare"),
+        other => return Envelope::new(false, &format!("golden.{other}"), format!("No golden handler for {other}."), "Use check, record, or compare."),
+    };
+    if let Some(envelope) = refused(command, &flags) {
+        return envelope;
+    }
     match action {
         "check" => golden_check(&flags),
         "record" => golden_record(&flags),
         "compare" => golden_compare(&flags),
-        "" => missing("golden", "missing check, record, or compare"),
-        other => Envelope::new(false, &format!("golden.{other}"), format!("No golden handler for {other}."), "Use check, record, or compare."),
+        _ => unreachable!(),
     }
 }
 
 fn golden_check(flags: &Flags) -> Envelope {
-    let command = "golden.check";
-    let recorded = match need(flags, "recorded", command) {
-        Ok(value) => PathBuf::from(value),
+    let recorded = match need(flags, "recorded", "golden.check") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    if !recorded.is_file() {
-        return Envelope::new(false, command, "The golden file is missing.", "Pass --recorded. Nothing was deleted.");
+    let actual = match need(flags, "actual", "golden.check") {
+        Ok(path) => path,
+        Err(envelope) => return envelope,
+    };
+    match golden::check(&recorded, &actual, flags.get("update"), flags.get("message").unwrap_or(""), &flags.texts("root")) {
+        Ok(envelope) => envelope,
+        Err(message) => Envelope::new(false, "golden.check", message, "Fix the command and run it again."),
     }
-    Envelope::new(true, command, "Golden file is present.", "golden compare deletes nothing.")
 }
 
 fn golden_record(flags: &Flags) -> Envelope {
-    let command = "golden.record";
-    let package = match need(flags, "package", command) {
-        Ok(value) => value.to_string(),
+    let package = match need(flags, "package", "golden.record") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let out = match flags.get("out").or_else(|| flags.get("dir")) {
-        Some(value) => PathBuf::from(value),
-        None => return missing(command, "missing --out"),
-    };
-    let record = Value::object(vec![
-        ("package", Value::String(package)),
-        ("deleted", Value::Bool(false)),
-    ]);
-    if let Err(error) = write_json(&out.join("golden.json"), &record) {
-        return Envelope::new(false, command, error, "The golden file could not be written.");
+    let out_dir = flags.get("dir").or_else(|| flags.get("out")).unwrap_or("tests/golden");
+    let timeout = flags.int("suite-timeout-ms", 600_000).unwrap_or(600_000);
+    if let Err(message) = golden::pin_commit(&package, flags.get("repo"), flags.get("commit")) {
+        return Envelope::new(false, "golden.record", message, "Fix the command and run it again.");
     }
-    Envelope::new(true, command, "Recorded the golden note.", "Nothing was deleted. A kill is not proof the expected result changed.")
+    golden::record(&package, &flags.texts("module"), &flags.texts("tests"), out_dir, timeout, flags.get("repo"), flags.get("commit"))
 }
 
-pub fn golden_compare(flags: &Flags) -> Envelope {
-    let command = "golden.compare";
-    let golden = match need(flags, "golden", command) {
-        Ok(value) => PathBuf::from(value),
+fn golden_compare(flags: &Flags) -> Envelope {
+    let package = match need(flags, "package", "golden.compare") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let actual = match need(flags, "actual", command) {
-        Ok(value) => PathBuf::from(value),
+    let out = match need(flags, "out", "golden.compare") {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let left = fs::read_to_string(&golden).unwrap_or_default();
-    let right = fs::read_to_string(&actual).unwrap_or_default();
-    if !golden.is_file() || !actual.is_file() {
-        return Envelope::new(false, command, "Golden compare needs both files.", "Nothing was deleted.");
+    let operators = flags.get("operators").unwrap_or("core");
+    if operators != "core" && operators != "wide" {
+        return Envelope::new(false, "golden.compare", "--operators must be core or wide", "Fix the command and run it again.");
     }
-    if left == right {
-        Envelope::new(true, command, "Golden matches.", "Nothing was deleted.")
-    } else {
-        Envelope::new(false, command, "Golden differs.", "Nothing was deleted. Say why in a Golden-Change: line before recording again.")
+    let timeout = flags.int("suite-timeout-ms", 600_000).unwrap_or(600_000);
+    if let Err(message) = golden::pin_commit(&package, flags.get("repo"), flags.get("commit")) {
+        return Envelope::new(false, "golden.compare", message, "Fix the command and run it again.");
     }
+    golden::compare(&package, &flags.texts("module"), &flags.texts("tests"), &flags.texts("golden"), &out, operators, timeout, flags.get("commit"))
 }
 
 fn gap(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
+    let command = match action {
+        "fix" => "gap.fix",
+        "revert" => "gap.revert",
+        "" => return missing("gap", "missing fix or revert"),
+        other => return Envelope::new(false, &format!("gap.{other}"), format!("No gap handler for {other}."), "Use fix or revert."),
+    };
+    if let Some(envelope) = refused(command, &flags) {
+        return envelope;
+    }
     match action {
         "fix" => gap_fix(&flags),
         "revert" => gap_revert(&flags),
-        "" => missing("gap", "missing fix or revert"),
-        other => Envelope::new(false, &format!("gap.{other}"), format!("No gap handler for {other}."), "Use fix or revert."),
+        _ => unreachable!(),
     }
 }
 
 fn gap_fix(flags: &Flags) -> Envelope {
     let command = "gap.fix";
-    if let Err(envelope) = need(flags, "id", command) {
-        return envelope;
+    let state_dir = match need(flags, "state", command) {
+        Ok(path) => path,
+        Err(envelope) => return envelope,
+    };
+    let id = match flags.need("id") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let file = match flags.need("file") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let guard = match flags.need("guard") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let commit = match flags.need("commit") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let line = match flags.parse_int("line") {
+        Ok(Some(value)) if value >= 1 => value as i64,
+        Ok(_) => return Envelope::new(false, command, "--line must be a positive integer", "Fix the command and run it again."),
+        Err(message) => return Envelope::new(false, command, message, "Fix the command and run it again."),
+    };
+    let root = flags.get("root").map(PathBuf::from).unwrap_or_else(|| state_dir.clone());
+    let state = match memory::fix_gap(&memory::load_state(&state_dir), &id, &file, line, &guard, &commit, &root) {
+        Ok(state) => state,
+        Err(message) => return Envelope::new(false, command, message, "The gap is still a gap."),
+    };
+    if let Err(message) = memory::save_state(&state_dir, &state) {
+        return Envelope::new(false, command, message, "The state file could not be written.");
     }
-    Envelope::new(
-        false,
-        command,
-        "The gap is still a gap.",
-        "Add a test that fails on that mutant and passes on the unmutated code. This command does not write that test and does not delete one.",
-    )
+    Envelope::new(true, command, format!("{id} is fixed, guarded by {guard}."), "Run status.").with_extra("id", Value::String(id))
 }
 
 pub fn gap_revert(flags: &Flags) -> Envelope {
     let command = "gap.revert";
-    if let Err(envelope) = need(flags, "id", command) {
-        return envelope;
+    let state_dir = match flags.get("state") {
+        Some(value) => PathBuf::from(value),
+        None => return missing(command, "missing --state"),
+    };
+    let id = match flags.need("id") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let loaded = memory::load_state(&state_dir);
+    let (state, text) = match memory::revert_gap(&loaded, &id) {
+        Ok(value) => value,
+        Err(message) => return Envelope::new(false, command, message, "Nothing was deleted."),
+    };
+    if let Err(message) = memory::save_state(&state_dir, &state) {
+        return Envelope::new(false, command, message, "Nothing was deleted.");
     }
-    Envelope::new(true, command, "No test was deleted.", "gap revert does not remove a file.")
+    Envelope::new(true, command, text.clone(), text)
 }
 
 fn guard(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
     match action {
-        "check" => guard_check(&flags),
+        "check" => {
+            if let Some(envelope) = refused("guard.check", &flags) {
+                return envelope;
+            }
+            guard_check(&flags)
+        }
         "" => missing("guard", "missing check"),
         other => Envelope::new(false, &format!("guard.{other}"), format!("No guard handler for {other}."), "Use check."),
     }
@@ -387,25 +436,32 @@ fn guard(args: &[String]) -> Envelope {
 
 fn guard_check(flags: &Flags) -> Envelope {
     let command = "guard.check";
-    let root = match need(flags, "root", command) {
-        Ok(value) => PathBuf::from(value),
+    let state_dir = match need(flags, "state", command) {
+        Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let guard = match flags.get("guard") {
-        Some(value) => PathBuf::from(value),
-        None => root.join("guard.txt"),
+    let guard = match flags.need("guard") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
     };
-    if !guard.is_file() {
-        return Envelope::new(false, command, "No guard file.", "Pass --guard or add guard.txt. Nothing was changed.");
+    if memory::parse_guard(&guard).is_err() {
+        return Envelope::new(false, command, "guard must be file:line", "Fix the guard and run again.");
     }
-    Envelope::new(true, command, "Guard file is in place.", "A guard check does not edit the project.")
+    let root = flags.get("root").map(PathBuf::from).unwrap_or_else(|| state_dir.clone());
+    let (ok, summary) = memory::guard_allows(&memory::load_state(&state_dir), &guard, flags.get("message").unwrap_or(""), &root);
+    Envelope::new(ok, command, summary, if ok { "The guard check passed." } else { "Add a Guard-Change trailer naming the guard, or restore it." })
 }
 
 fn findings(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
     match action {
-        "add" => findings_add(&flags),
+        "add" => {
+            if let Some(envelope) = refused("findings.add", &flags) {
+                return envelope;
+            }
+            findings_add(&flags)
+        }
         "" => missing("findings", "missing add"),
         other => Envelope::new(false, &format!("findings.{other}"), format!("No findings handler for {other}."), "Use add."),
     }
@@ -413,246 +469,231 @@ fn findings(args: &[String]) -> Envelope {
 
 fn findings_add(flags: &Flags) -> Envelope {
     let command = "findings.add";
-    let state = match state_dir(flags, command) {
+    let state_dir = match need(flags, "state", command) {
         Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let text = match flags.get("reason").or_else(|| flags.get("text")) {
-        Some(value) => value.to_string(),
-        None => return missing(command, "missing --reason"),
+    let status = match flags.need("status") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
     };
-    let path = state.join("findings.json");
-    let mut items = match fs::read_to_string(&path).ok().and_then(|body| json::parse(&body).ok()) {
-        Some(Value::Array(items)) => items,
-        _ => Vec::new(),
-    };
-    items.push(Value::object(vec![("reason", Value::String(text))]));
-    if let Err(error) = write_json(&path, &Value::Array(items)) {
-        return Envelope::new(false, command, error, "The findings file could not be written.");
+    if !matches!(status.as_str(), "open" | "fixed" | "equivalent" | "wont-fix") {
+        return Envelope::new(false, command, "--status must be open, fixed, equivalent, or wont-fix", "Fix the command and run it again.");
     }
-    Envelope::new(true, command, "Added the finding.", "The note is in findings.json.")
+    let id = match flags.need("id") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let reason = match flags.need("reason") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing(command, &message),
+    };
+    let mut finding = memory::Finding {
+        id: id.clone(),
+        status: status.clone(),
+        reason,
+        file: flags.get("file").map(str::to_string),
+        line: flags.parse_int("line").ok().flatten().map(|value| value as i64),
+        hash: None,
+        agent: flags.get("agent").map(str::to_string),
+    };
+    if let (Some(file), Some(line)) = (&finding.file, finding.line) {
+        let root = flags.get("root").map(PathBuf::from).unwrap_or_else(|| state_dir.clone());
+        let Some(source) = memory::read_source_line(&root.join(file), line) else {
+            return Envelope::new(false, command, "decision line does not exist", "Point --file and --line at a line that exists.");
+        };
+        finding.hash = Some(memory::line_hash(&source));
+        let mut state = memory::load_state(&state_dir);
+        state.decisions.retain(|item| item.id != id);
+        state.decisions.push(memory::Decision {
+            id: id.clone(),
+            file: file.clone(),
+            line,
+            hash: finding.hash.clone().unwrap_or_default(),
+            status: status.clone(),
+            reason: finding.reason.clone(),
+        });
+        if let Err(message) = memory::save_state(&state_dir, &state) {
+            return Envelope::new(false, command, message, "The state file could not be written.");
+        }
+    }
+    if let Err(message) = memory::append_finding(&state_dir, &finding) {
+        return Envelope::new(false, command, message, "The finding was not written.");
+    }
+    Envelope::new(true, command, format!("Recorded {id} as {status}."), "Run status.")
 }
 
 fn status_command(flags: &Flags) -> Envelope {
-    let command = "status";
-    let out = match state_dir(flags, command) {
+    if let Some(envelope) = refused("status", flags) {
+        return envelope;
+    }
+    let state_dir = match need(flags, "state", "status") {
         Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let rows = runner::verdicts_in(&out);
-    if rows.is_empty() {
-        return Envelope::new(true, command, "No mutant results yet.", "mutate run writes results/. A kill is an assertion failure.");
+    let root = flags.get("root").map(PathBuf::from).unwrap_or_else(|| state_dir.clone());
+    let page = flags.get("page").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("PROBATIO.md"));
+    let score = flags.get("scores").and_then(|path| fs::read_to_string(path).ok()).and_then(|text| json::parse(&text).ok()).and_then(|value| {
+        let visible_before = value.get("visible").and_then(|item| item.get("before")).and_then(Value::as_int)?;
+        let visible_after = value.get("visible").and_then(|item| item.get("after")).and_then(Value::as_int)?;
+        let sealed_before = value.get("sealed").and_then(|item| item.get("before")).and_then(Value::as_int)?;
+        let sealed_after = value.get("sealed").and_then(|item| item.get("after")).and_then(Value::as_int)?;
+        Some((visible_before, visible_after, sealed_before, sealed_after))
+    });
+    match memory::status_command(&state_dir, &root, score, flags.get("agent"), &page) {
+        Ok(envelope) => envelope,
+        Err(message) => Envelope::new(false, "status", message, "The status page was not written."),
     }
-    let counts = decide::counts_of(&rows.iter().map(|(kind, _)| *kind).collect::<Vec<_>>());
-    Envelope::new(true, command, decide::campaign_summary(&counts), "Status reads the out dir. It does not delete a test.")
 }
 
 fn seal(flags: &Flags) -> Envelope {
-    let command = "seal";
-    let state = match state_dir(flags, command) {
+    if let Some(envelope) = refused("seal", flags) {
+        return envelope;
+    }
+    let state_dir = match need(flags, "state", "seal") {
         Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let record = Value::object(vec![
-        ("sealed", Value::Bool(true)),
-        ("hiddenRestored", Value::Bool(false)),
-    ]);
-    if let Err(error) = write_json(&state.join("seal.json"), &record) {
-        return Envelope::new(false, command, error, "The seal file could not be written.");
+    let mut ids = flags.texts("id");
+    if let Some(from) = flags.get("from") {
+        let text = match fs::read_to_string(from) {
+            Ok(text) => text,
+            Err(error) => return Envelope::new(false, "seal", error.to_string(), "Pass --from that can be read."),
+        };
+        let parsed = match json::parse(&text) {
+            Ok(value) => value,
+            Err(error) => return Envelope::new(false, "seal", error, "Pass --from as JSON."),
+        };
+        let list = match &parsed {
+            Value::Array(items) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            Value::Object(_) => match parsed.get("ids") {
+                Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        let fraction = flags.get("fraction").unwrap_or("0.2").parse::<f64>().unwrap_or(-1.0);
+        if !(0.0..=1.0).contains(&fraction) {
+            return Envelope::new(false, "seal", "--fraction must be between 0 and 1", "Fix the command and run it again.");
+        }
+        let seed = flags.int("seed", 20_261_004).unwrap_or(20_261_004) as u32;
+        ids = memory::choose_sealed(&list, fraction, seed);
     }
-    Envelope::new(true, command, "Sealed the out dir.", "A hidden test stays hidden.")
+    match memory::seal_ids(&state_dir, &ids) {
+        Ok(_) => Envelope::new(true, "seal", format!("Sealed {} ids.", ids.len()), "status, PROBATIO.md, and the queue omit them.").with_extra("sealedCount", Value::Int(ids.len() as i64)),
+        Err(message) => Envelope::new(false, "seal", message, "Nothing was sealed."),
+    }
 }
 
-fn queue(args: &[String]) -> Envelope {
+fn queue_group(args: &[String]) -> Envelope {
     let action = args.first().map(String::as_str).unwrap_or("");
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
+    let command = match action {
+        "seed" => "queue.seed",
+        "claim" => "queue.claim",
+        "reap" => "queue.reap",
+        "" => return missing("queue", "missing seed, claim, or reap"),
+        other => return Envelope::new(false, &format!("queue.{other}"), format!("No queue handler for {other}."), "Use seed, claim, or reap."),
+    };
+    if let Some(envelope) = refused(command, &flags) {
+        return envelope;
+    }
     match action {
         "seed" => queue_seed(&flags),
         "claim" => queue_claim(&flags),
         "reap" => queue_reap(&flags),
-        "" => missing("queue", "missing seed, claim, or reap"),
-        other => Envelope::new(false, &format!("queue.{other}"), format!("No queue handler for {other}."), "Use seed, claim, or reap."),
-    }
-}
-
-fn queue_path(flags: &Flags, command: &str) -> Result<PathBuf, Envelope> {
-    let state = state_dir(flags, command)?;
-    Ok(state.join("queue.json"))
-}
-
-fn read_queue(path: &Path) -> Vec<Value> {
-    match fs::read_to_string(path).ok().and_then(|body| json::parse(&body).ok()) {
-        Some(value) => match value.get("items") {
-            Some(Value::Array(items)) => items.clone(),
-            _ => Vec::new(),
-        },
-        None => Vec::new(),
+        _ => unreachable!(),
     }
 }
 
 fn queue_seed(flags: &Flags) -> Envelope {
-    let command = "queue.seed";
-    let path = match queue_path(flags, command) {
+    let state_dir = match need(flags, "state", "queue.seed") {
         Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let mut items = read_queue(&path);
-    if let Some(id) = flags.get("id") {
-        items.push(Value::object(vec![
-            ("id", Value::String(id.into())),
-            ("claimed", Value::Bool(false)),
-        ]));
+    match queue::seed(&state_dir, &flags.texts("id")) {
+        Ok(written) => Envelope::new(true, "queue.seed", format!("Seeded {} queue items.", written.len()), "Claim one.")
+            .with_extra("seeded", Value::Array(written.into_iter().map(Value::String).collect())),
+        Err(message) => Envelope::new(false, "queue.seed", message, "Nothing was seeded."),
     }
-    if let Err(error) = write_json(&path, &Value::object(vec![("items", Value::Array(items))])) {
-        return Envelope::new(false, command, error, "The queue file could not be written.");
-    }
-    Envelope::new(true, command, "Seeded the queue.", "claim takes the next id. Nothing was deleted.")
 }
 
 fn queue_claim(flags: &Flags) -> Envelope {
-    let command = "queue.claim";
-    let path = match queue_path(flags, command) {
+    let state_dir = match need(flags, "state", "queue.claim") {
         Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let mut items = read_queue(&path);
-    let mut claimed = None;
-    for item in &mut items {
-        let is_claimed = item.get("claimed").and_then(Value::as_bool).unwrap_or(false);
-        if !is_claimed {
-            if let Value::Object(entries) = item {
-                if let Some(slot) = entries.iter_mut().find(|(key, _)| key == "claimed") {
-                    slot.1 = Value::Bool(true);
-                } else {
-                    entries.push(("claimed".into(), Value::Bool(true)));
-                }
-                claimed = entries.iter().find(|(key, _)| key == "id").and_then(|(_, value)| value.as_str().map(str::to_string));
-            }
-            break;
-        }
-    }
-    if let Err(error) = write_json(&path, &Value::object(vec![("items", Value::Array(items))])) {
-        return Envelope::new(false, command, error, "The queue file could not be written.");
-    }
-    match claimed {
-        Some(id) => Envelope::new(true, command, format!("Claimed {id}."), "Finish the id, then reap.").with_extra("id", Value::String(id)),
-        None => Envelope::new(true, command, "Nothing to claim.", "Seed the queue first."),
+    let id = match flags.need("id") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing("queue.claim", &message),
+    };
+    let agent = match flags.need("agent") {
+        Ok(value) => value.to_string(),
+        Err(message) => return missing("queue.claim", &message),
+    };
+    let now = flags.int("now", 0).unwrap_or(0);
+    let now = if flags.get("now").is_none() { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|item| item.as_millis() as u64).unwrap_or(0) } else { now };
+    let lease = flags.int("lease-ms", 600_000).unwrap_or(600_000);
+    match queue::claim(&state_dir, &id, &agent, now, lease) {
+        Ok((ok, summary)) => Envelope::new(ok, "queue.claim", summary, if ok { "Work the claim, then check-kill it." } else { "Pick another item." }),
+        Err(message) => Envelope::new(false, "queue.claim", message, "Pick another item."),
     }
 }
 
 fn queue_reap(flags: &Flags) -> Envelope {
-    let command = "queue.reap";
-    let path = match queue_path(flags, command) {
+    let state_dir = match need(flags, "state", "queue.reap") {
         Ok(path) => path,
         Err(envelope) => return envelope,
     };
-    let items = read_queue(&path);
-    let before = items.len();
-    let kept: Vec<Value> = items
-        .into_iter()
-        .filter(|item| item.get("claimed").and_then(Value::as_bool) != Some(true))
-        .collect();
-    let reaped = before - kept.len();
-    if let Err(error) = write_json(&path, &Value::object(vec![("items", Value::Array(kept))])) {
-        return Envelope::new(false, command, error, "The queue file could not be written.");
+    let now = if flags.get("now").is_none() {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|item| item.as_millis() as u64).unwrap_or(0)
+    } else {
+        flags.int("now", 0).unwrap_or(0)
+    };
+    match queue::reap(&state_dir, now) {
+        Ok(returned) => {
+            let count = returned.len();
+            Envelope::new(
+                true,
+                "queue.reap",
+                format!("Returned {count} expired claims."),
+                if count == 0 { "Nothing expired." } else { "The expired claims are back in the queue." },
+            )
+            .with_extra("returned", Value::Array(returned.into_iter().map(Value::String).collect()))
+        }
+        Err(message) => Envelope::new(false, "queue.reap", message, "Nothing expired."),
     }
-    Envelope::new(true, command, format!("Reaped {reaped}."), "No test was deleted.")
 }
 
 fn check_kill(flags: &Flags) -> Envelope {
-    let command = "check-kill";
-    let out = match need(flags, "out", command) {
-        Ok(value) => PathBuf::from(value),
-        Err(envelope) => return envelope,
-    };
-    let id = match need(flags, "id", command) {
-        Ok(value) => value,
-        Err(envelope) => return envelope,
-    };
-    let path = out.join("results").join(format!("{id}.json"));
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(_) => return Envelope::new(false, command, "That mutant result is missing.", "Pass --out and --id from a finished run."),
-    };
-    let value = match json::parse(&text) {
-        Ok(value) => value,
-        Err(error) => return Envelope::new(false, command, error, "The result file is not JSON."),
-    };
-    let outcome = value.get("outcome").and_then(Value::as_str).unwrap_or("error");
-    if outcome == "killed" {
-        Envelope::new(
-            true,
-            command,
-            "The suite's assertion failed on this mutant.",
-            "A kill is not proof the change is safe.",
-        )
-        .with_extra("outcome", Value::String(outcome.into()))
-    } else {
-        Envelope::new(true, command, format!("This mutant is {outcome}."), "This was not recorded as a kill.")
-            .with_extra("outcome", Value::String(outcome.into()))
+    if let Some(envelope) = refused("check-kill", flags) {
+        return envelope;
     }
+    sealed::check_kill(flags)
 }
 
 fn verify_change(flags: &Flags) -> Envelope {
-    let command = "verify-change";
-    let package = match need(flags, "package", command) {
-        Ok(value) => PathBuf::from(value),
-        Err(envelope) => return envelope,
-    };
-    if !package.is_dir() {
-        return missing(command, "package is not a directory");
+    if let Some(envelope) = refused("verify-change", flags) {
+        return envelope;
     }
-    let next = "A kill is not proof a change is safe. Golden and contract checks say whether the expected result is still the expected result.";
-    let Some(suite) = flags.get("suite-command") else {
-        return Envelope::new(true, command, "No suite was run.", next);
-    };
-    let timeout = std::time::Duration::from_millis(flags.int("timeout-ms", 120_000).max(1));
-    let timed = crate::process::run_shell(suite, Some(&package), timeout);
-    let kind = decide::judge_baseline(timed.spawned, timed.timed_out, timed.status, &timed.stdout, &timed.stderr);
-    if let Some((summary, refusal)) = decide::baseline_refusal(kind) {
-        return Envelope::new(false, command, summary, format!("{refusal} {next}"));
-    }
-    Envelope::new(true, command, "The baseline suite passed. No mutant was introduced.", next)
+    verify::verify(flags)
 }
 
 fn schema(args: &[String]) -> Envelope {
     let flags = Flags::parse(args);
+    if let Some(envelope) = refused("schema", &flags) {
+        return envelope;
+    }
     let name = flags.positionals.first().map(String::as_str);
-    let Some(name) = name else {
-        return Envelope::new(
-            true,
-            "schema",
-            "schemaVersion 2.",
-            "Commands: mutate generate, mutate run, mutate sealed, mutate tally, ledger build, ledger check, matrix report, golden check, golden record, golden compare, gap fix, gap revert, guard check, findings add, status, seal, queue seed, queue claim, queue reap, check-kill, verify-change, schema.",
-        );
-    };
-    let file_name = format!("{}.schema.json", name.replace(' ', "."));
-    match schema_dir().map(|dir| dir.join(&file_name)).filter(|path| path.is_file()) {
-        Some(_path) => Envelope::new(true, "schema", format!("Schema file {file_name} is present."), "Read that file for the contract. schemaVersion 2.")
-            .with_extra("schemaFile", Value::String(file_name)),
-        None => Envelope::new(false, "schema", format!("No schema file {file_name}."), "Use a command name such as mutate.generate."),
-    }
+    schema_cmd::run(name)
 }
 
-fn schema_dir() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
-    for _ in 0..4 {
-        let candidate = dir.join("schemas");
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
+fn missing(command: &str, message: &str) -> Envelope {
+    Envelope::new(false, command, message.to_string(), "Pass the missing flag and run the command again.")
 }
 
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    fs::write(path, json::stringify(value)).map_err(|error| error.to_string())
+fn need(flags: &Flags, key: &str, command: &str) -> Result<PathBuf, Envelope> {
+    flags.need(key).map(PathBuf::from).map_err(|message| missing(command, &message))
 }
 
 #[cfg(test)]
@@ -678,7 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn tally_leaves_deleted_tests_at_zero() {
+    fn an_unknown_flag_is_refused_before_work() {
+        let envelope = dispatch(&args(&["mutate", "generate", "--package", "/tmp", "--out", "/tmp/out", "--bogus", "1"]));
+        assert!(!envelope.ok);
+        assert!(envelope.summary.contains("Unknown flag --bogus"), "{}", envelope.summary);
+    }
+
+    #[test]
+    fn tally_leaves_deleted_tests_at_zero_and_names_a_gap() {
         let out = std::env::temp_dir().join(format!("probatio-tally-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out);
         fs::create_dir_all(out.join("results")).unwrap();
@@ -687,18 +735,16 @@ mod tests {
             ("id", Value::String("m1".into())),
             ("outcome", Value::String("survived".into())),
             ("tests", Value::Array(vec![Value::String("SomeTest".into())])),
+            ("file", Value::String("src/A.java".into())),
+            ("line", Value::Int(2)),
         ]);
         fs::write(out.join("results/m1.json"), json::stringify(&result)).unwrap();
         let before = fs::read_dir(out.join("results")).unwrap().count();
-        let envelope = tally(&Flags::parse(&args(&["--out", &out.display().to_string()])));
+        let envelope = tally_command(&Flags::parse(&args(&["--out", &out.display().to_string()])));
         assert!(envelope.ok, "{}", envelope.summary);
-        assert_eq!(decide::deleted_tests(), 0);
         let value = json::parse(&envelope.render("")).unwrap();
         assert_eq!(value.get("deletedTests").and_then(Value::as_int), Some(0));
-        assert_eq!(
-            value.get("pruning").and_then(|item| item.get("deletedTests")).and_then(Value::as_int),
-            Some(0)
-        );
+        assert_eq!(value.get("pruning").and_then(|item| item.get("deletedTests")).and_then(Value::as_int), Some(0));
         let advice = value.get("pruning").and_then(|item| item.get("advice"));
         assert!(matches!(advice, Some(Value::Array(items)) if items.is_empty()));
         assert!(out.join("SomeTest.java").is_file());
@@ -708,6 +754,8 @@ mod tests {
             _ => None,
         });
         assert_eq!(listed, Some("SomeTest"));
+        assert!(envelope.summary.contains("1 gaps"), "{}", envelope.summary);
+        assert!(envelope.next_call.is_some(), "{}", envelope.next);
         let _ = fs::remove_dir_all(&out);
     }
 
@@ -734,10 +782,24 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let test = dir.join("SomeTest.java");
         fs::write(&test, "class SomeTest {}\n").unwrap();
-        let envelope = gap_revert(&Flags::parse(&args(&["--id", "m1"])));
-        assert!(envelope.ok);
+        let missing = gap_revert(&Flags::parse(&args(&["--state", &dir.display().to_string(), "--id", "m1"])));
+        assert!(!missing.ok, "{}", missing.summary);
         assert!(test.is_file());
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/guard.txt"), "keep\n").unwrap();
+        let state = memory::fix_gap(&memory::empty_state(), "m1", "src/a.java", 1, "src/guard.txt:1", "abc", &dir).unwrap();
+        memory::save_state(&dir, &state).unwrap();
+        let envelope = gap_revert(&Flags::parse(&args(&["--state", &dir.display().to_string(), "--id", "m1"])));
+        assert!(envelope.ok, "{}", envelope.summary);
+        assert!(envelope.summary.contains("guard broke"), "{}", envelope.summary);
         assert_eq!(fs::read_to_string(&test).unwrap(), "class SomeTest {}\n");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_command_exits_as_a_failure_envelope() {
+        let envelope = dispatch(&[]);
+        assert!(!envelope.ok);
+        assert!(envelope.summary.contains("Use mutate"), "{}", envelope.summary);
     }
 }
