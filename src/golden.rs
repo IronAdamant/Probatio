@@ -147,11 +147,9 @@ pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &st
             return fail(format!("{test} is not in the package."));
         }
     }
-    let scratch = std::env::temp_dir().join(format!(
-        "probatio-grec-scratch-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|item| item.as_nanos()).unwrap_or(0)
-    ));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = std::env::temp_dir().join(format!("probatio-grec-scratch-{}-{id}", std::process::id()));
     let _ = fs::remove_dir_all(&scratch);
     if copy_package(package, &scratch).is_err() {
         return fail("The package could not be copied for recording.".into());
@@ -188,6 +186,14 @@ pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &st
     let run = run_node_tests(&scratch, tests, &log, timeout_ms);
     let calls = read_calls(&log);
     let _ = fs::remove_dir_all(&scratch);
+    if run.timed_out {
+        return Envelope::new(
+            false,
+            "golden.record",
+            format!("The unit tests timed out after {timeout_ms}ms."),
+            "A timeout is not a contract. Run those tests green first.",
+        );
+    }
     if run.fail > 0 || run.code != 0 {
         return Envelope::new(
             false,
@@ -421,6 +427,7 @@ struct NodeRun {
     code: i32,
     pass: i64,
     fail: i64,
+    timed_out: bool,
 }
 
 fn run_node_tests(dir: &Path, tests: &[String], log: &Path, timeout_ms: u64) -> NodeRun {
@@ -436,7 +443,7 @@ fn run_node_tests(dir: &Path, tests: &[String], log: &Path, timeout_ms: u64) -> 
     );
     let pass = count_tap(&timed.stdout, "pass");
     let fail = count_tap(&timed.stdout, "fail");
-    NodeRun { code: timed.status.unwrap_or(1), pass, fail }
+    NodeRun { code: timed.status.unwrap_or(1), pass, fail, timed_out: timed.timed_out }
 }
 
 fn count_tap(text: &str, name: &str) -> i64 {
@@ -607,7 +614,9 @@ mod tests {
 
     #[test]
     fn record_writes_rows_from_a_passing_node_test() {
-        let dir = std::env::temp_dir().join(format!("probatio-grec-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("probatio-grec-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("test")).unwrap();
