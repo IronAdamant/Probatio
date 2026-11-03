@@ -2232,7 +2232,9 @@ mod tests {
     use std::process::Command;
 
     fn temp(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("probatio-{name}-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("probatio-{name}-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(path.join("src")).unwrap();
         path
@@ -2276,8 +2278,11 @@ mod tests {
             patches.display().to_string(),
             "--out".into(),
             out.display().to_string(),
+            // Windows runners start python while the rest of the suite is also
+            // spawning it. 10s was inside that cold start, so the baseline was
+            // reported as timed out and the run never reached "No line map".
             "--timeout-ms".into(),
-            "10000".into(),
+            "60000".into(),
         ];
         args.extend(extra.iter().map(|arg| (*arg).to_string()));
         run(&Flags::parse(&args))

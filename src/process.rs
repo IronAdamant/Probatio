@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -141,33 +142,14 @@ fn run_group_with_path(
     unsafe {
         setpgid(pid as i32, pid as i32);
     }
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let stdout_handle = thread::spawn(move || read_pipe(stdout.take()));
-    let stderr_handle = thread::spawn(move || read_pipe(stderr.take()));
-    let timed_out = false;
+    let stdout_buf = Arc::new(Mutex::new(String::new()));
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    let stdout_handle = spawn_drain(child.stdout.take(), Arc::clone(&stdout_buf));
+    let stderr_handle = spawn_drain(child.stderr.take(), Arc::clone(&stderr_buf));
     let status = loop {
-        if start.elapsed() >= timeout {
-            // Kill what we can, then return. Joining the pipe readers waits until every
-            // grandchild closes stdout. Git Bash `sleep` breaks out of `taskkill /T`,
-            // so that join would last as long as the grandchild.
-            kill_tree(pid);
-            let _ = child.kill();
-            let _ = child.wait();
-            drop(stdout_handle);
-            drop(stderr_handle);
-            return TimedRun {
-                spawned: true,
-                status: None,
-                timed_out: true,
-                duration: start.elapsed(),
-                stdout: String::new(),
-                stderr: String::new(),
-            };
-        }
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
-            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {}
             Err(error) => {
                 kill_tree(pid);
                 let _ = child.kill();
@@ -179,20 +161,48 @@ fn run_group_with_path(
                     status: None,
                     timed_out: false,
                     duration: start.elapsed(),
-                    stdout: String::new(),
+                    stdout: snapshot(&stdout_buf),
                     stderr: error.to_string(),
                 };
             }
         }
+        if start.elapsed() >= timeout {
+            // The child can exit during the 20ms sleep. Killing it then, and
+            // throwing away the pipes, reported a finished suite as a timeout.
+            if let Ok(Some(status)) = child.try_wait() {
+                break status.code();
+            }
+            // Joining the readers waits until every grandchild closes the pipes.
+            // Git Bash `sleep` survives `taskkill /T` and would hold that join
+            // for the rest of the sleep. Keep whatever was already read.
+            kill_tree(pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            let stdout = snapshot(&stdout_buf);
+            let stderr = snapshot(&stderr_buf);
+            drop(stdout_handle);
+            drop(stderr_handle);
+            return TimedRun {
+                spawned: true,
+                status: None,
+                timed_out: true,
+                duration: start.elapsed(),
+                stdout,
+                stderr,
+            };
+        }
+        thread::sleep(Duration::from_millis(20));
     };
     let duration = start.elapsed();
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
     TimedRun {
         spawned: true,
         status,
-        timed_out,
+        timed_out: false,
         duration,
-        stdout: stdout_handle.join().unwrap_or_default(),
-        stderr: stderr_handle.join().unwrap_or_default(),
+        stdout: snapshot(&stdout_buf),
+        stderr: snapshot(&stderr_buf),
     }
 }
 
@@ -215,14 +225,24 @@ pub fn kill_tree(pid: u32) {
     }
 }
 
-fn read_pipe(pipe: Option<impl Read>) -> String {
-    let mut pipe = match pipe {
-        Some(pipe) => pipe,
-        None => return String::new(),
-    };
-    let mut buffer = Vec::new();
-    let _ = pipe.read_to_end(&mut buffer);
-    String::from_utf8_lossy(&buffer).into_owned()
+fn spawn_drain(pipe: Option<impl Read + Send + 'static>, into: Arc<Mutex<String>>) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let Some(mut pipe) = pipe else { return };
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&chunk[..n]);
+                    into.lock().unwrap_or_else(|poison| poison.into_inner()).push_str(&text);
+                }
+            }
+        }
+    })
+}
+
+fn snapshot(buf: &Mutex<String>) -> String {
+    buf.lock().unwrap_or_else(|poison| poison.into_inner()).clone()
 }
 
 /// Shell a user suite command. The shell is the group leader, so its children die with it.

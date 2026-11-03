@@ -1,5 +1,10 @@
 node_modules/
 dist/
+/npm/dist/
+/npm/*.tgz
+/npm/*/*.tgz
+/npm/*/bin/probatio
+/npm/*/bin/probatio.exe
 .probatio/
 *.tsbuildinfo
 .stele-context/

@@ -1,10 +1,29 @@
 # Changelog
 
-The entries below describe the TypeScript 0.3.0 program. The Rust binary is the program, and `README.md` plus `AGENTS.md` are the contract.
+The Rust binary is the program. `README.md` and `AGENTS.md` are the contract. Entries from 0.3.0 down describe the TypeScript program.
 
-Versions on npm, newest first. `0.1.1` was committed and was not published. Git tags are not created here.
+Versions on npm, newest first. `0.4.0` was the crate version in git and was not published. `0.1.1` was committed and was not published. Git tags were not created for the TypeScript versions. A `v*` tag publishes the version named in that commit.
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
+
+## 0.5.0
+
+The npm package installs the Rust binary. `npm install probatio` runs a Node launcher, which starts the binary in the matching platform package: `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, or `probatio-win32-x64`. A `v*` tag builds the GitHub release assets and publishes those packages. The MCP server reports this crate version.
+
+Five runs of each command on one machine, median milliseconds with the min and max in parentheses. TypeScript is commit `c5cd175` (`node /tmp/probatio-ts/dist/cli.js`, Node 22.23.4). Rust is `target/release/probatio` from this checkout. The machine was Linux 6.12, x86_64, 4 cores, Intel Xeon, 16 GB.
+
+Kill counts matched on every scored run. `--no-confirm` is on for the run rows so the clock is the suite, not the confirmation rerun. The JS run was measured again after that command gained `--test-concurrency` and `--test-timeout`; the count stayed 2 killed and 4 survived. itsdangerous is Pallets itsdangerous at the depth-1 checkout used here: 10 mutants in 8 files, so `--max-mutants 20` did not drop any.
+
+| Command | TypeScript | Rust |
+| --- | --- | --- |
+| startup, `schema` | 287 (287–297) | 11 (11–11) |
+| generate, JS sample, 6 mutants | 307 (307–308) | 11 (11–11) |
+| generate, Python sample, 6 mutants | 307 (297–308) | 11 (11–11) |
+| run, JS sample, 2 killed / 4 survived | 832 (823–853) | 743 (722–762) |
+| run, Python sample, 2 killed / 4 survived | 1429 (1418–1450) | 1130 (1090–1171) |
+| run, Python sample, `--workers 4`, same 2 killed | 805 (796–851) | 491 (471–495) |
+| generate, itsdangerous `src`, 10 mutants | 369 (360–371) | 21 (21–21) |
+| run, itsdangerous, 7 killed / 3 survived | 7568 (7528–7625) | 7003 (6995–7049) |
 
 ## 0.3.0
 
