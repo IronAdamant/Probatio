@@ -1,18 +1,16 @@
 # Releasing Probatio
 
-The entries below describe the TypeScript 0.3.0 program. The Rust binary is the program, and `README.md` plus `AGENTS.md` are the contract.
+The program is the Rust binary. The crate version is 0.5.0. `README.md` and `AGENTS.md` are the contract. Changelog entries through 0.3.0 describe the TypeScript program.
 
-The program in this repository is the Rust binary. The steps below describe the old npm release and are not the current publish path. A release of the binary still needs a green `cargo test` and a reason in the CHANGELOG.
+A release needs a green `cargo test` on Linux, macOS, and Windows, and a reason in the CHANGELOG. The version string is the same in `Cargo.toml`, `Cargo.lock`, the npm `package.json` files, the README, and the CHANGELOG. The MCP server reports `CARGO_PKG_VERSION`. `probatio --version` prints that same version.
 
-One version, one commit, one tag, in this order. The old `npm publish` ran `scripts/release-check.mjs` first (`prepublishOnly`) and refused when a step was missing.
+1. Land the version commit on `main`.
+2. Wait until `test` and `self-score` are green on that commit.
+3. Tag that commit and push the tag: `git tag -a v<version> -m v<version> && git push origin v<version>`.
+4. `.github/workflows/release.yml` builds `x86_64-unknown-linux-musl`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, and `x86_64-pc-windows-msvc`, then attaches those binaries to the GitHub release.
+5. The same workflow publishes `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, and `probatio-win32-x64`, then `probatio`. It uses `NPM_TOKEN` (`secrets.NPM_TOKEN`) and passes `--provenance` when this npm supports that flag. If `NPM_TOKEN` is not set, the job logs `NPM_TOKEN is not set. Skipping npm publish.` and leaves the GitHub release in place.
+6. A later commit can record the publish date and gitHead. The tag stays on the version commit.
 
-1. **Changes land on `main` and both workflows go green on that commit.** `test` (core, pack on Node 22 and 24, toolchain, macos) and `self-score` (Probatio's own ledger: every fixed bug keeps the outcome recorded in `ledger/<id>.golden.json`). A red self-score means a fixed bug is back in reach of the suite, or a ledger patch stopped applying. Fix that first.
-2. **Version commit.** `npm version <x.y.z> --no-git-tag-version`, then add `## <x.y.z>` to `CHANGELOG.md` with what changed for an agent reading the JSON. Bump `SCHEMA_VERSION` in `src/contract.ts` and the `schemaVersion` const in every `schemas/*.schema.json` when a field is renamed, removed, or changes meaning. A new field does not bump it. Commit as `Set version <x.y.z> ...` and push.
-3. **Wait for both workflows on the version commit.** `gh run list --commit $(git rev-parse HEAD)`.
-4. **Tag that commit.** `git tag -a v<x.y.z> -m v<x.y.z> && git push origin v<x.y.z>`.
-5. **Publish.** `npm publish` from a clean `main`. The checks print one line each, and every one must say `ok`. The tag push starts its own `test` run on the same commit. The check reads the run from the push to `main`, not that one.
-6. **Record it.** A follow-up commit adds the publish date and gitHead to the `CHANGELOG.md` entry. The tag stays on the version commit.
+`scripts/npm-pack-local.sh` builds tarballs for a local install check. It does not publish. The `@probatio` npm scope belongs to a different project, so the platform packages are unscoped.
 
-`npm publish --ignore-scripts` skips the checks. Use it only when a check is wrong, and say which and why in the CHANGELOG entry.
-
-Why this order: 0.0.1 to 0.1.3 went out in two days, and the review on 2026-10-08 found false kills, false survivors, and a headline proof that did not hold. Each one was green on the tests of the day. A self-score on the version commit is the cheapest check that the tool still tells the truth about its own suite.
+Do not publish from a laptop, and do not publish a version that has no CHANGELOG entry.

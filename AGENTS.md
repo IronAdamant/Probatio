@@ -2,7 +2,7 @@
 
 Probatio is the program in this repository. Agents run it. A person who is not going to run commands can stop after the top of `README.md`.
 
-The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. `docs/` and `CHANGELOG.md` describe the TypeScript program. Do not follow them as the current contract. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
+The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.5.0, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
 
 Probatio scores a test suite. It does not replace the suite, write the missing test, fetch a toolchain, or prove a change is safe. A kill is an assertion the suite already had.
 
@@ -156,7 +156,7 @@ CLI. Flags for each one live in `schemas/<name>.schema.json`. Ask with `probatio
 
 Before calling a sealed kill a catch, check that the fix commit did not also edit the killing test. If it did, the kill came from the fix, and it is a miss.
 
-Do not publish around the release checks. A release needs a reason in the CHANGELOG.
+Do not publish around the release checks. A release needs a reason in the CHANGELOG. `docs/releasing.md` is the publish path. Do not push a tag or publish from a campaign.
 
 ## Rules
 

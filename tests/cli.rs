@@ -105,6 +105,19 @@ fn one_envelope(stdout: &str) -> json::Value {
 }
 
 #[test]
+fn version_flag_reports_the_crate_version() {
+    let (code, stdout) = launch(&["--version"]);
+    assert_eq!(code, 0);
+    let value = one_envelope(&stdout);
+    assert_eq!(value.get("command").and_then(json::Value::as_str), Some("version"));
+    assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(true));
+    assert_eq!(value.get("summary").and_then(json::Value::as_str), Some(env!("CARGO_PKG_VERSION")));
+    let (again, second) = launch(&["-V"]);
+    assert_eq!(again, 0);
+    assert_eq!(second, stdout);
+}
+
+#[test]
 fn schema_prints_one_envelope_and_repeats_it() {
     let (code, first) = launch(&["schema"]);
     let (_again, second) = launch(&["schema"]);
@@ -149,6 +162,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
     );
     assert_eq!(init.get("result").and_then(|value| value.get("serverInfo")).and_then(|value| value.get("name")).and_then(json::Value::as_str), Some("probatio"));
+    assert_eq!(init.get("result").and_then(|value| value.get("serverInfo")).and_then(|value| value.get("version")).and_then(json::Value::as_str), Some(env!("CARGO_PKG_VERSION")));
     writeln!(stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
 
     let pong = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#);

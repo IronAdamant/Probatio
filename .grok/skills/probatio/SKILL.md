@@ -8,7 +8,7 @@ description: >
 
 # Probatio
 
-Follow `AGENTS.md` in this checkout. That file is the contract: what Probatio does, the MCP tools, the CLI commands, how a campaign runs, and the scoring rules. `docs/` and `CHANGELOG.md` describe the old TypeScript program.
+Follow `AGENTS.md` in this checkout. That file is the contract: what Probatio does, the MCP tools, the CLI commands, how a campaign runs, and the scoring rules. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the old TypeScript program.
 
 Prefer the `probatio` MCP server when it is connected. The tools are `schema`, `mutate_generate`, `mutate_run`, and `mutate_tally`. The project entry is `.grok/config.toml`. It launches `probatio mcp` through `.grok/probatio-mcp.sh`. A session that is already open does not see a server that was just added.
 

@@ -1,0 +1,34 @@
+{
+  "name": "probatio",
+  "version": "0.5.0",
+  "description": "Mutation runner. Scores a test suite by the bugs it catches. Installs the Rust binary.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IronAdamant/Probatio.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/IronAdamant/Probatio",
+  "bugs": {
+    "url": "https://github.com/IronAdamant/Probatio/issues"
+  },
+  "bin": {
+    "probatio": "bin/probatio.js"
+  },
+  "files": [
+    "bin/probatio.js",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "probatio-linux-x64": "0.5.0",
+    "probatio-darwin-arm64": "0.5.0",
+    "probatio-darwin-x64": "0.5.0",
+    "probatio-win32-x64": "0.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
