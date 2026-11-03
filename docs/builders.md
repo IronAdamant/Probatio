@@ -1,5 +1,7 @@
 # Building Probatio
 
+The entries below describe the TypeScript 0.3.0 program. The Rust binary is the program, and `README.md` plus `AGENTS.md` are the contract.
+
 This page is for people changing Probatio. An agent scoring some other repository can stop at the README and `AGENTS.md`.
 
 Read in this order:

@@ -57,9 +57,18 @@ Discovery does not launch the tool:
 - else `pom.xml` then `mvn -B test`
 - else `package.json`: a non-empty string `scripts.test` is used as written, otherwise `node --test`. No other `scripts` key is read. Invalid `package.json` stops the run the same way.
 - else `pytest.ini` or `pyproject.toml` then `python3 -m pytest`
+- else `Package.swift` then `swift test`
+- else a root `.sln`, `.csproj`, or `.fsproj` then `dotnet test`
+- else `Makefile`, `makefile`, or `GNUmakefile` then `make test`
+- else `.mocharc.json`, `.mocharc.js`, `.mocharc.cjs`, `.mocharc.yml`, or `.mocharc.yaml` then `mocha`
+- else `CMakeLists.txt` then `ctest --output-on-failure`
+- else `test_*.py` in the package root, or in a direct child directory named `tests`, then `python3 -m unittest discover`
+- else a root `.cob`, `.cbl`, or `.cobol` then `cobc -xj`
+- else a root `.c`, `.cc`, `.cpp`, `.h`, or `.hpp` then `make test`
+- else a root `.s`, `.S`, or `.asm` then `make test`
 - else stop and ask. Do not invent a command.
 
-When the resolved command is exactly `python3 -m pytest` or `python3 -m unittest discover`, with an optional `{tests}` or `{tests,}` token and no other arguments, the run uses the reporter in the binary. A test that ran and failed is a kill, including `ValueError`. A load failure is unviable. A pytest baseline writes `<out>/lines.json` when `coverage.py` imports, and that map selects tests without a `{tests}` token. If `coverage.py` does not import, the map is not written and the large-batch stop still applies. A caller `--line-map` is not replaced. Any other command is scored from the process exit. The result file may include `killedBy`. The envelope does not.
+Pytest is `pytest`, a path whose last component is `pytest` (including `.venv/bin/pytest`), or `python` / `python3` followed by `-m pytest`. Arguments after that program are passed through. `{tests}` and `{tests,}` stay tokens. Unittest is the same Python programs followed by `-m unittest discover`, with an optional `-s` directory. The run loads `test_*.py` by file path from the package root, from `tests/`, and from `test/`, including a folder with no `__init__.py`. `-s` limits that walk. A test that ran and failed is a kill, including `ValueError`. A load failure (`SyntaxError`, `IndentationError`, `ImportError`, or `ModuleNotFoundError`) is unviable. A pytest baseline writes `<out>/lines.json` when `coverage.py` imports, and that map selects tests without a `{tests}` token. If `coverage.py` does not import, the map is not written and the large-batch stop still applies. A caller `--line-map` is not replaced. `make test` stays on the process exit. It is also the command for C, COBOL, and assembly. When a mutant is scored from the process exit, `next` says a crash whose text contains `error:` can be filed as did not build. The result file may include `killedBy`. The envelope does not.
 
 `{tests,}` is filled in first, then `{tests}`. A command that only has `{tests,}` does not also count as `{tests}`. `{tests}` single-quotes each selected name. `{tests,}` joins names with commas. A name must be ASCII letters, digits, or `_` `-` `.` `/` `:`. An empty name, or any other character, refuses the run. `::command` is not a test id.
 
@@ -85,9 +94,11 @@ Any other shape only allows the batch. That includes `{"lines":[1]}`, a non-JSON
 
 Names for one mutant, in order: the mutant's own test list when it is non-empty, else the map names when the map chooses, else the `--tests` file (one name per line) when the map is absent or is a slip. `--tests` is ignored when the map chooses. The baseline command receives every name from a choosing map, with no cap. Each mutant then records at most `maxSelected` names (default 30). `selectionCapped` and `selectedCount` say when the cap applied.
 
-A mutant the choosing map does not name is outcome `no coverage`, duration 0, no `command` field, and the suite is not started.
+A line the choosing map does not list is outcome `no coverage`, duration 0, no `command` field, and the suite is not started. A line the map lists with an empty test list was executed and named no test. The whole suite runs. The outcome is killed or survived.
 
-A choosing map that names at least one mutant in the batch, together with a suite command that has neither token, refuses after a green baseline and before any result is written. Summary: "The line map named tests and the suite command has no {tests} token." The map at `<out>/lines.json` written from a Python baseline is the exception: the reporter receives the names as arguments, and that refusal does not apply. A line map passed in still needs the token.
+A choosing map that names at least one mutant in the batch, together with a suite command that has neither token, refuses after a green baseline and before any result is written. Summary: "The line map named tests and the suite command has no {tests} token." The map at `<out>/lines.json` written by the baseline is the exception, and that refusal does not apply. A pytest map passes the names to the reporter. A Go, Node, Java, or Rust map runs the command as written when it has no token, and records the names on the result. A line map passed in still needs the token when it names tests.
+
+After a green baseline, and only when the caller passed no line map, the run collects for `go test ./...`, `node --test`, `mvn -B test` (or that command with a `{tests}` token), `cargo test`, and pytest. Go reads a cover profile. Node reads the coverage report from `--experimental-test-coverage`. Java reads `target/site/jacoco/jacoco.xml` only when `pom.xml` contains `jacoco` and that file exists. Rust reads `cargo llvm-cov` only when that program is on `PATH`. Pytest keeps the `coverage.py` map, which still names tests. Unittest does not grow a coverage tool. A missing tool or an empty report records `lineMap` as an empty string, leaves the large-batch stop in place, and names the tool in `next`. That second step does not turn a green baseline red. The binary does not download a tool, and it does not stamp one list of test classes onto every line.
 
 No usable line map, and more than 30 mutants pending: stop before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call still scores at most 30 mutants that have no result yet, unless `confirmCount` equals the waiting count. Resume argv never includes `--confirm-count`. `--workers` above 1 is accepted and ignored. The next line says "Workers stay at 1." Peak work is one worktree or copy, plus one suite process.
 
@@ -115,7 +126,7 @@ A timeout, an unviable mutant, and an error are not kills and not gaps. For a le
 
 A result file that already says `flaky` is counted as flaky. The scorer does not assign that outcome itself.
 
-Baseline judgements, and the run stops before any mutant: `green`, `red` ("already failing"), `no-report`, `timed-out`, `missing-tool`. `baseline.json` stores the judgement, `durationMs`, and the template. A Python baseline also stores `lineMap`: `lines.json` when coverage wrote a map, or an empty string when it did not. The file does not store stdout or stderr.
+Baseline judgements, and the run stops before any mutant: `green`, `red` ("already failing"), `no-report`, `timed-out`, `missing-tool`. `baseline.json` stores the judgement, `durationMs`, and the template. A baseline that looked for a coverage map also stores `lineMap`: `lines.json` when a report was written, or an empty string when it was not. The file does not store stdout or stderr.
 
 ## Commands
 

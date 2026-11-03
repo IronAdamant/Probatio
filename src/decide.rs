@@ -261,6 +261,17 @@ fn unsafe_test_name(name: &str) -> bool {
         })
 }
 
+/// Where one source line sits in a `files` map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LineHit {
+    /// The map does not choose lines. The shared test list, or the whole suite, applies.
+    Unmapped,
+    /// A choosing map does not list this line.
+    Dark,
+    /// The map lists this line. An empty vec means the suite hit it and named no test.
+    Listed(Vec<String>),
+}
+
 /// A `files` map names tests. Any other text is a permission slip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestMap {
@@ -281,22 +292,31 @@ impl TestMap {
     }
 
     pub fn names_for(&self, file: &str, line: usize) -> Vec<String> {
+        match self.line_hit(file, line) {
+            LineHit::Listed(names) => names,
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn line_hit(&self, file: &str, line: usize) -> LineHit {
         if !self.chooses {
-            return Vec::new();
+            return LineHit::Unmapped;
         }
         let file = normalize_path(file);
         let Some((_, ranges)) = self.files.iter().find(|(path, _)| path == &file) else {
-            return Vec::new();
+            return LineHit::Dark;
         };
         let mut names = Vec::new();
+        let mut listed = false;
         for range in ranges {
             if line >= range.start && line <= range.end {
+                listed = true;
                 for name in &range.tests {
                     push_unique(&mut names, name);
                 }
             }
         }
-        names
+        if listed { LineHit::Listed(names) } else { LineHit::Dark }
     }
 
     pub fn all_names(&self) -> Vec<String> {
@@ -472,8 +492,12 @@ mod tests {
         );
         assert!(map.chooses);
         assert_eq!(map.names_for("src/A.java", 3), vec!["FooTest".to_string(), "BarTest".to_string()]);
+        assert!(matches!(map.line_hit("src/A.java", 6), LineHit::Dark));
         assert!(map.names_for("src/A.java", 6).is_empty());
         assert_eq!(map.names_for("src/B.java", 1), vec!["Other".to_string()]);
+        let bare = parse_test_map(r#"{"files":{"src/A.java":[{"start":4,"end":4,"tests":[]}]}}"#);
+        assert!(matches!(bare.line_hit("src/A.java", 4), LineHit::Listed(names) if names.is_empty()));
+        assert!(matches!(bare.line_hit("src/A.java", 3), LineHit::Dark));
         assert_eq!(
             map.all_names(),
             vec!["FooTest".to_string(), "BarTest".to_string(), "Other".to_string()]

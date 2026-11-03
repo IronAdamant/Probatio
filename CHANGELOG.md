@@ -1,5 +1,7 @@
 # Changelog
 
+The entries below describe the TypeScript 0.3.0 program. The Rust binary is the program, and `README.md` plus `AGENTS.md` are the contract.
+
 Versions on npm, newest first. `0.1.1` was committed and was not published. Git tags are not created here.
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.

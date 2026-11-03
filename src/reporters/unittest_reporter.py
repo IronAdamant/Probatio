@@ -37,15 +37,20 @@ def walk(suite):
 def parse_args(argv):
     pattern = None
     files = []
+    walked = False
     index = 0
     while index < len(argv):
         if argv[index] == "--pattern":
             pattern = argv[index + 1]
             index += 2
             continue
+        if argv[index] == "--walked":
+            walked = True
+            index += 1
+            continue
         files.append(argv[index])
         index += 1
-    return pattern, files
+    return pattern, files, walked
 
 
 def load_failure(trace):
@@ -59,7 +64,7 @@ def load_failure(trace):
 
 
 def main():
-    pattern, files = parse_args(sys.argv[1:])
+    pattern, files, walked = parse_args(sys.argv[1:])
     sys.path.insert(0, str(Path.cwd()))
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -68,7 +73,7 @@ def main():
         if files:
             for file in files:
                 suite.addTest(loader.loadTestsFromModule(load(Path(file))))
-        else:
+        elif not walked:
             suite.addTest(loader.discover(".", pattern="test*.py"))
     except Exception as exc:
         name = type(exc).__name__

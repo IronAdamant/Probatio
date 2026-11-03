@@ -1,5 +1,7 @@
 # Releasing Probatio
 
+The entries below describe the TypeScript 0.3.0 program. The Rust binary is the program, and `README.md` plus `AGENTS.md` are the contract.
+
 The program in this repository is the Rust binary. The steps below describe the old npm release and are not the current publish path. A release of the binary still needs a green `cargo test` and a reason in the CHANGELOG.
 
 One version, one commit, one tag, in this order. The old `npm publish` ran `scripts/release-check.mjs` first (`prepublishOnly`) and refused when a step was missing.
