@@ -2,7 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/gap.revert.schema.json",
   "flags": [
-    {"name": "id", "required": true}
+    {
+      "name": "state",
+      "required": true
+    },
+    {
+      "name": "id",
+      "required": true
+    }
   ],
   "title": "probatio gap.revert",
   "description": "Reports a fixed gap that came back, naming the original fix and guard. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",

@@ -2,7 +2,26 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/golden.check.schema.json",
   "flags": [
-    {"name": "recorded", "required": true}
+    {
+      "name": "recorded",
+      "required": true
+    },
+    {
+      "name": "update",
+      "required": false
+    },
+    {
+      "name": "actual",
+      "required": true
+    },
+    {
+      "name": "message",
+      "required": false
+    },
+    {
+      "name": "root",
+      "required": false
+    }
   ],
   "title": "probatio golden.check",
   "description": "Compares a recorded golden table with a new one. Contract changes need a Golden-Change trailer. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",

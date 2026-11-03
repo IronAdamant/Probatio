@@ -2,8 +2,134 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.sealed.schema.json",
   "flags": [
-    {"name": "package", "required": true},
-    {"name": "out", "required": true}
+    {
+      "name": "hide",
+      "required": false
+    },
+    {
+      "name": "only-test",
+      "required": false
+    },
+    {
+      "name": "suite-command",
+      "required": false
+    },
+    {
+      "name": "package",
+      "required": true
+    },
+    {
+      "name": "patches",
+      "required": true
+    },
+    {
+      "name": "out",
+      "required": true
+    },
+    {
+      "name": "repo",
+      "required": false
+    },
+    {
+      "name": "workers",
+      "required": false
+    },
+    {
+      "name": "direction",
+      "required": false
+    },
+    {
+      "name": "concurrency",
+      "required": false
+    },
+    {
+      "name": "max-minutes",
+      "required": false
+    },
+    {
+      "name": "max-mutants",
+      "required": false
+    },
+    {
+      "name": "build",
+      "required": false
+    },
+    {
+      "name": "tests-dir",
+      "required": false
+    },
+    {
+      "name": "unset",
+      "required": false
+    },
+    {
+      "name": "suite-timeout-ms",
+      "required": false
+    },
+    {
+      "name": "test-timeout-ms",
+      "required": false
+    },
+    {
+      "name": "confirm",
+      "required": false
+    },
+    {
+      "name": "affected",
+      "required": false
+    },
+    {
+      "name": "agent",
+      "required": false
+    },
+    {
+      "name": "history",
+      "required": false
+    },
+    {
+      "name": "timeout-multiple",
+      "required": false
+    },
+    {
+      "name": "timeout-floor-ms",
+      "required": false
+    },
+    {
+      "name": "budget-ms",
+      "required": false
+    },
+    {
+      "name": "commit",
+      "required": false
+    },
+    {
+      "name": "line-map",
+      "required": false
+    },
+    {
+      "name": "timeout-ms",
+      "required": false
+    },
+    {
+      "name": "tests",
+      "required": false
+    },
+    {
+      "name": "max-selected",
+      "required": false
+    },
+    {
+      "name": "confirm-count",
+      "required": false
+    },
+    {
+      "name": "label",
+      "required": true
+    },
+    {
+      "name": "fix",
+      "required": false
+    }
   ],
   "title": "probatio mutate.sealed",
   "description": "Printed instead of the run report when the sealed label leaked into it. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",

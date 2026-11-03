@@ -96,9 +96,32 @@ pub fn write_all_flush(mut writer: impl Write, bytes: &[u8]) -> io::Result<()> {
     writer.flush()
 }
 
-pub fn emit(envelope: &Envelope) -> i32 {
+pub fn render_text(envelope: &Envelope, human: bool) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let rendered = envelope.render(&home);
+    if !human {
+        return envelope.render(&home);
+    }
+    let value = envelope.to_value(&home);
+    let summary = value.get("summary").and_then(Value::as_str).unwrap_or("");
+    let next = value.get("next").and_then(Value::as_str).unwrap_or("");
+    let mut lines = vec![summary.to_string(), next.to_string()];
+    if let Some(argv) = value.get("nextCall").and_then(|item| item.get("argv")) {
+        if let Value::Array(items) = argv {
+            let words = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+            if !words.is_empty() {
+                lines.push(format!("next call: probatio {words}"));
+            }
+        }
+    }
+    format!("{}\n", lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n"))
+}
+
+pub fn emit(envelope: &Envelope) -> i32 {
+    emit_with(envelope, false)
+}
+
+pub fn emit_with(envelope: &Envelope, human: bool) -> i32 {
+    let rendered = render_text(envelope, human);
     let mut stdout = io::stdout().lock();
     if write_all_flush(&mut stdout, rendered.as_bytes()).is_err() {
         return 1;
@@ -114,15 +137,21 @@ pub fn read_text(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs::File;
+    #[cfg(unix)]
     use std::io::Read;
+    #[cfg(unix)]
     use std::os::unix::io::FromRawFd;
+    #[cfg(unix)]
     use std::thread;
 
+    #[cfg(unix)]
     unsafe extern "C" {
         fn pipe(fds: *mut i32) -> i32;
     }
 
+    #[cfg(unix)]
     #[test]
     fn large_envelope_survives_a_pipe() {
         let mut envelope = Envelope::new(true, "schema", "short", "x".repeat(2_000_000));

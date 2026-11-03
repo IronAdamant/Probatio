@@ -2,11 +2,58 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.generate.schema.json",
   "flags": [
-    {"name": "package", "required": true},
-    {"name": "out", "required": true},
-    {"name": "src", "required": false},
-    {"name": "max-mutants", "required": false},
-    {"name": "operators", "required": false}
+    {
+      "name": "package",
+      "required": true
+    },
+    {
+      "name": "out",
+      "required": true
+    },
+    {
+      "name": "per-file",
+      "required": false
+    },
+    {
+      "name": "src",
+      "required": false
+    },
+    {
+      "name": "skip",
+      "required": false
+    },
+    {
+      "name": "seed",
+      "required": false
+    },
+    {
+      "name": "max-mutants",
+      "required": false
+    },
+    {
+      "name": "max-minutes",
+      "required": false
+    },
+    {
+      "name": "skip-file",
+      "required": false
+    },
+    {
+      "name": "commit",
+      "required": false
+    },
+    {
+      "name": "working-tree",
+      "required": false
+    },
+    {
+      "name": "operators",
+      "required": false
+    },
+    {
+      "name": "tests-dir",
+      "required": false
+    }
   ],
   "title": "probatio mutate.generate",
   "description": "Writes operator mutants as forward patches. Strings and comments are never mutated. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",

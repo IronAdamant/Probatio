@@ -8,13 +8,16 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 /// How long after the deadline the recorded duration may still run while the group is killed.
 pub const KILL_GRACE: Duration = Duration::from_millis(1_500);
 
+#[cfg(unix)]
 const SIGKILL: i32 = 9;
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn setpgid(pid: i32, pgid: i32) -> i32;
@@ -61,8 +64,9 @@ fn run_group_with_path(
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
@@ -87,6 +91,7 @@ fn run_group_with_path(
         }
     };
     let pid = child.id() as i32;
+    #[cfg(unix)]
     unsafe {
         setpgid(pid, pid);
     }
@@ -98,8 +103,13 @@ fn run_group_with_path(
     let status = loop {
         if start.elapsed() >= timeout {
             timed_out = true;
+            #[cfg(unix)]
             unsafe {
                 kill(-pid, SIGKILL);
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
             }
             let _ = child.wait();
             break None;
@@ -155,8 +165,18 @@ pub fn run_shell_with_bin_root(
     bin_root: Option<&Path>,
     timeout: Duration,
 ) -> TimedRun {
+    run_shell_with_env(script, dir, bin_root, timeout, &[])
+}
+
+pub fn run_shell_with_env(
+    script: &str,
+    dir: Option<&Path>,
+    bin_root: Option<&Path>,
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> TimedRun {
     let path = suite_path(bin_root, dir);
-    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path, &[])
+    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path, env)
 }
 
 fn suite_path(bin_root: Option<&Path>, dir: Option<&Path>) -> Option<OsString> {
@@ -199,6 +219,7 @@ mod tests {
         fn kill(pid: i32, sig: i32) -> i32;
     }
 
+    #[cfg(unix)]
     #[test]
     fn deadline_kills_a_grandchild_that_ignores_sigterm() {
         let dir = std::env::temp_dir().join(format!("probatio-kill-{}", std::process::id()));
@@ -235,6 +256,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_local_node_bin_is_on_the_suite_path() {
         let dir = std::env::temp_dir().join(format!("probatio-bin-{}", std::process::id()));

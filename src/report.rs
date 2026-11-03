@@ -6,6 +6,7 @@ use crate::json::{self, Value};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     pub name: String,
+    pub file: String,
     pub static_load: bool,
 }
 
@@ -41,8 +42,9 @@ fn parse_line(line: &str) -> Option<Report> {
     for item in failed {
         let Value::Object(_) = item else { continue };
         let name = item.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let file = item.get("file").and_then(Value::as_str).unwrap_or("").to_string();
         let static_load = item.get("staticLoad").and_then(Value::as_bool).unwrap_or(false);
-        failures.push(Failure { name, static_load });
+        failures.push(Failure { name, file, static_load });
     }
     let fail = value.get("fail").and_then(Value::as_int).unwrap_or(failures.len() as i64);
     Some(Report { tests, fail, failures })
@@ -86,8 +88,14 @@ fn killed_names(report: &Report) -> Vec<String> {
         if failure.static_load || failure.name.is_empty() {
             continue;
         }
-        if !names.iter().any(|have| have == &failure.name) {
-            names.push(failure.name.clone());
+        let file = failure.file.replace('\\', "/");
+        let shown = if file.is_empty() || failure.name.contains("::") || failure.name.contains(&file) {
+            failure.name.clone()
+        } else {
+            format!("{file}::{}", failure.name)
+        };
+        if !names.iter().any(|have| have == &shown) {
+            names.push(shown);
         }
     }
     names

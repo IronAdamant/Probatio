@@ -227,7 +227,9 @@ pub fn chunk_budget(pending: usize, confirm: Option<usize>) -> Result<usize, usi
     match confirm {
         Some(count) if count == pending => Ok(pending),
         Some(_) => Err(pending),
-        None => Ok(pending.min(LARGE_BATCH)),
+        // A line map, or a batch the caller did not lock with --confirm-count, scores every mutant still waiting.
+        // The unmapped stop above 30 is scale_stop, before this budget.
+        None => Ok(pending),
     }
 }
 
@@ -462,7 +464,7 @@ mod tests {
 
     #[test]
     fn confirm_count_must_match_and_a_plain_call_stops_at_thirty() {
-        assert_eq!(chunk_budget(31, None).unwrap(), 30);
+        assert_eq!(chunk_budget(31, None).unwrap(), 31);
         assert_eq!(chunk_budget(10, None).unwrap(), 10);
         assert_eq!(chunk_budget(31, Some(31)).unwrap(), 31);
         assert_eq!(chunk_budget(31, Some(30)).unwrap_err(), 31);

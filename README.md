@@ -157,10 +157,23 @@ A command that already contains a token, and that has no names, and whose map do
 
 ### The other commands
 
-These return the same envelope: `mutate sealed`, `ledger build`, `ledger check`, `matrix report`, `golden check`, `golden record`, `golden compare`, `gap fix`, `gap revert`, `guard check`, `findings add`, `status`, `seal`, `queue seed`, `queue claim`, `queue reap`, `check-kill`, `verify-change`, and `schema`. `help` does too.
-
-`schema` with no argument lists them. `schema mutate.generate` names the contract file under [schemas/](schemas/) when that file is present. Read that file for flags. An example is not the contract.
-
-`golden compare` does not delete a golden. A red `ledger check` is not re-recorded away. `mutate sealed` does not restore a hidden test. `gap fix` does not write the missing test.
+Each of these does the work its name says, and the envelope is `ok: false` when that work did not succeed. `schema` with no argument lists the commands and, with a name, returns that command's JSON Schema from inside the binary, so it works outside this checkout. `check-kill` reapplies the mutant and reruns it. `mutate sealed` runs with the hidden test removed, checks the label file for `bug_id`, `issue_id`, and `expected_fail`, and does not restore the hidden test. `verify-change` mutates the lines a commit changed. `golden record` logs plain calls from the tests you name. `golden compare` asks whether that table kills what those tests kill, and it deletes nothing. `ledger build` reverts fix commits into forward patches and defaults `--commit` to HEAD. `ledger check` runs those patches again. A red ledger is not re-recorded away. `gap fix` records the guard. It does not invent the missing test. `status` writes `PROBATIO.md`.
 
 `git`, Maven, Go, Cargo, Node, and Python stay outside this binary.
+
+### Benchmarks
+
+Five runs of each command on one machine, median milliseconds with the min and max in parentheses. TypeScript is commit `c5cd175` (`node /tmp/probatio-ts/dist/cli.js`, Node 22.23.4). Rust is `target/release/probatio` from this checkout. The machine was Linux 6.12, x86_64, 4 cores, Intel Xeon, 16 GB. Peak RSS and the raw envelopes are in [scripts/benchmark_results.md](scripts/benchmark_results.md). Re-run with `python3 scripts/benchmark.py`.
+
+Kill counts matched on every scored run. `--no-confirm` is on for the run rows so the clock is the suite, not the confirmation rerun. itsdangerous is Pallets itsdangerous at the depth-1 checkout used here: 10 mutants in 8 files, so `--max-mutants 20` did not drop any.
+
+| Command | TypeScript | Rust |
+| --- | --- | --- |
+| startup, `schema` | 287 (287–297) | 11 (11–11) |
+| generate, JS sample, 6 mutants | 307 (307–308) | 11 (11–11) |
+| generate, Python sample, 6 mutants | 307 (297–308) | 11 (11–11) |
+| run, JS sample, 2 killed / 4 survived | 800 (791–803) | 723 (722–806) |
+| run, Python sample, 2 killed / 4 survived | 1429 (1418–1450) | 1130 (1090–1171) |
+| run, Python sample, `--workers 4`, same 2 killed | 805 (796–851) | 491 (471–495) |
+| generate, itsdangerous `src`, 10 mutants | 369 (360–371) | 21 (21–21) |
+| run, itsdangerous, 7 killed / 3 survived | 7568 (7528–7625) | 7003 (6995–7049) |

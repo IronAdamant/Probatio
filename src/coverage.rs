@@ -29,7 +29,7 @@ fn ranges(hits: BTreeMap<String, BTreeMap<u32, Vec<String>>>) -> Value {
         let mut current: Option<(u32, u32, Vec<String>)> = None;
         for (line, tests) in lines {
             match &mut current {
-                Some((start, end, names)) if *end + 1 == line && names == &tests => *end = line,
+                Some((_start, end, names)) if *end + 1 == line && names == &tests => *end = line,
                 Some(_) => {
                     let (start, end, names) = current.take().unwrap();
                     items.push(range(start, end, names));

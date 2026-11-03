@@ -2,8 +2,58 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/check-kill.schema.json",
   "flags": [
-    {"name": "out", "required": true},
-    {"name": "id", "required": true}
+    {
+      "name": "package",
+      "required": true
+    },
+    {
+      "name": "patches",
+      "required": true
+    },
+    {
+      "name": "repo",
+      "required": false
+    },
+    {
+      "name": "commit",
+      "required": false
+    },
+    {
+      "name": "out",
+      "required": true
+    },
+    {
+      "name": "max-minutes",
+      "required": false
+    },
+    {
+      "name": "build",
+      "required": false
+    },
+    {
+      "name": "tests-dir",
+      "required": false
+    },
+    {
+      "name": "suite-timeout-ms",
+      "required": false
+    },
+    {
+      "name": "test-timeout-ms",
+      "required": false
+    },
+    {
+      "name": "confirm",
+      "required": false
+    },
+    {
+      "name": "agent",
+      "required": false
+    },
+    {
+      "name": "id",
+      "required": false
+    }
   ],
   "title": "probatio check-kill",
   "description": "Done only when the outcome is killed after confirm and the full suite baseline is green. A mutant that did not build is not done. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",

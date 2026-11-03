@@ -2,9 +2,30 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/status.schema.json",
   "flags": [
-    {"name": "state", "required": true},
-    {"name": "out", "required": false},
-    {"name": "root", "required": false}
+    {
+      "name": "state",
+      "required": true
+    },
+    {
+      "name": "root",
+      "required": false
+    },
+    {
+      "name": "page",
+      "required": false
+    },
+    {
+      "name": "scores",
+      "required": false
+    },
+    {
+      "name": "agent",
+      "required": false
+    },
+    {
+      "name": "out",
+      "required": false
+    }
   ],
   "title": "probatio status",
   "description": "The state PROBATIO.md is written from. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",

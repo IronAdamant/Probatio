@@ -36,6 +36,11 @@ pub fn remove_leftovers(repo: &Path, run_id: &str) -> Result<Vec<String>, String
 
 pub fn add_worktree(repo: &Path, dest: &Path, run_id: &str) -> Result<(), String> {
     remove_leftovers(repo, run_id)?;
+    add_fresh(repo, dest)
+}
+
+/// A second worktree for a parallel worker. It does not remove the other slots.
+pub fn add_fresh(repo: &Path, dest: &Path) -> Result<(), String> {
     if dest.exists() {
         let _ = std::fs::remove_dir_all(dest);
     }

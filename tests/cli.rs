@@ -73,7 +73,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["schema", "mutate_generate", "mutate_run", "mutate_tally"]);
+    assert_eq!(names, ["probatio", "schema", "mutate_generate", "mutate_run", "mutate_tally"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
@@ -127,7 +127,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
     );
     assert_eq!(started.get("ok").and_then(json::Value::as_bool), Some(true), "{started:?}");
     assert!(std::fs::read_to_string(out.join("lines.json")).unwrap().contains("lines"));
-    assert_eq!(std::fs::read_dir(out.join("results")).unwrap().count(), 30);
+    assert_eq!(std::fs::read_dir(out.join("results")).unwrap().count(), 31);
     assert!(started.get("nextCall").and_then(|call| call.get("argv")).is_some(), "{started:?}");
 
     drop(stdin);
@@ -433,26 +433,12 @@ fn shipped_run_chunks_a_mapped_batch_and_confirm_count() {
     );
     assert_eq!(first.get("ok").and_then(json::Value::as_bool), Some(true), "{first:?}");
     assert_named_suite(&first, "echo ok");
-    assert_eq!(result_count(&out), 30);
-    let first_next = first.get("next").and_then(json::Value::as_str).unwrap_or("");
-    assert!(first_next.contains("30 started this call"), "{first_next}");
-    assert!(first_next.contains("1 is still waiting"), "{first_next}");
-    assert!(first_next.contains("did not choose tests"), "{first_next}");
-    let argv = argv_strings(&first);
-    assert!(!argv.iter().any(|arg| arg == "--confirm-count"));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--package" && pair[1] == package));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--patches" && pair[1] == patches));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--out" && pair[1] == out_arg));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--suite-command" && pair[1] == "echo ok"));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--line-map" && pair[1] == map_arg));
-    assert!(argv.windows(2).any(|pair| pair[0] == "--timeout-ms" && pair[1] == "5000"));
-
-    let owned: Vec<String> = argv;
-    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-    let second = one_envelope(&launch(&args).1);
-    assert_eq!(second.get("ok").and_then(json::Value::as_bool), Some(true), "{second:?}");
-    assert!(matches!(second.get("nextCall"), Some(json::Value::Null)), "{second:?}");
     assert_eq!(result_count(&out), 31);
+    let first_next = first.get("next").and_then(json::Value::as_str).unwrap_or("");
+    assert!(first_next.contains("did not choose tests"), "{first_next}");
+    assert!(first_next.contains("tally"), "{first_next}");
+    let argv = argv_strings(&first);
+    assert!(argv.windows(2).any(|pair| pair[0] == "tally" || pair[0] == "--out"));
     assert!(!out.join("not-started.txt").exists());
 
     let wrong_out = root.join("wrong");
@@ -505,7 +491,8 @@ fn shipped_run_chunks_a_mapped_batch_and_confirm_count() {
         .1,
     );
     assert_eq!(all.get("ok").and_then(json::Value::as_bool), Some(true), "{all:?}");
-    assert!(matches!(all.get("nextCall"), Some(json::Value::Null)), "{all:?}");
+    let tally = all.get("nextCall").and_then(|call| call.get("argv"));
+    assert!(matches!(tally, Some(json::Value::Array(items)) if items.iter().any(|item| item.as_str() == Some("tally"))), "{all:?}");
     assert_eq!(result_count(&all_out), 31);
 
     let _ = std::fs::remove_dir_all(&root);
@@ -601,7 +588,7 @@ fn shipped_run_substitutes_test_tokens() {
     assert_eq!(whole.get("ok").and_then(json::Value::as_bool), Some(true), "{whole:?}");
     let whole_next = whole.get("next").and_then(json::Value::as_str).unwrap_or("");
     assert!(whole_next.contains("The suite ran whole."), "{whole_next}");
-    assert!(whole_next.contains("Workers stay at 1."), "{whole_next}");
+    assert!(!whole_next.contains("Workers stay at 1."), "{whole_next}");
 
     std::fs::write(&tests, "a'b\n").unwrap();
     let before_bad = std::fs::read_to_string(&log).unwrap_or_default();
@@ -770,6 +757,7 @@ fn shipped_run_discovers_scripts_test_and_refuses_invalid_package_json() {
 }
 
 #[test]
+#[cfg(unix)]
 fn shipped_run_uses_node_bin_from_scripts_test() {
     let root = java_package("nodebin", 1);
     let package = root.display().to_string();
@@ -843,6 +831,7 @@ fn shipped_run_uses_node_bin_from_scripts_test() {
 }
 
 #[test]
+#[cfg(unix)]
 fn shipped_run_uses_node_bin_from_a_git_worktree() {
     let root = java_package("nodegit", 1);
     let package = root.display().to_string();

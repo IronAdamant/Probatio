@@ -2,9 +2,50 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/verify-change.schema.json",
   "flags": [
-    {"name": "package", "required": true},
-    {"name": "suite-command", "required": false},
-    {"name": "timeout-ms", "required": false}
+    {
+      "name": "package",
+      "required": true
+    },
+    {
+      "name": "operators",
+      "required": false
+    },
+    {
+      "name": "repo",
+      "required": false
+    },
+    {
+      "name": "out",
+      "required": true
+    },
+    {
+      "name": "base",
+      "required": false
+    },
+    {
+      "name": "commit",
+      "required": false
+    },
+    {
+      "name": "max-mutants",
+      "required": false
+    },
+    {
+      "name": "max-minutes",
+      "required": false
+    },
+    {
+      "name": "max-tests",
+      "required": false
+    },
+    {
+      "name": "suite-command",
+      "required": false
+    },
+    {
+      "name": "timeout-ms",
+      "required": false
+    }
   ],
   "title": "probatio verify-change",
   "description": "Mutates the changed lines and reports caught, missed, and not run. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
