@@ -105,3 +105,4 @@ case "$output" in
     ;;
 esac
 echo "npm launcher ran probatio $version"
+node "$root/scripts/mcp-pack-smoke.js" "$tmp" "$main_tgz" "$platform_tgz"

@@ -1,6 +1,6 @@
 {
   "name": "probatio-linux-x64",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Probatio binary for Linux x64. The release build is x86_64-unknown-linux-musl.",
   "license": "MIT",
   "repository": {
