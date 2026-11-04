@@ -38,6 +38,22 @@ An agent talks to the binary over stdin with `probatio mcp`, or it calls the sam
 }
 ```
 
+### Migrating from the TypeScript version
+
+The last TypeScript program is commit `c5cd175`, published on npm as 0.3.0. The branch `typescript-legacy` points at that commit. This tree is the Rust binary, crate 0.5.1.
+
+[MIGRATION.md](MIGRATION.md) lists install, platforms, commands, flags, JSON, exit codes, MCP, config, files, discovery, and operators. A row that changed is marked intentional change or not supported. A row marked same was checked against `c5cd175` and matches. Nothing in that list is marked as a bug fixed from TypeScript: the fixes through 0.3.0 are already in `c5cd175`.
+
+The short form:
+
+- `npm install probatio` installs a Node launcher and one platform binary. It does not install the TypeScript CLI or the `typescript` package.
+- The launcher ships Linux x64 (musl), macOS Apple silicon, macOS Intel, and Windows x64. The Windows package is `@iron_adamant/probatio-win32-x64`.
+- There is no Node 22.6 gate, and there is no `probatio-mcp` bin. The server is `probatio mcp`.
+- `help`, `--help`, and `-h` exit 0. `--version` and `-V` print the crate version.
+- `mutate run` and `ledger check` default `--suite-timeout-ms` to 120000. The TypeScript program defaulted both to 600000.
+- A batch of more than 30 mutants with no line map stops before the first mutant, including when the baseline took under five seconds.
+- Discovery names a command from a marker file at the package root. It does not require a test file to be present, and it does not look for `run_tests.sh`.
+
 ### What a command prints
 
 Every command prints one JSON object and exits 0 only when `ok` is true. The object has `schemaVersion`, `ok`, `command`, `summary`, `next`, and `nextCall`. `schemaVersion` is 2. Read `summary` and `next`. Run `nextCall` as printed. It continues in the out directory it names.
@@ -115,11 +131,11 @@ The suite runs in its own process group. When the deadline hits, the binary kill
 
 Two limits both use the number 30. They are different limits.
 
-**Mutants in one call.** With no line map, more than 30 mutants waiting stops the run before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call still scores at most 30 mutants that have no result yet. `nextCall` continues in the same out directory. `--confirm-count` scores every mutant still waiting only when the number you pass equals that waiting count. The resume argv leaves `--confirm-count` off, so the next call chunks again.
+**Mutants in one call.** With no line map, more than 30 mutants waiting stops the run before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call scores every mutant that has no result yet. `--max-mutants`, `--budget-ms`, or `--max-minutes` can stop that call earlier, and `nextCall` continues in the same out directory. `--confirm-count` scores every mutant still waiting only when the number you pass equals that waiting count. The resume argv leaves `--confirm-count` off.
 
 **Names recorded for one mutant.** One mutant records at most 30 test names unless `--max-selected` raises the cap. The result says when the cap applied (`selectionCapped`, `selectedCount`). A line map that chooses tests still feeds every one of its names into the baseline command. The cap applies per mutant, after that.
 
-Workers stay at 1. `--workers` above 1 is accepted, and the run still scores one mutant at a time. The `next` line says "Workers stay at 1."
+`--workers` defaults to 1. A higher value runs that many git worktrees at once, or that many copies when the package is not a git checkout.
 
 A green `baseline.json` is kept when its command template matches the new call. A different template runs the baseline again. A mutant that already has `results/<id>.json` is not run again. The checkout you started in is left as it was.
 
