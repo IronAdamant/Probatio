@@ -15,7 +15,7 @@ const binDir = path.join(scopeDir, "bin");
 fs.mkdirSync(binDir, { recursive: true });
 fs.writeFileSync(
   path.join(scopeDir, "package.json"),
-  JSON.stringify({ name: "@iron_adamant/probatio-win32-x64", version: "0.5.0" }) + "\n"
+  JSON.stringify({ name: "@iron_adamant/probatio-win32-x64", version: "0.5.1" }) + "\n"
 );
 const exe = path.join(binDir, "probatio.exe");
 fs.writeFileSync(exe, "windows-binary");

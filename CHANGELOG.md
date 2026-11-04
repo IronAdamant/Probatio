@@ -6,6 +6,10 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## 0.5.1
+
+`server.json` is the MCP Registry listing. The name is `io.github.IronAdamant/probatio`, and the npm package records that same name in `mcpName`. A client starts the server over stdin with `npx -y probatio mcp`. The crate version, the four platform packages, and the version the MCP server reports are 0.5.1.
+
 ## 0.5.0
 
 The npm package installs the Rust binary. `npm install probatio` runs a Node launcher, which starts the binary in the matching platform package: `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, or `@iron_adamant/probatio-win32-x64`. A `v*` tag builds the GitHub release assets and publishes those packages. The MCP server reports this crate version.
