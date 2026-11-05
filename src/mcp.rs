@@ -16,7 +16,7 @@ use crate::json::{self, Value};
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 const LINE_MAP_BODY: &str = "{\"lines\":[1]}\n";
 
-const INSTRUCTIONS: &str = "Probatio scores a test suite: it makes one small code change (a mutant) at a time in a git worktree or temp copy, runs the project's own tests, and records whether a test failed. The package is never edited. Call mutate_generate, then mutate_run with patches set to the generate out, then mutate_tally. Read summary and next in each reply; ok false means stop and show them.";
+const INSTRUCTIONS: &str = "Probatio scores a test suite: it makes one small code change (a mutant) at a time in a git worktree or temp copy, runs the project's own tests, and records whether a test failed. The package is never edited. After editing code, call mutate_diff: it scores only the changed lines and names the untested ones. For a whole package, call mutate_generate, then mutate_run with patches set to the generate out, then mutate_tally. Read summary and next in each reply; ok false means stop and show them.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -56,6 +56,23 @@ const CORE: &str = "core";
 const GROUPS: &[&str] = &["core", "diagnostics", "cli"];
 
 const TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "mutate_diff",
+        group: CORE,
+        description: "Start here after editing code. Mutates only the lines changed since `since` (default HEAD: your uncommitted edits), runs the project's tests on each mutant in a worktree, and returns the survivors: changed lines no test checks, as file:line with the change that went unnoticed. The package is not edited. Call again after adding a test.",
+        props: &[
+            Prop { key: "package", kind: Kind::Str, help: "Project directory (inside a git checkout)." },
+            Prop { key: "since", kind: Kind::Str, help: "Git ref to diff against. Default HEAD. A branch base such as main scores the whole branch." },
+            Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root." },
+            Prop { key: "timeoutMs", kind: Kind::Int, help: "Clock for the baseline and each mutant. Default 120000." },
+            Prop { key: "maxMutants", kind: Kind::Int, help: "Most mutants scored. Default 30." },
+            Prop { key: "confirm", kind: Kind::Bool, help: "Rerun the killing test twice before counting a kill. Default true." },
+            Prop { key: "workers", kind: Kind::Int, help: "Mutants scored at once. Default 1." },
+            Prop { key: "src", kind: Kind::Str, help: "Only changed files under this subdirectory." },
+            Prop { key: "out", kind: Kind::Str, help: "Results directory. Default <package>/.probatio/diff, cleared each call." },
+        ],
+        required: &["package"],
+    },
     ToolSpec {
         name: "mutate_generate",
         group: CORE,
@@ -727,6 +744,7 @@ fn build_argv(tool: &ToolSpec, args: &[(&'static str, Arg)]) -> Result<(Vec<Stri
             argv.extend(text("command"));
             return Ok((argv, None));
         }
+        "mutate_diff" => vec!["mutate".into(), "diff".into()],
         "mutate_generate" => vec!["mutate".into(), "generate".into()],
         "mutate_run" => vec!["mutate".into(), "run".into()],
         "mutate_tally" => vec!["mutate".into(), "tally".into()],
@@ -854,7 +872,7 @@ mod tests {
             assert_eq!(surface, Surface::all());
             assert_eq!(json::stringify_compact(&Value::Array(tools(&surface))), all);
         }
-        assert_eq!(names(&Surface::all()), ["mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
+        assert_eq!(names(&Surface::all()), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
         let init = initialize(None, &Surface::all());
         let instructions = init.get("instructions").and_then(Value::as_str).unwrap();
         assert!(instructions.ends_with("\nTool groups on: core, diagnostics, cli. Off: none. Change them with a \"probatio: disable <groups>\" line in an agent-tools block in AGENTS.md."), "{instructions}");
@@ -867,14 +885,14 @@ mod tests {
     #[test]
     fn agents_md_chooses_groups_and_env_wins_per_key() {
         let surface = Surface::resolve(None, None, Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&surface), ["mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
         assert!(surface.warnings.is_empty(), "{:?}", surface.warnings);
         let error = argv_of_call(Some(&call("probatio", r#"{"argv":["schema"]}"#)), &surface).unwrap_err();
         assert_eq!(error, "tool \"probatio\" is disabled (group \"cli\") by the probatio: disable line in AGENTS.md agent-tools; remove \"cli\" from it to enable");
         let env_disable = Surface::resolve(None, Some("diagnostics"), Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&env_disable), ["mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
+        assert_eq!(names(&env_disable), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
         let env_tools = Surface::resolve(Some("core"), None, Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&env_tools), ["mutate_generate", "mutate_run", "mutate_tally"]);
+        assert_eq!(names(&env_tools), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally"]);
         assert_eq!(Surface::resolve(None, None, Some("no block here")).unwrap(), Surface::all());
     }
 
@@ -893,7 +911,7 @@ mod tests {
     fn a_bad_agents_md_line_is_a_warning_not_a_stop() {
         let text = "```agent-tools\nprobatio: disable lokcs\nprobatio: tools diagnostics\n```\n";
         let surface = Surface::resolve(None, None, Some(text)).unwrap();
-        assert_eq!(names(&surface), ["mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
         assert_eq!(surface.warnings, ["AGENTS.md agent-tools: unknown group \"lokcs\" for probatio; groups: core, diagnostics, cli"]);
         let core = Surface::resolve(None, None, Some("```agent-tools\nprobatio: disable core\n```\n")).unwrap();
         assert_eq!(names(&core), names(&Surface::all()));
@@ -922,15 +940,15 @@ mod tests {
     #[test]
     fn tools_and_disable_filter_by_group_and_by_tool() {
         let only_core = Surface::from_values(Some("core"), None).unwrap();
-        assert_eq!(names(&only_core), ["mutate_generate", "mutate_run", "mutate_tally"]);
+        assert_eq!(names(&only_core), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally"]);
         let with_cli = Surface::from_values(Some(" CLI "), None).unwrap();
-        assert_eq!(names(&with_cli), ["mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
+        assert_eq!(names(&with_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
         let by_tool = Surface::from_values(Some("schema"), None).unwrap();
-        assert_eq!(names(&by_tool), ["mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&by_tool), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
         let everything = Surface::from_values(Some("all"), Some("diagnostics")).unwrap();
-        assert_eq!(names(&everything), ["mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
+        assert_eq!(names(&everything), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
         let no_cli = Surface::from_values(None, Some("probatio")).unwrap();
-        assert_eq!(names(&no_cli), ["mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&no_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
         assert!(no_cli.groups_line().starts_with("Tool groups on: core, diagnostics. Off: cli."));
         let init = initialize(None, &no_cli);
         assert!(init.get("instructions").and_then(Value::as_str).unwrap().contains("\nTool groups on: core, diagnostics. Off: cli."));
@@ -949,7 +967,7 @@ mod tests {
     #[test]
     fn an_unknown_name_or_core_is_refused_in_one_line() {
         let error = Surface::from_values(None, Some("lokcs")).unwrap_err();
-        assert!(error.starts_with("PROBATIO_DISABLE: unknown group \"lokcs\"; groups: core, diagnostics, cli; tools: mutate_generate"), "{error}");
+        assert!(error.starts_with("PROBATIO_DISABLE: unknown group \"lokcs\"; groups: core, diagnostics, cli; tools: mutate_diff"), "{error}");
         assert!(Surface::from_values(Some("cor"), None).unwrap_err().starts_with("PROBATIO_TOOLS: unknown group \"cor\""));
         let core = Surface::from_values(None, Some("core")).unwrap_err();
         assert_eq!(core, "PROBATIO_DISABLE: group \"core\" is always on and cannot be disabled; groups you can disable: diagnostics, cli");
@@ -976,7 +994,7 @@ mod tests {
         let (schema, _) = argv_of_call(Some(&call("schema", r#"{"command":"mutate.run"}"#)), &all).unwrap();
         assert_eq!(schema, ["schema", "mutate.run"]);
         let unknown = argv_of_call(Some(&call("mutate", "{}")), &all).unwrap_err();
-        assert!(unknown.starts_with("unknown tool \"mutate\"; tools: mutate_generate"), "{unknown}");
+        assert!(unknown.starts_with("unknown tool \"mutate\"; tools: mutate_diff"), "{unknown}");
     }
 
     #[test]

@@ -21,6 +21,7 @@ use crate::verify;
 /// Invocations that must each return an envelope. Flags may be missing on purpose.
 pub const INVOCATIONS: &[&[&str]] = &[
     &["mutate", "generate"],
+    &["mutate", "diff"],
     &["mutate", "run"],
     &["mutate", "sealed"],
     &["mutate", "tally"],
@@ -115,12 +116,13 @@ fn mutate(args: &[String]) -> Envelope {
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
     let command = match action {
         "generate" => "mutate.generate",
+        "diff" => "mutate.diff",
         "run" => "mutate.run",
         "sealed" => "mutate.sealed",
         "tally" => "mutate.tally",
-        "" => return missing("mutate", "missing generate, run, sealed, or tally"),
+        "" => return missing("mutate", "missing diff, generate, run, sealed, or tally"),
         other => {
-            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use generate, run, sealed, or tally.");
+            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use diff, generate, run, sealed, or tally.");
         }
     };
     if let Some(envelope) = refused(command, &flags) {
@@ -128,6 +130,7 @@ fn mutate(args: &[String]) -> Envelope {
     }
     match action {
         "generate" => generate::generate(&flags),
+        "diff" => crate::diffscope::diff(&flags),
         "run" => runner::run(&flags),
         "sealed" => sealed::sealed(&flags),
         "tally" => tally_command(&flags),

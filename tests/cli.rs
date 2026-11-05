@@ -173,7 +173,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
+    assert_eq!(names, ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
@@ -1302,14 +1302,14 @@ fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
         other => panic!("{other:?}"),
     };
     let first = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
-    assert_eq!(count(&first), 5);
+    assert_eq!(count(&first), 6);
     std::fs::write(dir.join("AGENTS.md"), "```agent-tools\nprobatio: disable cli, diagnostics\n```\n").unwrap();
     let notice = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
     assert_eq!(notice.get("method").and_then(json::Value::as_str), Some("notifications/tools/list_changed"), "{notice:?}");
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let second = json::parse(line.trim()).unwrap();
-    assert_eq!(count(&second), 3);
+    assert_eq!(count(&second), 4);
     let refused = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{}}}"#);
     let text = json::stringify_compact(&refused);
     assert!(text.contains("is disabled (group \\\"diagnostics\\\") by the probatio: disable line in AGENTS.md"), "{text}");

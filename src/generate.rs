@@ -355,6 +355,11 @@ fn walk_sources(root: &Path, already_over: bool) -> Walk {
     Walk { files, stopped }
 }
 
+/// `mutants.json` under `out` and `out/mutants`, for a caller that chose its own mutants.
+pub fn write_mutants(out: &Path, mutants: &[(Mutant, String)], operators: &str) -> Result<(), String> {
+    write_batch(out, mutants, DEFAULT_SEED, operators)
+}
+
 fn write_batch(out: &Path, mutants: &[(Mutant, String)], seed: u64, operators: &str) -> Result<(), String> {
     let dir = out.join("mutants");
     if dir.exists() {

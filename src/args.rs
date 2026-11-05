@@ -141,6 +141,18 @@ impl Flags {
 /// `(name, required)`. This table is what the CLI refuses against, and what each schema file lists.
 pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
     match command {
+        "mutate.diff" => Some(&[
+            ("package", true),
+            ("since", false),
+            ("out", false),
+            ("src", false),
+            ("suite-command", false),
+            ("timeout-ms", false),
+            ("workers", false),
+            ("confirm", false),
+            ("max-mutants", false),
+            ("operators", false),
+        ]),
         "mutate.generate" => Some(&[
             ("package", true),
             ("out", true),
