@@ -172,21 +172,29 @@ pub fn parse_ranges(diff: &str) -> Vec<(String, Vec<u32>)> {
 
 fn survivors(run_out: &Path, points: &[(Mutant, String)]) -> Vec<Value> {
     let mut found = Vec::new();
-    for (mutant, _) in points {
+    for (mutant, text) in points {
         let path = run_out.join("results").join(format!("{}.json", mutant.id));
-        let Ok(text) = fs::read_to_string(&path) else { continue };
-        let Ok(value) = json::parse(&text) else { continue };
+        let Ok(body) = fs::read_to_string(&path) else { continue };
+        let Ok(value) = json::parse(&body) else { continue };
         if value.get("outcome").and_then(Value::as_str) != Some("survived") {
             continue;
         }
         found.push(Value::object(vec![
             ("file", Value::String(mutant.file.clone())),
             ("line", Value::Int(mutant.line as i64)),
+            ("column", Value::Int(column(text, mutant.start) as i64)),
             ("original", Value::String(mutant.original.clone())),
             ("replacement", Value::String(mutant.replacement.clone())),
         ]));
     }
     found
+}
+
+/// 1-based character column of a byte offset, so two operators on one line can be told apart.
+fn column(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    let line_start = text[..offset].rfind('\n').map(|at| at + 1).unwrap_or(0);
+    text[line_start..offset].chars().count() + 1
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -238,7 +246,7 @@ mod tests {
         assert!(envelope.summary.starts_with("1 changed lines in 1 files since HEAD: 1 mutants."), "{}", envelope.summary);
         let value = envelope.to_value("");
         let survivors = json::stringify_compact(value.get("survivors").unwrap());
-        assert!(survivors.contains(r#""file":"src/A.java","line":3"#), "{survivors}");
+        assert!(survivors.contains(r#""file":"src/A.java","line":3,"column":31,"original":">=""#), "{survivors}");
         assert!(envelope.next.contains("src/A.java:3"), "{}", envelope.next);
 
         git_ok(&dir, &["checkout", "-q", "--", "src/A.java"]);
