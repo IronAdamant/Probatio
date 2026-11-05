@@ -2,13 +2,13 @@
 
 Probatio is the program in this repository. Agents run it. A person who is not going to run commands can stop after the top of `README.md`.
 
-The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.6.0, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
+The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.7.0, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
 
 Probatio scores a test suite. It does not replace the suite, write the missing test, fetch a toolchain, or prove a change is safe. A kill is an assertion the suite already had.
 
 ## How to run it
 
-Prefer the `probatio` MCP server when it is connected. The tools are `mutate_generate`, `mutate_run`, and `mutate_tally` (group `core`), `schema` (group `diagnostics`), and `probatio`, which runs any CLI command by argv (group `cli`). Argument names are camelCase. An unknown argument, a missing required one, or a wrong type is refused in one line that names the argument and what is expected; fix the call rather than retrying it. The server is `probatio mcp` on stdin. `src/main.rs` handles that before dispatch. A normal command named `mcp` is a refusal, because the server is the process that reads stdin.
+Prefer the `probatio` MCP server when it is connected. The tools are `mutate_diff`, `mutate_generate`, `mutate_run`, and `mutate_tally` (group `core`), `schema` (group `diagnostics`), and `probatio`, which runs any CLI command by argv (group `cli`). Argument names are camelCase. An unknown argument, a missing required one, or a wrong type is refused in one line that names the argument and what is expected; fix the call rather than retrying it. The server is `probatio mcp` on stdin. `src/main.rs` handles that before dispatch. A normal command named `mcp` is a refusal, because the server is the process that reads stdin.
 
 This checkout launches it from `.grok/config.toml` through `.grok/probatio-mcp.sh` (`cargo run --quiet --offline -- mcp`). A session that is already open does not see a server that was just added.
 
@@ -22,6 +22,10 @@ cargo build --offline
 Every command prints one JSON object and exits 0 only when `ok` is true. The fields are `schemaVersion` (2), `ok`, `command`, `summary`, `next`, and `nextCall`. `nextCall` is `{ "argv": [ ... ] }` or null. Run that argv as printed. Paths inside it are not rewritten to `~`. A home path in `summary` or `next` is.
 
 Extra fields do not change `schemaVersion`. On `mutate run`, `suiteCommand` is the template, before `{tests}` is filled in. A refusal omits kill counts. The words "not a kill count" may still appear in `next`.
+
+## After an edit
+
+Call `mutate_diff` with `package` when you have changed code and want to know whether the changed lines are tested. It diffs the working tree against `since` (default `HEAD`: uncommitted edits; untracked source files count whole; pass `main` to score a branch), mutates only those lines, runs the suite on each mutant, and returns `survivors` with `file`, `line`, `column`, `original`, and `replacement`. Each survivor is a changed line no test checks: add a test that fails on that change and passes on your code, then call `mutate_diff` again. Each call starts from a fresh `<package>/.probatio/diff`, so the new test counts. More than `maxMutants` (default 30) mutants are reported as `notRun`. The refusals below (red baseline, missing tool) apply the same way.
 
 ## A campaign
 
@@ -130,10 +134,11 @@ Baseline judgements, and the run stops before any mutant: `green`, `red` ("alrea
 
 ## Commands
 
-MCP, in preference: `mutate_generate`, `mutate_run`, `mutate_tally`, then `schema` and `probatio`.
+MCP, in preference: `mutate_diff` after an edit; `mutate_generate`, `mutate_run`, `mutate_tally` for a whole package; then `schema` and `probatio`.
 
 CLI. Flags for each one live in `schemas/<name>.schema.json`. Ask with `probatio schema mutate.generate` (dots, not spaces). Do not invent a flag the schema does not list.
 
+- `mutate diff`: mutate the lines changed since `--since` (default `HEAD`), score them, and name the survivors. Needs `--package`. Optional `--since`, `--out`, `--src`, `--suite-command`, `--timeout-ms`, `--max-mutants` (default 30), `--workers`, `--no-confirm`.
 - `mutate generate`: write `mutants.json`. Does not run the suite. Needs `--package` and `--out`. Optional `--src`, `--max-mutants`.
 - `mutate run`: baseline, then one chunk. Needs `--package`, `--patches`, `--out`. Optional `--suite-command`, `--line-map`, `--timeout-ms` (default 120000), `--tests`, `--max-selected` (default 30), `--confirm-count`.
 - `mutate tally`: read `results/*.json`. `deletedTests` is 0. Needs the out dir.
@@ -160,7 +165,7 @@ Do not publish around the release checks. A release needs a reason in the CHANGE
 
 ## Choosing groups
 
-The MCP tools come in groups. `core` (`mutate_generate`, `mutate_run`, `mutate_tally`) is always on. Choose the rest for the project you are in, by adding one line to a fenced block whose info string is `agent-tools` in the `AGENTS.md` at the directory the server starts in:
+The MCP tools come in groups. `core` (`mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally`) is always on. Choose the rest for the project you are in, by adding one line to a fenced block whose info string is `agent-tools` in the `AGENTS.md` at the directory the server starts in:
 
 - `diagnostics` (`schema`): a command's flags and output fields. Turn it off once you know the flags; each tool's own schema already covers the MCP calls.
 - `cli` (`probatio`): every CLI command by argv, for ledger, golden, matrix, queue, check-kill, verify-change, sealed, gap, guard, findings, status, and seal. Turn it off when the work here is mutation campaigns only.

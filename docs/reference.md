@@ -14,6 +14,10 @@ probatio mutate run --package . --patches .probatio/generate --out .probatio/run
 probatio mutate tally --out .probatio/runs
 ```
 
+## Only the changed lines: mutate diff
+
+`mutate diff --package P` runs `git diff -U0 --relative <since>` in the package (default `--since HEAD`, so staged and unstaged edits) and adds every line of an untracked source file. It mutates only those lines, writes them to `<out>/generate`, and runs them like `mutate run` into `<out>/run`, where `<out>` defaults to `<package>/.probatio/diff` and is cleared each call. The envelope adds `changedLines`, `mutantCount`, `notRun` (points past `--max-mutants`, default 30), and up to ten `survivors`, each with `file`, `line`, `column`, `original`, and `replacement`. `nextCall` is null: the next step is a test, then the same call.
+
 ## Generate, then run, then tally
 
 `mutate generate` walks the package and writes `mutants.json`. It does not run the suite. A mutant is a text replacement in a condition, a comparison, or a boolean. Strings and comments are left alone. The id comes from the file, the offset, the operator, and the replacement. The walk skips directories named `target`, `node_modules`, and `dist`, and anything whose name starts with `.`.
@@ -58,7 +62,7 @@ Discovery does not launch the tool. It only names the command, from the package 
 
 `{tests}` puts each selected name in single quotes. `{tests,}` joins the names with commas. A name may contain ASCII letters, digits, and `_` `-` `.` `/` `:`. Anything else is refused, and so is an empty name. The `suiteCommand` field on the envelope is the template, before the names are filled in. `baseline.json` stores that same template. A result written after the suite started stores the rendered line in `command`. A no-coverage result that never started the suite has no `command` field.
 
-When the package has `node_modules/.bin`, that directory is placed on the suite process `PATH`. That includes a mutant run from a git worktree or a copy. Both skip `.git`, `target`, `node_modules`, `dist`, and `.probatio` when they are created, and both get a symlink to the package `node_modules` when they do not already have one. The command string itself is not rewritten. A shell exit 127 whose text says `command not found` or `: not found` means the tool is missing on the baseline, and it is an error on a mutant. The first is bash. The second is dash, which is `/bin/sh` on Ubuntu. The binary does not download a toolchain.
+When the package has `node_modules/.bin`, that directory is placed on the suite process `PATH`. The worktree or copy gets `node_modules` as a symlink to the package's (a junction on Windows when symlinks need Developer Mode), and the link is removed before the tree is deleted. That includes a mutant run from a git worktree or a copy. Both skip `.git`, `target`, `node_modules`, `dist`, and `.probatio` when they are created, and both get a symlink to the package `node_modules` when they do not already have one. The command string itself is not rewritten. A shell exit 127 whose text says `command not found` or `: not found` means the tool is missing on the baseline, and it is an error on a mutant. The first is bash. The second is dash, which is `/bin/sh` on Ubuntu. The binary does not download a toolchain.
 
 ## What a result means
 

@@ -28,11 +28,19 @@ Linux x64, macOS (Apple silicon and Intel), and Windows x64 are published. Elsew
 }
 ```
 
-In Claude Code: `claude mcp add probatio -- npx -y probatio mcp`. The MCP Registry name is `io.github.IronAdamant/probatio` ([server.json](server.json)).
+In Claude Code: `claude mcp add probatio -- npx -y probatio mcp`. The MCP Registry name is `io.github.IronAdamant/probatio` ([server.json](server.json)); a release tag publishes the listing.
 
 ## Example
 
-An agent makes three calls. The package is never edited: each mutant is applied in a git worktree, or a temp copy when the package is not a git checkout.
+After editing code, an agent makes one call. It mutates only the changed lines and names the ones no test checks. This is a real run on a Rust crate after one line was edited:
+
+```text
+mutate_diff {"package": "/work/relatum"}
+  -> "1 changed lines in 1 files since HEAD: 4 mutants. 0 no coverage, 1 survived, 3 killed, ..."
+     survivors: [{"file": "src/grammar.rs", "line": 46, "column": 50, "original": "==", "replacement": "!="}]
+```
+
+For a whole package, three calls. The package is never edited: each mutant is applied in a git worktree, or a temp copy when the package is not a git checkout.
 
 ```text
 mutate_generate {"package": "/work/app", "out": "/work/app/.probatio/generate"}
@@ -46,6 +54,7 @@ mutate_tally    {"out": "/work/app/.probatio/run"}
 The same commands from a shell:
 
 ```bash
+probatio mutate diff --package .            # changed lines since HEAD
 probatio mutate generate --package . --out .probatio/generate
 probatio mutate run --package . --patches .probatio/generate --out .probatio/run
 probatio mutate tally --out .probatio/run
@@ -66,11 +75,11 @@ More than 30 mutants with no line map stop before the first mutant: pass `serial
 
 | Group | Tools | Overlaps with |
 | --- | --- | --- |
-| `core` (always on) | `mutate_generate`, `mutate_run`, `mutate_tally` | none |
+| `core` (always on) | `mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally` | none |
 | `diagnostics` | `schema` | none |
 | `cli` | `probatio` (any CLI command by argv: ledger, golden, matrix, queue, check-kill, verify-change, ...) | none |
 
-No group overlaps another tool in the suite, so the shared names (`locks`, `notes`, `tasks`, `messages`, `history`) are not used. `tools/list` is 3553 bytes with every group on, 3108 with `cli` off, 3260 with `diagnostics` off, and 2815 with only `core`.
+No group overlaps another tool in the suite, so the shared names (`locks`, `notes`, `tasks`, `messages`, `history`) are not used. `tools/list` is 4633 bytes with every group on, 4188 with `cli` off, 4340 with `diagnostics` off, and 3895 with only `core`.
 
 An operator sets `PROBATIO_TOOLS` (an allowlist; `core` is always added) or `PROBATIO_DISABLE` in the client's `env` block. Names are groups or tool names, commas or spaces, any case. An unknown name, or `core`, stops the server with one line on stderr and exit code 2.
 
