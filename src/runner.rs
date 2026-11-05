@@ -39,6 +39,8 @@ struct Scored {
     mutant_hash: String,
     agent: String,
     cause: String,
+    /// The last lines of a run that errored or did not build, so a refusal can show why.
+    output: String,
 }
 
 impl Scored {
@@ -53,6 +55,7 @@ impl Scored {
             mutant_hash: String::new(),
             agent: String::new(),
             cause: String::new(),
+            output: String::new(),
         }
     }
 }
@@ -404,7 +407,10 @@ pub fn run(flags: &Flags) -> Envelope {
         }
         path
     } else {
-        package.clone()
+        // The checkout's top, not the package: a package that is a workspace member or a module
+        // needs the rest of the checkout (the workspace root manifest, sibling crates) to build.
+        // The suite still runs in the package's own folder inside the worktree.
+        worktree::toplevel(&package).unwrap_or_else(|| package.clone())
     };
     let git = worktree::is_git_repo(&repo);
     let pinned = if let Some(name) = options.commit.clone() {
@@ -621,6 +627,9 @@ pub fn run(flags: &Flags) -> Envelope {
     }
 
     let counts = decide::counts_of(&verdicts);
+    if counts.errors > 0 && counts.errors * 2 > counts.finished {
+        return attach_suite(broken_tree(&counts, &jobs), &suite);
+    }
     let summary = decide::campaign_summary(&counts);
     let waiting = if still.len() == 1 {
         "1 is still waiting".to_string()
@@ -673,6 +682,34 @@ pub fn run(flags: &Flags) -> Envelope {
     let _ = write_history_file(&out, options.agent.as_deref());
     let _ = write_run_json(&out, flags, &suite, counts.survived > 0);
     envelope
+}
+
+/// Most mutants errored before a test could judge them: the mutant tree did not build or start.
+/// That is never a pass, so it is a refusal with no kill count. The error results are removed,
+/// so the same call scores those mutants again once the cause is fixed.
+fn broken_tree(counts: &Counts, jobs: &[ScoreJob]) -> Envelope {
+    let mut first = String::new();
+    for job in jobs {
+        let Ok(text) = fs::read_to_string(&job.path) else { continue };
+        let Ok(value) = json::parse(&text) else { continue };
+        if value.get("outcome").and_then(Value::as_str) != Some("error") {
+            continue;
+        }
+        if first.is_empty() {
+            first = value.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+        }
+        let _ = fs::remove_file(&job.path);
+    }
+    let mut next = "The mutated tree did not build or the suite did not start, so no test judged these mutants. Run the suite command in the package to see the failure, fix it, then make the same call.".to_string();
+    if !first.is_empty() {
+        next.push_str(&format!(" First error: {first}"));
+    }
+    Envelope::new(
+        false,
+        "mutate.run",
+        format!("{} of {} mutants errored before any test ran. This run is not a score.", counts.errors, counts.finished),
+        next,
+    )
 }
 
 fn write_run_json(out: &Path, flags: &Flags, suite: &str, _survived: bool) -> Result<(), String> {
@@ -1196,6 +1233,8 @@ fn score_job(job: &ScoreJob, git: bool, repo: &Path, package: &Path, run_id: &st
     let job = match cargo_target_dir(job, run_id, slot) {
         Some(dir) => {
             let mut with_target = job.clone();
+            with_target.project_env.retain(|(key, _)| key != "CARGO_TARGET_DIR");
+            with_target.unset.retain(|key| key != "CARGO_TARGET_DIR");
             with_target.project_env.push(("CARGO_TARGET_DIR".into(), dir.display().to_string()));
             shared = with_target;
             &shared
@@ -1232,19 +1271,12 @@ fn score_git(job: &ScoreJob, repo: &Path, package: &Path, run_id: &str, timeout:
     scored
 }
 
-/// A Cargo suite in a fresh worktree has no `target/`, so every mutant rebuilt the crate and
-/// its dependencies from nothing. One build directory per worker slot, kept for the run, makes
-/// each mutant after the first an incremental build. A caller's `CARGO_TARGET_DIR` wins.
-fn cargo_target_dir(job: &ScoreJob, run_id: &str, slot: &str) -> Option<PathBuf> {
-    let words = command_words(&job.rendered);
-    let cargo = words.first().is_some_and(|word| {
-        let name = file_name(word);
-        name == "cargo" || name == "cargo.exe"
-    });
-    let preset = std::env::var_os("CARGO_TARGET_DIR").is_some() || job.project_env.iter().any(|(key, _)| key == "CARGO_TARGET_DIR");
-    if !cargo || preset || job.unset.iter().any(|key| key == "CARGO_TARGET_DIR") {
-        return None;
-    }
+/// Every mutant build gets its own Cargo target directory: one per worker slot, kept for the run,
+/// so each mutant after the first is an incremental build. It is set for every suite, including
+/// a script that calls cargo, and it replaces any `CARGO_TARGET_DIR` from the environment or
+/// `.probatio.json`. A mutant built into the user's target directory leaves mutated artifacts
+/// there, and cargo can then run a stale, mutated binary for the user's own tree.
+fn cargo_target_dir(_job: &ScoreJob, run_id: &str, slot: &str) -> Option<PathBuf> {
     Some(std::env::temp_dir().join(format!("probatio-cargo-{run_id}-{slot}")))
 }
 
@@ -1337,6 +1369,15 @@ fn apply_and_run(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration)
     if job.launch.is_none() && !suite.contains("--test-reporter=") {
         scored = apply_shell_report(scored, &timed, package);
         name_cargo_kills(&mut scored, suite, &timed);
+        if scored.kind == Verdict::Unviable && !names_the_file(&timed, &job.mutant.file) {
+            // A compiler rejecting the mutant names the mutated file. An error that does not
+            // (cargo's "failed to find a workspace root") is the tree, and it is not a score.
+            scored.kind = Verdict::Error;
+            scored.cause = "build".into();
+        }
+    }
+    if matches!(scored.kind, Verdict::Error | Verdict::Unviable) {
+        scored.output = output_tail(&timed.stdout, &timed.stderr);
     }
     scored.direction = chosen.into();
     scored.mutant_hash = job.mutant_hash.clone();
@@ -1440,6 +1481,12 @@ fn rerun_one(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, nam
     let mut scored = score_timed(&timed, command.contains("--test-reporter="));
     name_cargo_kills(&mut scored, &command, &timed);
     scored
+}
+
+/// True when the suite's output names the mutated file, by its file name.
+fn names_the_file(timed: &TimedRun, file: &str) -> bool {
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    !name.is_empty() && (timed.stdout.contains(name) || timed.stderr.contains(name))
 }
 
 /// `cargo test`, with or without more arguments or a `{tests}` token.
@@ -1686,6 +1733,9 @@ fn write_result(
     }
     if !scored.cause.is_empty() {
         entries.push(("cause", Value::String(scored.cause.clone())));
+    }
+    if !scored.output.is_empty() {
+        entries.push(("output", Value::String(scored.output.clone())));
     }
     if !scored.killed_by.is_empty() {
         entries.push((
@@ -2605,7 +2655,7 @@ mod tests {
         write_source(&package, one_and());
         let patches = generate_into(&package);
         let out = package.join("out");
-        let script = "if grep -q '||' src/A.java; then echo 'error: cannot find symbol Widget' >&2; exit 1; else echo ok; fi";
+        let script = "if grep -q '||' src/A.java; then echo 'src/A.java:2: error: cannot find symbol Widget' >&2; exit 1; else echo ok; fi";
         let envelope = run_with(&package, &patches, &out, &["--suite-command", script]);
         assert!(envelope.ok, "{}", envelope.summary);
         let value = parsed(&envelope);
@@ -2623,7 +2673,7 @@ mod tests {
         write_source(&package, one_and());
         let patches = generate_into(&package);
         let out = package.join("out");
-        let script = "if grep -q '||' src/A.java; then printf '%s\\n' './main.go:3:6: undefined: nope' 'FAIL demo [build failed]' >&2; exit 1; else echo ok; fi";
+        let script = "if grep -q '||' src/A.java; then printf '%s\\n' './src/A.java:3:6: undefined: nope' 'FAIL demo [build failed]' >&2; exit 1; else echo ok; fi";
         let envelope = run_with(&package, &patches, &out, &["--suite-command", script]);
         assert!(envelope.ok, "{}", envelope.summary);
         let value = parsed(&envelope);
@@ -2634,6 +2684,56 @@ mod tests {
         assert_eq!(body.get("outcome").and_then(Value::as_str), Some("unviable"));
         assert_ne!(body.get("outcome").and_then(Value::as_str), Some("killed"));
         let _ = fs::remove_dir_all(&package);
+    }
+
+    /// Specula B10: a tree that does not build makes every mutant fail the same way, with an error
+    /// that does not name the mutated file. That is a refusal, never a clean score, and the error
+    /// results are removed so the same call scores them once the cause is fixed.
+    #[test]
+    fn a_tree_that_does_not_build_is_a_refusal_not_a_score() {
+        let package = temp("broken-tree");
+        write_source(&package, &many_ands(3));
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let script = "if grep -q '||' src/A.java; then echo 'error: failed to find a workspace root' >&2; exit 101; else echo ok; fi";
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", script, "--no-confirm"]);
+        assert_no_kill_count(&envelope);
+        assert!(envelope.summary.contains("errored before any test ran. This run is not a score."), "{}", envelope.summary);
+        assert!(envelope.next.contains("failed to find a workspace root"), "{}", envelope.next);
+        assert_eq!(fs::read_dir(out.join("results")).map(|entries| entries.count()).unwrap_or(0), 0);
+        let _ = fs::remove_dir_all(&package);
+    }
+
+    /// Specula B10: a Cargo workspace member as the package. The mutant tree holds the whole
+    /// checkout, so the member finds its workspace root, and the suite runs in the member folder.
+    #[test]
+    fn a_workspace_member_builds_with_its_workspace() {
+        if Command::new("cargo").arg("--version").output().is_err() {
+            return;
+        }
+        let root = temp("workspace");
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/gate\"]\nresolver = \"2\"\n\n[workspace.package]\nedition = \"2021\"\n").unwrap();
+        let member = root.join("crates/gate");
+        fs::create_dir_all(member.join("src")).unwrap();
+        fs::write(member.join("Cargo.toml"), "[package]\nname = \"gate\"\nversion = \"0.0.0\"\nedition.workspace = true\n").unwrap();
+        fs::write(
+            member.join("src/lib.rs"),
+            "pub fn open(n: i32) -> bool {\n    n > 0\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn zero_stays_shut() {\n        assert!(!super::open(0));\n    }\n}\n",
+        )
+        .unwrap();
+        fs::write(root.join(".gitignore"), "target/\nout/\n").unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.email", "a@b.c"]);
+        git(&root, &["config", "user.name", "a"]);
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "init"]);
+        let patches = generate_into(&member);
+        let out = root.join("out");
+        let envelope = run_with(&member, &patches, &out, &["--timeout-ms", "300000"]);
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        let body = one_result(&out);
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3197,17 +3297,29 @@ mod tests {
         let _ = fs::remove_dir_all(&package);
     }
 
+    /// A mutant never builds into the user's target directory, even when one is set.
     #[test]
-    fn a_cargo_suite_shares_one_build_directory_per_worker() {
-        if std::env::var_os("CARGO_TARGET_DIR").is_some() {
-            return;
-        }
+    fn a_mutant_build_never_shares_the_users_target_directory() {
         let first = cargo_target_dir(&job_for("cargo test {tests}", Vec::new()), "abc", "0").unwrap();
         assert!(first.ends_with("probatio-cargo-abc-0"), "{}", first.display());
         assert!(cargo_target_dir(&job_for("cargo test", Vec::new()), "abc", "1").unwrap().ends_with("probatio-cargo-abc-1"));
-        assert!(cargo_target_dir(&job_for("npm test", Vec::new()), "abc", "0").is_none());
+        assert!(cargo_target_dir(&job_for("make test", Vec::new()), "abc", "0").is_some());
         let preset = vec![("CARGO_TARGET_DIR".to_string(), "/x".to_string())];
-        assert!(cargo_target_dir(&job_for("cargo test", preset), "abc", "0").is_none());
+        let ours = cargo_target_dir(&job_for("cargo test", preset), "abc", "0").unwrap();
+        assert!(ours.ends_with("probatio-cargo-abc-0"));
+        let out = temp("target-env");
+        let script = format!("printf '%s' \"$CARGO_TARGET_DIR\" > '{}'", out.join("seen.txt").display().to_string().replace('\\', "/"));
+        let mut job = job_for(&script, vec![("CARGO_TARGET_DIR".to_string(), "/user/target".to_string())]);
+        job.mutant.file = "src/A.java".into();
+        write_source(&out, one_and());
+        job.mutant.start = one_and().find("&&").unwrap();
+        job.mutant.end = job.mutant.start + 2;
+        job.mutant.original = "&&".into();
+        job.mutant.replacement = "||".into();
+        let _ = score_job(&job, false, &out, &out, "abc", Duration::from_secs(30), "0");
+        let seen = fs::read_to_string(out.join("seen.txt")).unwrap_or_default();
+        assert!(seen.ends_with("probatio-cargo-abc-0"), "{seen}");
+        let _ = fs::remove_dir_all(&out);
     }
 
     /// Windows linked no `node_modules` at all, so a Node suite in a worktree could not resolve its

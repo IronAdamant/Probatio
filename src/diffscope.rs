@@ -48,7 +48,7 @@ pub fn diff(flags: &Flags) -> Envelope {
         }
     }
     points.sort_by(|a, b| a.0.file.cmp(&b.0.file).then(a.0.line.cmp(&b.0.line)).then(a.0.start.cmp(&b.0.start)));
-    let scope = format!("{line_count} changed lines in {} files since {since}", changed.len());
+    let scope = format!("{} in {} since {since}", count(line_count, "changed line"), count(changed.len(), "file"));
     if points.is_empty() {
         let summary = if line_count == 0 {
             format!("No changed source line since {since}. Nothing was mutated.")
@@ -96,7 +96,7 @@ pub fn diff(flags: &Flags) -> Envelope {
     }
     let mut envelope = crate::runner::run(&Flags::parse(&argv));
     envelope.command = COMMAND.into();
-    envelope.summary = format!("{scope}: {} mutants. {}", points.len(), envelope.summary);
+    envelope.summary = format!("{scope}: {}. {}", count(points.len(), "mutant"), envelope.summary);
     if !envelope.ok {
         return envelope.with_extra("changedLines", Value::Int(line_count as i64));
     }
@@ -104,12 +104,17 @@ pub fn diff(flags: &Flags) -> Envelope {
     let mut next = if let Some(first) = survivors.first() {
         let file = first.get("file").and_then(Value::as_str).unwrap_or("");
         let line = first.get("line").and_then(Value::as_int).unwrap_or(0);
+        let lines = untested_lines(&survivors);
+        let verb = if lines == 1 { "is" } else { "are" };
         format!(
-            "{} changed lines are not tested: a mutant there survived. First: {file}:{line}. Add a test that fails on it, then call mutate diff again.",
-            survivors.len()
+            "{} {verb} not tested: {} survived there. First: {file}:{line}. Add a test that fails on it, then call mutate diff again.",
+            count(lines, "changed line"),
+            count(survivors.len(), "mutant")
         )
+    } else if envelope_count(&envelope, "killed") > 0 {
+        "No survivor: every mutant on the changed lines that ran was caught (see counts for no coverage and did not build).".to_string()
     } else {
-        "No survivor: every mutant on the changed lines was caught, or not covered (see counts).".to_string()
+        "No survivor and no kill: no test judged these lines (see counts). This is not a pass.".to_string()
     };
     if not_run > 0 {
         next.push_str(&format!(" {not_run} more mutants on these lines were not run; pass maxMutants to score them."));
@@ -190,6 +195,27 @@ fn survivors(run_out: &Path, points: &[(Mutant, String)]) -> Vec<Value> {
     found
 }
 
+/// `1 mutant`, `2 mutants`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
+}
+
+/// Distinct `file:line` pairs among the survivors: two mutants on one line are one untested line.
+fn untested_lines(survivors: &[Value]) -> usize {
+    let mut seen: Vec<(String, i64)> = Vec::new();
+    for item in survivors {
+        let key = (item.get("file").and_then(Value::as_str).unwrap_or("").to_string(), item.get("line").and_then(Value::as_int).unwrap_or(0));
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    seen.len()
+}
+
+fn envelope_count(envelope: &Envelope, key: &str) -> i64 {
+    envelope.extra.iter().find(|(name, _)| name == key).and_then(|(_, value)| value.as_int()).unwrap_or(0)
+}
+
 /// 1-based character column of a byte offset, so two operators on one line can be told apart.
 fn column(text: &str, offset: usize) -> usize {
     let offset = offset.min(text.len());
@@ -210,6 +236,13 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_survivors_on_one_line_are_one_untested_line() {
+        let survivor = |line: i64| Value::object(vec![("file", Value::String("src/a.rs".into())), ("line", Value::Int(line))]);
+        assert_eq!(untested_lines(&[survivor(34), survivor(34)]), 1);
+        assert_eq!(untested_lines(&[survivor(34), survivor(35)]), 2);
+    }
 
     #[test]
     fn hunk_headers_name_the_new_lines() {
@@ -243,7 +276,7 @@ mod tests {
             .collect();
         let envelope = diff(&Flags::parse(&argv));
         assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
-        assert!(envelope.summary.starts_with("1 changed lines in 1 files since HEAD: 1 mutants."), "{}", envelope.summary);
+        assert!(envelope.summary.starts_with("1 changed line in 1 file since HEAD: 1 mutant."), "{}", envelope.summary);
         let value = envelope.to_value("");
         let survivors = json::stringify_compact(value.get("survivors").unwrap());
         assert!(survivors.contains(r#""file":"src/A.java","line":3,"column":31,"original":">=""#), "{survivors}");
