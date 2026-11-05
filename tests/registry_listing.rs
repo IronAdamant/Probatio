@@ -132,3 +132,22 @@ fn argument_values<'a>(package: &'a json::Value, key: &str) -> Vec<&'a str> {
         .filter_map(|item| item.get("value").and_then(json::Value::as_str))
         .collect()
 }
+
+/// The docs that state the version say the crate's version, and the changelog has its entry.
+#[test]
+fn docs_name_the_crate_version() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let version = env!("CARGO_PKG_VERSION");
+    for (path, needle) in [
+        ("AGENTS.md", format!("The crate version is {version}")),
+        ("docs/releasing.md", format!("The crate version is {version}")),
+        ("npm/README.md", format!("Version {version} installs")),
+        ("MIGRATION.md", format!("Crate {version} on `main`")),
+        ("CHANGELOG.md", format!("\n## {version}")),
+    ] {
+        let text = fs::read_to_string(root.join(path)).unwrap_or_else(|error| panic!("read {path}: {error}"));
+        assert!(text.contains(&needle), "{path} does not say {needle:?}");
+    }
+    let lock = fs::read_to_string(root.join("Cargo.lock")).unwrap();
+    assert!(lock.contains(&format!("name = \"probatio\"\nversion = \"{version}\"")) || lock.contains(&format!("name = \"probatio\"\r\nversion = \"{version}\"")));
+}

@@ -8,6 +8,11 @@ const os = require("os");
 const path = require("path");
 
 const repo = path.resolve(__dirname, "..");
+const cargoVersion = (fs.readFileSync(path.join(repo, "Cargo.toml"), "utf8").match(/^version = "([^"]+)"/m) || [])[1];
+if (!cargoVersion) {
+  process.stderr.write("Cargo.toml has no version\n");
+  process.exit(1);
+}
 const launcherPath = path.join(repo, "npm", "bin", "probatio.js");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "probatio-win32-"));
 const scopeDir = path.join(tmp, "node_modules", "@iron_adamant", "probatio-win32-x64");
@@ -15,7 +20,7 @@ const binDir = path.join(scopeDir, "bin");
 fs.mkdirSync(binDir, { recursive: true });
 fs.writeFileSync(
   path.join(scopeDir, "package.json"),
-  JSON.stringify({ name: "@iron_adamant/probatio-win32-x64", version: "0.5.1" }) + "\n"
+  JSON.stringify({ name: "@iron_adamant/probatio-win32-x64", version: cargoVersion }) + "\n"
 );
 const exe = path.join(binDir, "probatio.exe");
 fs.writeFileSync(exe, "windows-binary");
