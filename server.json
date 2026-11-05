@@ -8,13 +8,13 @@
     "source": "github",
     "id": "1405095626"
   },
-  "version": "0.7.0",
+  "version": "0.7.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "probatio",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {

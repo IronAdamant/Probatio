@@ -1,6 +1,6 @@
 {
   "name": "probatio-darwin-arm64",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Probatio binary for macOS Apple silicon.",
   "license": "MIT",
   "repository": {

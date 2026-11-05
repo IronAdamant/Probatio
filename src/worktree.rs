@@ -150,6 +150,14 @@ pub fn remove_worktree(repo: &Path, dest: &Path) {
     let _ = git(repo, &["worktree", "prune"]);
 }
 
+/// The top of the git checkout that holds `path`. A package can be a folder inside it, such as a
+/// Cargo workspace member, and the mutant tree must hold the whole checkout to build.
+pub fn toplevel(path: &Path) -> Option<PathBuf> {
+    let text = git(path, &["rev-parse", "--show-toplevel"]).ok()?;
+    let text = text.trim();
+    if text.is_empty() { None } else { Some(PathBuf::from(text)) }
+}
+
 pub fn is_git_repo(path: &Path) -> bool {
     git(path, &["rev-parse", "--is-inside-work-tree"]).ok().as_deref() == Some("true\n")
         || git(path, &["rev-parse", "--is-inside-work-tree"]).ok().as_deref() == Some("true")

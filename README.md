@@ -36,7 +36,7 @@ After editing code, an agent makes one call. It mutates only the changed lines a
 
 ```text
 mutate_diff {"package": "/work/relatum"}
-  -> "1 changed lines in 1 files since HEAD: 4 mutants. 0 no coverage, 1 survived, 3 killed, ..."
+  -> "1 changed line in 1 file since HEAD: 4 mutants. 0 no coverage, 1 survived, 3 killed, ..."
      survivors: [{"file": "src/grammar.rs", "line": 46, "column": 50, "original": "==", "replacement": "!="}]
 ```
 
