@@ -1368,7 +1368,39 @@ fn apply_and_run(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration)
         scored.mutant_hash = job.mutant_hash.clone();
         scored.agent = job.agent.clone();
     }
+    scored.killed_by = relative_names(&scored.killed_by, root);
     scored
+}
+
+/// The node reporter names a test by its absolute file, which is inside this mutant's worktree
+/// or temp copy. That path changes per run and per worker, so the name is kept relative to it.
+fn relative_names(names: &[String], root: &Path) -> Vec<String> {
+    let mut prefixes = vec![root.display().to_string().replace('\\', "/")];
+    if let Ok(real) = root.canonicalize() {
+        let real = real.display().to_string().replace('\\', "/");
+        prefixes.push(real.strip_prefix("//?/").unwrap_or(&real).to_string());
+    }
+    names
+        .iter()
+        .map(|name| {
+            let forward = name.replace('\\', "/");
+            let bare = forward.strip_prefix("file:///").or_else(|| forward.strip_prefix("file://")).unwrap_or(&forward);
+            for prefix in &prefixes {
+                let prefix = prefix.trim_start_matches('/').trim_end_matches('/');
+                let body = bare.trim_start_matches('/');
+                // Windows paths compare without case: node may print `c:` where Rust has `C:`.
+                let same = body.len() > prefix.len()
+                    && body.is_char_boundary(prefix.len())
+                    && if cfg!(windows) { body[..prefix.len()].eq_ignore_ascii_case(prefix) } else { &body[..prefix.len()] == prefix };
+                if same {
+                    if let Some(rest) = body[prefix.len()..].strip_prefix('/') {
+                        return rest.to_string();
+                    }
+                }
+            }
+            name.clone()
+        })
+        .collect()
 }
 
 fn confirm_kill(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, scored: Scored) -> Scored {
@@ -3116,6 +3148,21 @@ mod tests {
     }
 
     #[test]
+    fn a_kill_name_is_relative_to_the_worktree() {
+        let root = Path::new("/tmp/probatio-abc-0");
+        let names = vec![
+            "/tmp/probatio-abc-0/test/a.test.js::adds".to_string(),
+            "file:///tmp/probatio-abc-0/test/b.test.js::subtracts".to_string(),
+            "tests/test_gate.py::test_zero".to_string(),
+        ];
+        assert_eq!(relative_names(&names, root), ["test/a.test.js::adds", "test/b.test.js::subtracts", "tests/test_gate.py::test_zero"]);
+        if cfg!(windows) {
+            let names = vec!["c:/Temp/probatio-abc-0/test/a.test.js::adds".to_string()];
+            assert_eq!(relative_names(&names, Path::new(r"C:\Temp\probatio-abc-0")), ["test/a.test.js::adds"]);
+        }
+    }
+
+    #[test]
     fn a_cargo_suite_shares_one_build_directory_per_worker() {
         if std::env::var_os("CARGO_TARGET_DIR").is_some() {
             return;
@@ -3895,7 +3942,7 @@ mod tests {
         let body = one_result(&out);
         assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
         let names = json::stringify_compact(body.get("killedBy").unwrap_or(&Value::Null));
-        assert!(names.contains("both"), "{names}");
+        assert_eq!(names, r#"["test/calc.test.js::both"]"#);
         let _ = fs::remove_dir_all(&package);
     }
 }
