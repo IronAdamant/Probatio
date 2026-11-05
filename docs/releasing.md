@@ -16,3 +16,5 @@ A release needs a green `cargo test` on Linux, macOS, and Windows, and a reason 
 `scripts/npm-pack-local.sh` builds tarballs for a local install check. It does not publish. The `@probatio` npm scope belongs to a different project. Linux and macOS packages stay unscoped. The Windows package is `@iron_adamant/probatio-win32-x64`.
 
 Do not publish from a laptop, and do not publish a version that has no CHANGELOG entry.
+
+To cut a tag and a GitHub release without publishing to npm, set the repository variable `NPM_PUBLISH` to `false` before tagging, then run the `npm publish` workflow for that tag later (and remove the variable).

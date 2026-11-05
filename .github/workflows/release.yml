@@ -81,6 +81,10 @@ jobs:
 
   npm:
     needs: build
+    # Set the repository variable NPM_PUBLISH to "false" to cut a tag and a
+    # GitHub release without publishing to npm. The "npm publish" workflow
+    # can publish that tag later.
+    if: vars.NPM_PUBLISH != 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
