@@ -268,7 +268,21 @@ pub fn record(package: &Path, modules: &[String], tests: &[String], out_dir: &st
     envelope
 }
 
-pub fn compare(package: &Path, modules: &[String], tests: &[String], golden: &[String], out: &Path, operators: &str, timeout_ms: u64, commit: Option<&str>) -> Envelope {
+/// One `golden compare`: the modules to mutate, the unit tests and the golden replays to score
+/// them with, and where the two runs go.
+pub struct Compare<'a> {
+    pub package: &'a Path,
+    pub modules: &'a [String],
+    pub tests: &'a [String],
+    pub golden: &'a [String],
+    pub out: &'a Path,
+    pub operators: &'a str,
+    pub timeout_ms: u64,
+    pub commit: Option<&'a str>,
+}
+
+pub fn compare(request: &Compare) -> Envelope {
+    let Compare { package, modules, tests, golden, out, operators, timeout_ms, commit } = *request;
     if modules.is_empty() || tests.is_empty() || golden.is_empty() {
         return Envelope::new(false, "golden.compare", "Pass --module, --tests, and --golden.", "Fix the command and run it again.");
     }

@@ -216,11 +216,10 @@ fn asm_dialect(file: &str, text: &str) -> Dialect {
         || text.contains("b.lo")
         || text.contains("b.ls")
         || has_token(text, &["adrp", "svc"]);
+    // Only RISC-V signs: RISC-V. Only ARM signs, or neither and a lowercase `.s`: ARM.
     if riscv && !arm {
         Dialect::Riscv
-    } else if arm && !riscv {
-        Dialect::Arm
-    } else if ext == "s" {
+    } else if (arm && !riscv) || ext == "s" {
         Dialect::Arm
     } else {
         Dialect::Riscv
@@ -237,7 +236,7 @@ fn has_token(text: &str, words: &[&str]) -> bool {
                 index += 1;
             }
             let word = &text[start..index];
-            if words.iter().any(|item| *item == word) {
+            if words.contains(&word) {
                 return true;
             }
             continue;
@@ -485,7 +484,7 @@ fn is_assign(statement: &str) -> bool {
     }
     let left = body[..eq].trim_end();
     let left = left
-        .trim_end_matches(|ch: char| matches!(ch, '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^'))
+        .trim_end_matches(['+', '-', '*', '/', '%', '|', '&', '^'])
         .trim_end_matches("<<")
         .trim_end_matches(">>")
         .trim();

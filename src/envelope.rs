@@ -159,12 +159,10 @@ pub fn render_text(envelope: &Envelope, human: bool) -> String {
     let summary = value.get("summary").and_then(Value::as_str).unwrap_or("");
     let next = value.get("next").and_then(Value::as_str).unwrap_or("");
     let mut lines = vec![summary.to_string(), next.to_string()];
-    if let Some(argv) = value.get("nextCall").and_then(|item| item.get("argv")) {
-        if let Value::Array(items) = argv {
-            let words = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
-            if !words.is_empty() {
-                lines.push(format!("next call: probatio {words}"));
-            }
+    if let Some(Value::Array(items)) = value.get("nextCall").and_then(|item| item.get("argv")) {
+        let words = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+        if !words.is_empty() {
+            lines.push(format!("next call: probatio {words}"));
         }
     }
     format!("{}\n", lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n"))

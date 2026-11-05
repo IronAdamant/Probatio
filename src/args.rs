@@ -51,12 +51,12 @@ impl Flags {
                     continue;
                 }
             }
-            let next = args.get(index + 1);
-            if next.is_none() || next.is_some_and(|item| item.starts_with("--")) {
-                values.entry(body.to_string()).or_default().push(FlagValue::Bool(true));
-            } else {
-                values.entry(body.to_string()).or_default().push(FlagValue::Text(next.unwrap().clone()));
-                index += 1;
+            match args.get(index + 1) {
+                Some(next) if !next.starts_with("--") => {
+                    values.entry(body.to_string()).or_default().push(FlagValue::Text(next.clone()));
+                    index += 1;
+                }
+                _ => values.entry(body.to_string()).or_default().push(FlagValue::Bool(true)),
             }
             index += 1;
         }

@@ -62,7 +62,7 @@ pub fn generate(flags: &Flags) -> Envelope {
     let started = Instant::now();
     let over = |minutes: Option<u64>| minutes.is_some_and(|limit| started.elapsed().as_secs() >= limit.saturating_mul(60));
     if over(max_minutes) {
-        return budget_envelope(command, &package, &out, 0, 0, true, operators, flags);
+        return budget_envelope(command, 0, 0, true, operators);
     }
     let src = flags.get("src").unwrap_or("src");
     let root = package.join(src);
@@ -185,8 +185,7 @@ pub fn generate(flags: &Flags) -> Envelope {
     envelope
 }
 
-fn budget_envelope(command: &str, package: &Path, out: &Path, files: usize, mutants: usize, hit: bool, operators: &str, _flags: &Flags) -> Envelope {
-    let _ = (package, out);
+fn budget_envelope(command: &str, files: usize, mutants: usize, hit: bool, operators: &str) -> Envelope {
     Envelope::new(
         true,
         command,

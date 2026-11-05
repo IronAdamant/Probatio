@@ -278,7 +278,7 @@ fn killer_in_file(id: &str, rel: &str, repo: &Path, commit: &str) -> bool {
         return true;
     }
     let stem = base.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(base);
-    if !stem.is_empty() && id.split(|ch: char| matches!(ch, '.' | '#' | ':' | '/')).any(|part| part == stem) {
+    if !stem.is_empty() && id.split(['.', '#', ':', '/']).any(|part| part == stem) {
         return true;
     }
     let leaf = id.rsplit("::").next().unwrap_or(id).rsplit('#').next().unwrap_or(id);

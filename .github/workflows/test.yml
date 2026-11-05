@@ -23,7 +23,7 @@ jobs:
         with:
           components: clippy
       - run: cargo test --offline
-      - run: cargo clippy --offline --all-targets
+      - run: cargo clippy --offline --all-targets -- -D warnings
 
   npm-launcher:
     name: npm launcher

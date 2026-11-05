@@ -38,15 +38,15 @@ impl RunOptions {
             "reverse" => Direction::Reverse,
             _ => return Err("--direction must be auto, forward, or reverse".into()),
         };
-        let concurrency = flags.int("concurrency", 3).map_err(|error| error)?;
+        let concurrency = flags.int("concurrency", 3)?;
         if concurrency < 1 {
             return Err("--concurrency must be at least 1".into());
         }
         Ok(RunOptions {
             direction,
-            timeout_multiple: flags.int("timeout-multiple", 5).map_err(|error| error)?.max(1),
-            timeout_floor_ms: flags.int("timeout-floor-ms", 20_000).map_err(|error| error)?.max(1),
-            test_timeout_ms: flags.int("test-timeout-ms", 60_000).map_err(|error| error)?,
+            timeout_multiple: flags.int("timeout-multiple", 5)?.max(1),
+            timeout_floor_ms: flags.int("timeout-floor-ms", 20_000)?.max(1),
+            test_timeout_ms: flags.int("test-timeout-ms", 60_000)?,
             concurrency,
             unset: flags.texts("unset"),
             build: flags.get("build").filter(|text| !text.is_empty() && *text != "true").map(str::to_string),
