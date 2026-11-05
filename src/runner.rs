@@ -1360,6 +1360,7 @@ fn apply_and_run(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration)
     let mut scored = score_timed(&timed, job.launch.is_some() || suite.contains("--test-reporter="));
     if job.launch.is_none() && !suite.contains("--test-reporter=") {
         scored = apply_shell_report(scored, &timed, package);
+        name_cargo_kills(&mut scored, suite, &timed);
     }
     scored.direction = chosen.into();
     scored.mutant_hash = job.mutant_hash.clone();
@@ -1461,15 +1462,34 @@ fn rerun_one(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, nam
         return score_timed(&timed, true);
     }
     let suite = &job.rendered;
-    let command = if name.is_empty() || !suite.contains("--test-reporter=") {
-        with_concurrency(suite, 1)
-    } else {
+    let command = if !name.is_empty() && suite.contains("--test-reporter=") {
         with_concurrency(&node_pattern_command(suite, &[name.to_string()]), 1)
+    } else if !name.is_empty() && is_cargo_test(suite) && !suite.contains(" -- ") {
+        // Only the killing test, in every test binary: a confirm costs one test, not the suite.
+        format!("{suite} -- --exact {}", shell_quote(Path::new(name)))
+    } else {
+        with_concurrency(suite, 1)
     };
     let pairs: Vec<(&str, &str)> = job.project_env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
     let unset: Vec<&str> = job.unset.iter().map(String::as_str).collect();
     let timed = process::run_shell_prepared(&command, Some(root), Some(package), timeout, &pairs, &unset);
-    score_timed(&timed, command.contains("--test-reporter="))
+    let mut scored = score_timed(&timed, command.contains("--test-reporter="));
+    name_cargo_kills(&mut scored, &command, &timed);
+    scored
+}
+
+/// `cargo test`, with or without more arguments or a `{tests}` token.
+fn is_cargo_test(command: &str) -> bool {
+    let words = command_words(command);
+    words.len() >= 2 && matches!(file_name(&words[0]), "cargo" | "cargo.exe") && words[1] == "test"
+}
+
+/// libtest prints `test <name> ... FAILED` for each failing test. Those are the kill's names,
+/// with no coverage tool needed.
+fn name_cargo_kills(scored: &mut Scored, command: &str, timed: &TimedRun) {
+    if scored.kind == Verdict::Killed && scored.killed_by.is_empty() && is_cargo_test(command) {
+        scored.killed_by = decide::cargo_failures(&timed.stdout);
+    }
 }
 
 fn with_concurrency(command: &str, value: u64) -> String {
@@ -3167,6 +3187,30 @@ mod tests {
             let names = vec!["c:/Temp/probatio-abc-0/test/a.test.js::adds".to_string()];
             assert_eq!(relative_names(&names, Path::new(r"C:\Temp\probatio-abc-0")), ["test/a.test.js::adds"]);
         }
+    }
+
+    /// A Rust kill names the failing test from libtest's output, without `cargo llvm-cov`, and the
+    /// confirm reruns only that test.
+    #[test]
+    fn a_rust_kill_names_its_test() {
+        if Command::new("cargo").arg("--version").output().is_err() {
+            return;
+        }
+        let package = temp("cargo-named");
+        fs::write(package.join("Cargo.toml"), "[package]\nname = \"gate\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\n").unwrap();
+        fs::write(
+            package.join("src/lib.rs"),
+            "pub fn open(n: i32) -> bool {\n    n > 0\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn zero_stays_shut() {\n        assert!(!super::open(0));\n    }\n}\n",
+        )
+        .unwrap();
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", "cargo test", "--timeout-ms", "300000"]);
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        let body = one_result(&out);
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
+        assert_eq!(json::stringify_compact(body.get("killedBy").unwrap_or(&Value::Null)), r#"["tests::zero_stays_shut"]"#);
+        let _ = fs::remove_dir_all(&package);
     }
 
     #[test]

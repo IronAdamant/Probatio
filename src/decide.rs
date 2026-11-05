@@ -118,6 +118,20 @@ pub fn ran_no_tests(stdout: &str) -> bool {
     !counts.is_empty() && counts.iter().all(|count| *count == 0)
 }
 
+/// The names libtest marks `FAILED` (`test tests::adds ... FAILED`), in order, once each.
+pub fn cargo_failures(stdout: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.trim_end().strip_prefix("test ") else { continue };
+        let Some(name) = rest.strip_suffix(" ... FAILED") else { continue };
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 /// A compile or link failure is unviable. An assertion failure is a kill. A timeout is neither.
 pub fn classify(timed_out: bool, code: Option<i32>, stderr: &str) -> Verdict {
     if timed_out {
@@ -401,6 +415,13 @@ pub fn deleted_tests() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn libtest_failures_are_named() {
+        let out = "running 3 tests\ntest tests::adds ... ok\ntest tests::clamps ... FAILED\ntest it::works ... FAILED\n\nfailures:\n\n---- tests::clamps stdout ----\ntest result: FAILED. 1 passed; 2 failed\n";
+        assert_eq!(cargo_failures(out), ["tests::clamps", "it::works"]);
+        assert!(cargo_failures("test result: ok. 3 passed\n").is_empty());
+    }
 
     #[test]
     fn a_tap_run_with_no_tests_is_not_green() {
