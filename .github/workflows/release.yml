@@ -81,6 +81,10 @@ jobs:
 
   npm:
     needs: build
+    # Set the repository variable NPM_PUBLISH to "false" to cut a tag and a
+    # GitHub release without publishing to npm. The "npm publish" workflow
+    # can publish that tag later.
+    if: vars.NPM_PUBLISH != 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -106,3 +110,16 @@ jobs:
             exit 0
           fi
           bash scripts/npm-publish.sh
+
+  mcp-registry:
+    needs: npm
+    # Publishing the listing is opt-in: set the repository variable
+    # MCP_REGISTRY_PUBLISH to "true" to publish on every tag. The
+    # "mcp registry" workflow can always be run by hand for a tag.
+    if: vars.MCP_REGISTRY_PUBLISH == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/mcp-registry.yml
+    with:
+      tag: ${{ github.ref_name }}

@@ -10,6 +10,7 @@ pub mod schema_cmd;
 pub mod script_line;
 pub mod coverage;
 pub mod decide;
+pub mod diffscope;
 pub mod envelope;
 pub mod generate;
 pub mod golden;

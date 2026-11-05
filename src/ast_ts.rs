@@ -456,9 +456,7 @@ fn skip_type_alias(text: &str, from: usize) -> usize {
             depth += 1;
         } else if byte == b'}' || byte == b')' || byte == b'>' {
             depth -= 1;
-        } else if byte == b';' && depth <= 0 {
-            return index + 1;
-        } else if byte == b'\n' && depth <= 0 {
+        } else if (byte == b';' || byte == b'\n') && depth <= 0 {
             return index + 1;
         }
         index += 1;

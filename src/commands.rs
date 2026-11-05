@@ -21,6 +21,7 @@ use crate::verify;
 /// Invocations that must each return an envelope. Flags may be missing on purpose.
 pub const INVOCATIONS: &[&[&str]] = &[
     &["mutate", "generate"],
+    &["mutate", "diff"],
     &["mutate", "run"],
     &["mutate", "sealed"],
     &["mutate", "tally"],
@@ -115,12 +116,13 @@ fn mutate(args: &[String]) -> Envelope {
     let flags = Flags::parse(if args.len() > 1 { &args[1..] } else { &[] });
     let command = match action {
         "generate" => "mutate.generate",
+        "diff" => "mutate.diff",
         "run" => "mutate.run",
         "sealed" => "mutate.sealed",
         "tally" => "mutate.tally",
-        "" => return missing("mutate", "missing generate, run, sealed, or tally"),
+        "" => return missing("mutate", "missing diff, generate, run, sealed, or tally"),
         other => {
-            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use generate, run, sealed, or tally.");
+            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use diff, generate, run, sealed, or tally.");
         }
     };
     if let Some(envelope) = refused(command, &flags) {
@@ -128,6 +130,7 @@ fn mutate(args: &[String]) -> Envelope {
     }
     match action {
         "generate" => generate::generate(&flags),
+        "diff" => crate::diffscope::diff(&flags),
         "run" => runner::run(&flags),
         "sealed" => sealed::sealed(&flags),
         "tally" => tally_command(&flags),
@@ -165,11 +168,11 @@ fn ledger_group(args: &[String]) -> Envelope {
 fn ledger_build(flags: &Flags) -> Envelope {
     let package = match need(flags, "package", "ledger.build") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let out = match need(flags, "out", "ledger.build") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let commit = flags.get("commit").unwrap_or("HEAD");
     let src = flags.get("src").unwrap_or("src");
@@ -185,7 +188,7 @@ fn ledger_build(flags: &Flags) -> Envelope {
         }
     }
     let tests_dir = flags.get("tests-dir").unwrap_or("tests");
-    ledger::build(&package, &out, commit, src, tests_dir, max_lines, max_commits, repo.as_deref())
+    ledger::build(&ledger::Build { package: &package, out: &out, commit, src, tests_dir, max_lines, max_commits, repo: repo.as_deref() })
 }
 
 pub fn ledger_check(flags: &Flags) -> Envelope {
@@ -240,15 +243,15 @@ fn matrix(args: &[String]) -> Envelope {
 fn matrix_report(flags: &Flags) -> Envelope {
     let scores = match need(flags, "scores", "matrix.report") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let direct = match need(flags, "direct", "matrix.report") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let out = match need(flags, "out", "matrix.report") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let scores_text = match fs::read_to_string(&scores) {
         Ok(text) => text,
@@ -296,11 +299,11 @@ fn golden_group(args: &[String]) -> Envelope {
 fn golden_check(flags: &Flags) -> Envelope {
     let recorded = match need(flags, "recorded", "golden.check") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let actual = match need(flags, "actual", "golden.check") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     match golden::check(&recorded, &actual, flags.get("update"), flags.get("message").unwrap_or(""), &flags.texts("root")) {
         Ok(envelope) => envelope,
@@ -311,7 +314,7 @@ fn golden_check(flags: &Flags) -> Envelope {
 fn golden_record(flags: &Flags) -> Envelope {
     let package = match need(flags, "package", "golden.record") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let out_dir = flags.get("dir").or_else(|| flags.get("out")).unwrap_or("tests/golden");
     let timeout = flags.int("suite-timeout-ms", 600_000).unwrap_or(600_000);
@@ -324,11 +327,11 @@ fn golden_record(flags: &Flags) -> Envelope {
 fn golden_compare(flags: &Flags) -> Envelope {
     let package = match need(flags, "package", "golden.compare") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let out = match need(flags, "out", "golden.compare") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let operators = flags.get("operators").unwrap_or("core");
     if operators != "core" && operators != "wide" {
@@ -338,7 +341,16 @@ fn golden_compare(flags: &Flags) -> Envelope {
     if let Err(message) = golden::pin_commit(&package, flags.get("repo"), flags.get("commit")) {
         return Envelope::new(false, "golden.compare", message, "Fix the command and run it again.");
     }
-    golden::compare(&package, &flags.texts("module"), &flags.texts("tests"), &flags.texts("golden"), &out, operators, timeout, flags.get("commit"))
+    golden::compare(&golden::Compare {
+        package: &package,
+        modules: &flags.texts("module"),
+        tests: &flags.texts("tests"),
+        golden: &flags.texts("golden"),
+        out: &out,
+        operators,
+        timeout_ms: timeout,
+        commit: flags.get("commit"),
+    })
 }
 
 fn gap(args: &[String]) -> Envelope {
@@ -364,7 +376,7 @@ fn gap_fix(flags: &Flags) -> Envelope {
     let command = "gap.fix";
     let state_dir = match need(flags, "state", command) {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let id = match flags.need("id") {
         Ok(value) => value.to_string(),
@@ -438,7 +450,7 @@ fn guard_check(flags: &Flags) -> Envelope {
     let command = "guard.check";
     let state_dir = match need(flags, "state", command) {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let guard = match flags.need("guard") {
         Ok(value) => value.to_string(),
@@ -471,7 +483,7 @@ fn findings_add(flags: &Flags) -> Envelope {
     let command = "findings.add";
     let state_dir = match need(flags, "state", command) {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let status = match flags.need("status") {
         Ok(value) => value.to_string(),
@@ -529,7 +541,7 @@ fn status_command(flags: &Flags) -> Envelope {
     }
     let state_dir = match need(flags, "state", "status") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let root = flags.get("root").map(PathBuf::from).unwrap_or_else(|| state_dir.clone());
     let page = flags.get("page").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("PROBATIO.md"));
@@ -552,7 +564,7 @@ fn seal(flags: &Flags) -> Envelope {
     }
     let state_dir = match need(flags, "state", "seal") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let mut ids = flags.texts("id");
     if let Some(from) = flags.get("from") {
@@ -609,7 +621,7 @@ fn queue_group(args: &[String]) -> Envelope {
 fn queue_seed(flags: &Flags) -> Envelope {
     let state_dir = match need(flags, "state", "queue.seed") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     match queue::seed(&state_dir, &flags.texts("id")) {
         Ok(written) => Envelope::new(true, "queue.seed", format!("Seeded {} queue items.", written.len()), "Claim one.")
@@ -621,7 +633,7 @@ fn queue_seed(flags: &Flags) -> Envelope {
 fn queue_claim(flags: &Flags) -> Envelope {
     let state_dir = match need(flags, "state", "queue.claim") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let id = match flags.need("id") {
         Ok(value) => value.to_string(),
@@ -643,7 +655,7 @@ fn queue_claim(flags: &Flags) -> Envelope {
 fn queue_reap(flags: &Flags) -> Envelope {
     let state_dir = match need(flags, "state", "queue.reap") {
         Ok(path) => path,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     let now = if flags.get("now").is_none() {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|item| item.as_millis() as u64).unwrap_or(0)
@@ -692,8 +704,8 @@ fn missing(command: &str, message: &str) -> Envelope {
     Envelope::new(false, command, message.to_string(), "Pass the missing flag and run the command again.")
 }
 
-fn need(flags: &Flags, key: &str, command: &str) -> Result<PathBuf, Envelope> {
-    flags.need(key).map(PathBuf::from).map_err(|message| missing(command, &message))
+fn need(flags: &Flags, key: &str, command: &str) -> Result<PathBuf, Box<Envelope>> {
+    flags.need(key).map(PathBuf::from).map_err(|message| Box::new(missing(command, &message)))
 }
 
 #[cfg(test)]

@@ -1,0 +1,66 @@
+name: mcp registry
+
+# Publish server.json, as it is at a release tag, to the MCP Registry. The login is GitHub
+# Actions OIDC, which grants the io.github.IronAdamant/* namespace to this repository, so no
+# secret is needed. release.yml calls this after npm publishes; run it by hand to list a tag
+# that is already on npm.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose server.json to publish, for example v0.7.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish to the MCP Registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check that npm has this version with its mcpName
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./server.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "server.json is $version and the tag is $TAG."
+            exit 1
+          fi
+          name=$(node -p "require('./server.json').name")
+          # The registry checks that the npm package names this server. npm can lag a publish.
+          for attempt in 1 2 3 4 5 6; do
+            got=$(npm view "probatio@$version" mcpName 2>/dev/null || true)
+            if [ "$got" = "$name" ]; then
+              echo "npm probatio@$version has mcpName $got"
+              exit 0
+            fi
+            echo "npm probatio@$version mcpName is '${got}', waiting ($attempt)"
+            sleep 20
+          done
+          echo "npm probatio@$version is not published with mcpName $name. Publish npm first."
+          exit 1
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.7/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher validate server.json
+      - name: Log in with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server.json
+        run: ./mcp-publisher publish server.json

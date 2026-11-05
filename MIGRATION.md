@@ -5,7 +5,7 @@ This list is the difference between the last TypeScript program and the Rust bin
 | | |
 | --- | --- |
 | TypeScript | Commit `c5cd175` (full hash `c5cd1755146082282332a2f6098981917c5bc03a`). npm package `probatio` 0.3.0. Branch `typescript-legacy` points at that commit. |
-| Rust | Crate 0.6.0 on `main`. The MCP server reports that version. |
+| Rust | Crate 0.7.0 on `main`. The MCP server reports that version. |
 
 Evidence used: `src/` and `schemas/` at `c5cd175`, the same paths in this tree, pull requests 2, 3, and 5, `CHANGELOG.md`, and the benchmark notes in `README.md`. Pull request 2 is the parity pass. A row there marked fixed is listed here only when this tree still differs from `c5cd175`. Pull request 1 fixed a Rust baseline check for dash (`: not found`). The TypeScript runner already treated that phrase as a missing tool, so it is not a difference.
 
@@ -20,7 +20,7 @@ No row is marked **bug fixed from TypeScript**. Fixes recorded in the changelog 
 
 ## Install and platforms
 
-| Item | Mark | TypeScript 0.3.0 | Rust 0.6.0 |
+| Item | Mark | TypeScript 0.3.0 | Rust 0.7.0 |
 | --- | --- | --- | --- |
 | npm package contents | intentional change | `dist/` (compiled TypeScript) and `schemas/`. Dependency `typescript`. `engines.node` is `>=22.6`. | `bin/probatio.js` and `README.md`. No `typescript` dependency. `engines.node` is `>=18`, and that bound is only for the launcher. |
 | What `probatio` runs | intentional change | `node dist/cli.js`. | The launcher spawns the binary from the matching platform package. `cargo build` writes the same binary. |
@@ -29,12 +29,12 @@ No row is marked **bug fixed from TypeScript**. Fixes recorded in the changelog 
 | Platform packages | intentional change | Any machine that could run Node 22.6 or newer. | npm optional dependencies: `probatio-linux-x64` (musl), `probatio-darwin-arm64`, `probatio-darwin-x64`, `@iron_adamant/probatio-win32-x64`. A `v*` tag builds `x86_64-unknown-linux-musl`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, and `x86_64-pc-windows-msvc`. |
 | Other platforms | not supported | Covered by Node, when Node itself ran there. | The launcher writes a plain text line to stderr and exits 1: `no binary for <platform>-<arch>`. That line is not a JSON envelope. Build from source with Cargo on a platform the launcher does not ship. |
 | Windows package name | intentional change | Not a native package. | npm returned 403 for the unscoped name `probatio-win32-x64` (spam detection, pull request 5). The published name is `@iron_adamant/probatio-win32-x64`. |
-| Versions between 0.3.0 and 0.5.0 | intentional change | Last published TypeScript version is 0.3.0. Git tags were not created for the TypeScript versions. | `0.4.0` was the crate version in git and was not published. npm `probatio` from 0.5.0 onward is the Rust binary. 0.5.1 adds the MCP Registry listing `io.github.IronAdamant/probatio`. 0.6.0 adds MCP tool groups and argument checks, and the Windows fixes in the changelog. |
+| Versions between 0.3.0 and 0.5.0 | intentional change | Last published TypeScript version is 0.3.0. Git tags were not created for the TypeScript versions. | `0.4.0` was the crate version in git and was not published. npm `probatio` from 0.5.0 onward is the Rust binary. 0.5.1 adds `server.json` for the MCP Registry as `io.github.IronAdamant/probatio`. 0.6.0 adds MCP tool groups and argument checks, and the Windows fixes in the changelog. 0.7.0 adds `mutate diff` and an opt-in registry publish in the release workflow. |
 | Launcher failure | intentional change | A missing Node or a failed `node` start was the process error from Node itself. | A missing platform package, a missing binary file, or a binary that does not start is a stderr line from `npm/bin/probatio.js` and exit 1. It is not the JSON envelope. |
 
 ## Commands and flags
 
-The command names are the same 24: `mutate generate`, `mutate run`, `mutate sealed`, `mutate tally`, `ledger build`, `ledger check`, `matrix report`, `golden check`, `golden record`, `golden compare`, `gap fix`, `gap revert`, `guard check`, `findings add`, `status`, `seal`, `queue seed`, `queue claim`, `queue reap`, `check-kill`, `verify-change`, `schema`, and the no-command envelope `mutate.help`.
+The command names are the same 24, and Rust adds a 25th, `mutate diff` (intentional change: mutate the lines changed since a ref and name the survivors). The 24: `mutate generate`, `mutate run`, `mutate sealed`, `mutate tally`, `ledger build`, `ledger check`, `matrix report`, `golden check`, `golden record`, `golden compare`, `gap fix`, `gap revert`, `guard check`, `findings add`, `status`, `seal`, `queue seed`, `queue claim`, `queue reap`, `check-kill`, `verify-change`, `schema`, and the no-command envelope `mutate.help`.
 
 Flag parsing that both programs share: `--key value`, `--key=value`, a bare `--flag` stored as true, `--no-flag` stored as false, and a repeated flag keeping every value. Unknown flags are refused before work, exit 1, summary `Unknown flag --name.` (or the plural). `--human` is known on every command.
 
@@ -70,6 +70,8 @@ The six envelope fields are the same: `schemaVersion` (2), `ok`, `command`, `sum
 | Generate summary when `--max-mutants` stops the walk | intentional change | Rust's summary and `next` say the walk was bounded by `--max-mutants`. TypeScript's summary did not add that sentence. `budgetHit` and the time-budget summary are on both. |
 | Run counts | same | Flat `killed`, `survived`, `flaky`, `timeouts`, `errors`, `noCoverage`, `unviable`, plus `counts`. A refusal before any mutant omits a kill count. |
 | Home paths | intentional change | `summary` and `next` may show `~`. `nextCall.argv` and the `suiteCommand` template keep the real path, because both are run as written. On Windows the home folder is `USERPROFILE` when `HOME` is unset, and a forward-slash spelling of it is scrubbed too. |
+| Rust kill names | intentional change | A `cargo test` kill names the tests libtest printed as `FAILED`, and the confirm reruns `-- --exact <name>`. TypeScript named Rust kills only from an LLVM map. |
+| `nextCall` paths on Windows | intentional change | A Windows path in `nextCall`, `full`, and `results` is written with `/`. A suite command is not rewritten. |
 | Result files and tally | intentional change | Each `results/<id>.json` has the mutant's `file` and `line`, so a tally gap names `file:line`. The tally summary counts kills, and says how many name no test. A node kill name is relative to the package, not the temp worktree. A tally while a run is going counts the mutants still waiting, from `run.json`, which `mutate run` writes before its first mutant. |
 | Result files | same | A scored mutant can store `killedBy`, `direction`, `mutantHash`, and `agent`. A history reuse stores `reused: true`, duration 0, and an empty command. Those fields are on the TypeScript result object as well. |
 
@@ -102,7 +104,8 @@ The six envelope fields are the same: `schemaVersion` (2), `ok`, `command`, `sum
 | Argument checks | intentional change | An unknown argument, a missing required one, or a wrong type is one `isError` line naming the tool, the argument, and what is expected. Each `inputSchema` sets `additionalProperties: false`. Integer strings and `"true"`/`"false"` are accepted. TypeScript passed `argv` through unchecked. |
 | Reply text | intentional change | The text block is the envelope as compact JSON; `structuredContent` carries the same object. `initialize` has short `instructions` and no copy of the tool list, and advertises `tools.listChanged: true`. |
 | Tool groups | intentional change | `core` (the three `mutate_*` tools, always on), `diagnostics` (`schema`), `cli` (`probatio`). `PROBATIO_TOOLS` and `PROBATIO_DISABLE` shape the list; an unknown name or `core` exits 2 with one stderr line. A `probatio:` line in an `agent-tools` block of `AGENTS.md` in the server's directory does the same, below the env vars, and a change sends `notifications/tools/list_changed`. TypeScript had one tool. |
-| Client leaves | intentional change | Closing stdin, or cancelling a call, stops every process under that call, including the suite's own process group. TypeScript's server exited and a running suite kept going. |
+| Client leaves | intentional change | Closing stdin, or cancelling a call, stops every process under that call, including the suite's own process group. Killing only the server does too: a kill-on-close job object on Windows, and on Unix each call's child watches for its parent to go. TypeScript's server exited and a running suite kept going. |
+| `mutate_diff` | intentional change | First in the `core` group: the lines changed since `since`, scored in one call, with `survivors` returned. TypeScript had no MCP equivalent. |
 | Protocol versions | same | `2024-11-05`, `2025-03-26`, `2025-06-18`. Anything else is answered as `2024-11-05`. |
 | `ping`, cancel, bad JSON | same | `ping` is answered while a call runs. `notifications/cancelled` kills that call's process group and drops the reply. A line that is not JSON is skipped. An unknown method is `method not found: ...`. |
 | Server version | intentional change | `serverInfo.version` is the crate version (`CARGO_PKG_VERSION`). TypeScript read `version` from `package.json` (0.3.0 at that commit). |

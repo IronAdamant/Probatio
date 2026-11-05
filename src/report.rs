@@ -35,9 +35,7 @@ fn parse_line(line: &str) -> Option<Report> {
         Some(Value::Array(items)) => items,
         _ => return None,
     };
-    if value.get("names").is_none() {
-        return None;
-    }
+    value.get("names")?;
     let mut failures = Vec::new();
     for item in failed {
         let Value::Object(_) = item else { continue };

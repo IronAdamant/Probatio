@@ -231,27 +231,14 @@ pub fn run(flags: &Flags) -> Envelope {
     }
     let mut coverage_note: Option<String> = None;
     let mut baseline = if let Some(parsed) = &python {
-        match python_baseline(
-            &package,
-            &out,
-            &suite,
-            parsed,
-            &python_program,
-            &python_files,
-            &baseline_tests,
-            caller_line_map.is_none(),
-            timeout,
-            &project,
-            &unset,
-        ) {
+        let python_suite = PythonSuite { parsed, program: &python_program, files: &python_files };
+        let suite_env = SuiteEnv { timeout, env: &project, unset: &unset };
+        match python_baseline(&package, &out, &suite, &python_suite, &baseline_tests, caller_line_map.is_none(), &suite_env) {
             Ok(value) => value,
-            Err(envelope) => return attach_suite(envelope, &suite),
+            Err(envelope) => return attach_suite(*envelope, &suite),
         }
     } else {
-        match prepared_baseline(&package, &out, &suite, &baseline_suite, timeout, &project, &unset) {
-            Ok(value) => value,
-            Err(envelope) => return attach_suite(envelope, &suite),
-        }
+        prepared_baseline(&package, &out, &suite, &baseline_suite, timeout, &project, &unset)
     };
     if baseline.kind == Baseline::Green && caller_line_map.is_none() {
         if python.is_some() {
@@ -363,7 +350,7 @@ pub fn run(flags: &Flags) -> Envelope {
                 Envelope::new(
                     false,
                     command,
-                    format!("--confirm-count does not match the mutants still waiting."),
+                    "--confirm-count does not match the mutants still waiting.".to_string(),
                     format!("{real} mutants have no result yet. Nothing new was started."),
                 ),
                 &suite,
@@ -619,7 +606,8 @@ pub fn run(flags: &Flags) -> Envelope {
     let workers_n = flags.int("workers", 1).unwrap_or(1).max(1) as usize;
     // Written before the first mutant, so a second agent's tally can count what is still waiting.
     let _ = write_run_json(&out, flags, &suite, false);
-    if let Err(error) = run_jobs(&jobs, workers_n, git, &repo, &package, &run_id, score_timeout, &mut verdicts, max_selected) {
+    let place = Place { git, repo: &repo, package: &package, run_id: &run_id, timeout: score_timeout };
+    if let Err(error) = run_jobs(&jobs, workers_n, &place, &mut verdicts, max_selected) {
         return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
     }
 
@@ -912,9 +900,8 @@ pub fn discover(package: &Path) -> Result<String, String> {
         Ok("python3 -m unittest discover".into())
     } else if root_file_ends_with(package, &[".cob", ".cbl", ".cobol"]) {
         Ok("cobc -xj".into())
-    } else if root_file_ends_with(package, &[".c", ".cc", ".cpp", ".h", ".hpp"]) {
-        Ok("make test".into())
-    } else if root_file_ends_with(package, &[".s", ".S", ".asm"]) {
+    } else if root_file_ends_with(package, &[".c", ".cc", ".cpp", ".h", ".hpp", ".s", ".S", ".asm"]) {
+        // C, C++, and assembly are all scored through the project's own `make test`.
         Ok("make test".into())
     } else {
         Err("This layout has no suite Probatio can see.".into())
@@ -1001,11 +988,11 @@ fn prepared_baseline(
     timeout: Duration,
     env: &[(String, String)],
     unset: &[String],
-) -> Result<BaselineRun, Envelope> {
+) -> BaselineRun {
     let path = out.join("baseline.json");
     if let Some(saved) = read_baseline(&path) {
         if saved.kind == Baseline::Green && saved.template.as_deref() == Some(template) {
-            return Ok(saved);
+            return saved;
         }
     }
     let pairs: Vec<(&str, &str)> = env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
@@ -1021,7 +1008,7 @@ fn prepared_baseline(
         }
     }
     run.template = Some(template.to_string());
-    Ok(run)
+    run
 }
 
 fn baseline_from(timed: &TimedRun) -> BaselineRun {
@@ -1144,17 +1131,17 @@ struct ScoreJob {
     project_env: Vec<(String, String)>,
 }
 
-fn run_jobs(
-    jobs: &[ScoreJob],
-    workers: usize,
+/// Where and how long each mutant runs: a git worktree of `repo`, or a copy of `package`.
+struct Place<'a> {
     git: bool,
-    repo: &Path,
-    package: &Path,
-    run_id: &str,
+    repo: &'a Path,
+    package: &'a Path,
+    run_id: &'a str,
     timeout: Duration,
-    verdicts: &mut Vec<Verdict>,
-    max_selected: usize,
-) -> Result<(), String> {
+}
+
+fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec<Verdict>, max_selected: usize) -> Result<(), String> {
+    let Place { git, repo, package, run_id, timeout } = *place;
     if jobs.is_empty() {
         return Ok(());
     }
@@ -1274,10 +1261,12 @@ fn score_copy(job: &ScoreJob, package: &Path, timeout: Duration) -> Scored {
         return error_scored(message);
     }
     if let Err(message) = link_node_modules(package, &dest) {
+        worktree::unlink_links(&dest);
         let _ = fs::remove_dir_all(&dest);
         return error_scored(message);
     }
     let scored = apply_and_run(job, &dest, package, timeout);
+    worktree::unlink_links(&dest);
     let _ = fs::remove_dir_all(&dest);
     scored
 }
@@ -1338,20 +1327,7 @@ fn apply_and_run(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration)
     }
     let suite = &job.rendered;
     let timed = if let Some(launch) = &job.launch {
-        launch_python(
-            root,
-            package,
-            &launch.program,
-            &launch.reporter,
-            launch.kind,
-            &launch.names,
-            &launch.files,
-            &launch.extra,
-            None,
-            timeout,
-            &job.project_env,
-            &job.unset,
-        )
+        launch_python(root, package, launch, None, None, &SuiteEnv { timeout, env: &job.project_env, unset: &job.unset })
     } else {
         let pairs: Vec<(&str, &str)> = job.project_env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
         let unset: Vec<&str> = job.unset.iter().map(String::as_str).collect();
@@ -1360,6 +1336,7 @@ fn apply_and_run(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration)
     let mut scored = score_timed(&timed, job.launch.is_some() || suite.contains("--test-reporter="));
     if job.launch.is_none() && !suite.contains("--test-reporter=") {
         scored = apply_shell_report(scored, &timed, package);
+        name_cargo_kills(&mut scored, suite, &timed);
     }
     scored.direction = chosen.into();
     scored.mutant_hash = job.mutant_hash.clone();
@@ -1444,32 +1421,39 @@ fn confirm_kill(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, 
 fn rerun_one(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, name: &str) -> Scored {
     if let Some(launch) = &job.launch {
         let names = if name.is_empty() { launch.names.clone() } else { vec![name.to_string()] };
-        let timed = launch_python(
-            root,
-            package,
-            &launch.program,
-            &launch.reporter,
-            launch.kind,
-            &names,
-            &launch.files,
-            &launch.extra,
-            None,
-            timeout,
-            &job.project_env,
-            &job.unset,
-        );
+        let suite = SuiteEnv { timeout, env: &job.project_env, unset: &job.unset };
+        let timed = launch_python(root, package, launch, Some(&names), None, &suite);
         return score_timed(&timed, true);
     }
     let suite = &job.rendered;
-    let command = if name.is_empty() || !suite.contains("--test-reporter=") {
-        with_concurrency(suite, 1)
-    } else {
+    let command = if !name.is_empty() && suite.contains("--test-reporter=") {
         with_concurrency(&node_pattern_command(suite, &[name.to_string()]), 1)
+    } else if !name.is_empty() && is_cargo_test(suite) && !suite.contains(" -- ") {
+        // Only the killing test, in every test binary: a confirm costs one test, not the suite.
+        format!("{suite} -- --exact {}", shell_quote(Path::new(name)))
+    } else {
+        with_concurrency(suite, 1)
     };
     let pairs: Vec<(&str, &str)> = job.project_env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
     let unset: Vec<&str> = job.unset.iter().map(String::as_str).collect();
     let timed = process::run_shell_prepared(&command, Some(root), Some(package), timeout, &pairs, &unset);
-    score_timed(&timed, command.contains("--test-reporter="))
+    let mut scored = score_timed(&timed, command.contains("--test-reporter="));
+    name_cargo_kills(&mut scored, &command, &timed);
+    scored
+}
+
+/// `cargo test`, with or without more arguments or a `{tests}` token.
+fn is_cargo_test(command: &str) -> bool {
+    let words = command_words(command);
+    words.len() >= 2 && matches!(file_name(&words[0]), "cargo" | "cargo.exe") && words[1] == "test"
+}
+
+/// libtest prints `test <name> ... FAILED` for each failing test. Those are the kill's names,
+/// with no coverage tool needed.
+fn name_cargo_kills(scored: &mut Scored, command: &str, timed: &TimedRun) {
+    if scored.kind == Verdict::Killed && scored.killed_by.is_empty() && is_cargo_test(command) {
+        scored.killed_by = decide::cargo_failures(&timed.stdout);
+    }
 }
 
 fn with_concurrency(command: &str, value: u64) -> String {
@@ -1513,15 +1497,40 @@ fn link_node_modules(package: &Path, dest: &Path) -> Result<(), String> {
     if !source.is_dir() || linked.exists() {
         return Ok(());
     }
-    #[cfg(unix)]
-    {
-        return std::os::unix::fs::symlink(&source, &linked).map_err(|error| error.to_string());
+    link_dir(&source, &linked)
+}
+
+#[cfg(unix)]
+fn link_dir(source: &Path, linked: &Path) -> Result<(), String> {
+    std::os::unix::fs::symlink(source, linked).map_err(|error| error.to_string())
+}
+
+/// A directory symlink needs Developer Mode or admin on Windows. A junction does not, so it is
+/// the fallback. Either is removed as a link (`worktree::unlink_links`) before its tree is deleted.
+#[cfg(windows)]
+fn link_dir(source: &Path, linked: &Path) -> Result<(), String> {
+    if std::os::windows::fs::symlink_dir(source, linked).is_ok() {
+        return Ok(());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (source, linked);
+    let status = std::process::Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(linked)
+        .arg(source)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|error| error.to_string())?;
+    if status.success() {
         Ok(())
+    } else {
+        Err(format!("node_modules could not be linked into {}", linked.display()))
     }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_dir(_source: &Path, _linked: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// Never copied into a mutant's worktree or copy. `.probatio` is this tool's own output, which a
@@ -1968,19 +1977,23 @@ fn is_java_coverage(command: &str) -> bool {
         && (words.len() == 3 || command_asks_for_names(command))
 }
 
+/// What the Python baseline runs: the parsed command, its interpreter, and the files it walks.
+struct PythonSuite<'a> {
+    parsed: &'a ParsedPython,
+    program: &'a str,
+    files: &'a [String],
+}
+
 fn python_baseline(
     package: &Path,
     out: &Path,
     template: &str,
-    parsed: &ParsedPython,
-    program: &str,
-    files: &[String],
+    python: &PythonSuite,
     baseline_tests: &[String],
     collect: bool,
-    timeout: Duration,
-    env: &[(String, String)],
-    unset: &[String],
-) -> Result<BaselineRun, Envelope> {
+    suite: &SuiteEnv,
+) -> Result<BaselineRun, Box<Envelope>> {
+    let parsed = python.parsed;
     let path = out.join("baseline.json");
     if let Some(saved) = read_baseline(&path) {
         let same = saved.kind == Baseline::Green && saved.template.as_deref() == Some(template);
@@ -1989,25 +2002,20 @@ fn python_baseline(
         }
     }
     let reporter = ensure_reporter(out, parsed.kind).map_err(|error| {
-        Envelope::new(false, "mutate.run", error, "The Python reporter could not be written.".to_string())
+        Box::new(Envelope::new(false, "mutate.run", error, "The Python reporter could not be written.".to_string()))
     })?;
     let names: Vec<String> = if command_asks_for_names(template) { baseline_tests.to_vec() } else { Vec::new() };
     let coverage_path = out.join("coverage-raw.json");
     let coverage = if collect && parsed.kind == PythonKind::Pytest { Some(coverage_path.as_path()) } else { None };
-    let timed = launch_python(
-        package,
-        package,
-        program,
-        &reporter,
-        parsed.kind,
-        &names,
-        files,
-        &parsed.extra,
-        coverage,
-        timeout,
-        env,
-        unset,
-    );
+    let launch = PythonLaunch {
+        reporter,
+        program: python.program.to_string(),
+        names,
+        files: python.files.to_vec(),
+        extra: parsed.extra.clone(),
+        kind: parsed.kind,
+    };
+    let timed = launch_python(package, package, &launch, None, coverage, suite);
     Ok(BaselineRun {
         kind: judge_python_baseline(&timed),
         duration_ms: Some(duration_ms(timed.duration)),
@@ -2036,26 +2044,22 @@ fn judge_python_baseline(timed: &TimedRun) -> Baseline {
     }
 }
 
-fn launch_python(
-    root: &Path,
-    bin_root: &Path,
-    program: &str,
-    reporter: &Path,
-    kind: PythonKind,
-    names: &[String],
-    files: &[String],
-    extra: &[String],
-    coverage: Option<&Path>,
+/// The clock and environment one suite process gets.
+struct SuiteEnv<'a> {
     timeout: Duration,
-    extra_env: &[(String, String)],
-    unset: &[String],
-) -> TimedRun {
-    let args = reporter_args(reporter, kind, names, files, extra);
+    env: &'a [(String, String)],
+    unset: &'a [String],
+}
+
+/// Run the Python reporter in `root`. `names` replaces the launch's own names when given.
+fn launch_python(root: &Path, bin_root: &Path, launch: &PythonLaunch, names: Option<&[String]>, coverage: Option<&Path>, suite: &SuiteEnv) -> TimedRun {
+    let names = names.unwrap_or(&launch.names);
+    let args = reporter_args(&launch.reporter, launch.kind, names, &launch.files, &launch.extra);
     let mut owned = python_env(root, coverage);
-    owned.extend(extra_env.iter().cloned());
+    owned.extend(suite.env.iter().cloned());
     let env: Vec<(&str, &str)> = owned.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
-    let unset_ref: Vec<&str> = unset.iter().map(String::as_str).collect();
-    process::run_argv_prepared(program, &args, Some(root), Some(bin_root), timeout, &env, &unset_ref)
+    let unset_ref: Vec<&str> = suite.unset.iter().map(String::as_str).collect();
+    process::run_argv_prepared(&launch.program, &args, Some(root), Some(bin_root), suite.timeout, &env, &unset_ref)
 }
 
 fn python_env(root: &Path, coverage: Option<&Path>) -> Vec<(String, String)> {
@@ -3169,6 +3173,30 @@ mod tests {
         }
     }
 
+    /// A Rust kill names the failing test from libtest's output, without `cargo llvm-cov`, and the
+    /// confirm reruns only that test.
+    #[test]
+    fn a_rust_kill_names_its_test() {
+        if Command::new("cargo").arg("--version").output().is_err() {
+            return;
+        }
+        let package = temp("cargo-named");
+        fs::write(package.join("Cargo.toml"), "[package]\nname = \"gate\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\n").unwrap();
+        fs::write(
+            package.join("src/lib.rs"),
+            "pub fn open(n: i32) -> bool {\n    n > 0\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn zero_stays_shut() {\n        assert!(!super::open(0));\n    }\n}\n",
+        )
+        .unwrap();
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", "cargo test", "--timeout-ms", "300000"]);
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        let body = one_result(&out);
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
+        assert_eq!(json::stringify_compact(body.get("killedBy").unwrap_or(&Value::Null)), r#"["tests::zero_stays_shut"]"#);
+        let _ = fs::remove_dir_all(&package);
+    }
+
     #[test]
     fn a_cargo_suite_shares_one_build_directory_per_worker() {
         if std::env::var_os("CARGO_TARGET_DIR").is_some() {
@@ -3180,6 +3208,23 @@ mod tests {
         assert!(cargo_target_dir(&job_for("npm test", Vec::new()), "abc", "0").is_none());
         let preset = vec![("CARGO_TARGET_DIR".to_string(), "/x".to_string())];
         assert!(cargo_target_dir(&job_for("cargo test", preset), "abc", "0").is_none());
+    }
+
+    /// Windows linked no `node_modules` at all, so a Node suite in a worktree could not resolve its
+    /// dependencies. It is a junction there now. Deleting the copy must not reach the package.
+    #[test]
+    fn node_modules_is_linked_into_a_copy_and_survives_its_removal() {
+        let package = temp("nm-link");
+        fs::create_dir_all(package.join("node_modules/dep")).unwrap();
+        fs::write(package.join("node_modules/dep/index.js"), "module.exports = 1;\n").unwrap();
+        let dest = temp("nm-link-dest");
+        link_node_modules(&package, &dest).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("node_modules/dep/index.js")).unwrap(), "module.exports = 1;\n");
+        worktree::unlink_links(&dest);
+        assert!(!dest.join("node_modules").exists());
+        let _ = fs::remove_dir_all(&dest);
+        assert!(package.join("node_modules/dep/index.js").is_file(), "the package node_modules was deleted");
+        let _ = fs::remove_dir_all(&package);
     }
 
     #[test]

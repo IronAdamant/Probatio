@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.diff.schema.json",
+  "flags": [
+    {
+      "name": "package",
+      "required": true
+    },
+    {
+      "name": "since",
+      "required": false
+    },
+    {
+      "name": "out",
+      "required": false
+    },
+    {
+      "name": "src",
+      "required": false
+    },
+    {
+      "name": "suite-command",
+      "required": false
+    },
+    {
+      "name": "timeout-ms",
+      "required": false
+    },
+    {
+      "name": "workers",
+      "required": false
+    },
+    {
+      "name": "confirm",
+      "required": false
+    },
+    {
+      "name": "max-mutants",
+      "required": false
+    },
+    {
+      "name": "operators",
+      "required": false
+    }
+  ],
+  "title": "probatio mutate.diff",
+  "description": "Mutates only the lines changed since --since (default HEAD: uncommitted edits and untracked files), runs the suite on each mutant in a worktree, and names the survivors on those lines. Each call starts from a fresh <out>/run, so a test added since the last call counts. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "mutate.diff"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "changedLines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mutantCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "notRun": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "survivors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "original": {
+            "type": "string"
+          },
+          "replacement": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "line",
+          "original",
+          "replacement"
+        ]
+      }
+    },
+    "results": {
+      "type": "string"
+    },
+    "suiteCommand": {
+      "type": "string"
+    },
+    "counts": {
+      "type": "object"
+    }
+  }
+}

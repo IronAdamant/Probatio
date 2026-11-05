@@ -8,16 +8,20 @@ use crate::envelope::Envelope;
 use crate::json::{self, Value};
 use crate::memory::golden_changes;
 
-pub fn build(
-    package: &Path,
-    out: &Path,
-    commit: &str,
-    src: &str,
-    tests_dir: &str,
-    max_lines: usize,
-    max_commits: Option<u64>,
-    repo_flag: Option<&Path>,
-) -> Envelope {
+/// One `ledger build`: which commits to read, and the limits on what becomes a ledger patch.
+pub struct Build<'a> {
+    pub package: &'a Path,
+    pub out: &'a Path,
+    pub commit: &'a str,
+    pub src: &'a str,
+    pub tests_dir: &'a str,
+    pub max_lines: usize,
+    pub max_commits: Option<u64>,
+    pub repo: Option<&'a Path>,
+}
+
+pub fn build(request: &Build) -> Envelope {
+    let Build { package, out, commit, src, tests_dir, max_lines, max_commits, repo: repo_flag } = *request;
     let repo = if let Some(path) = repo_flag {
         if !path.is_dir() || git(path, &["rev-parse", "--is-inside-work-tree"]).is_err() {
             return Envelope::new(false, "ledger.build", "repo is not a git repository", "Pass --repo as the git root.");
@@ -361,7 +365,7 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-m", "swap"]);
         let out = root.join("ledger");
-        let envelope = build(&root, &out, "HEAD", "src", "tests", 300, None, None);
+        let envelope = build(&Build { package: &root, out: &out, commit: "HEAD", src: "src", tests_dir: "tests", max_lines: 300, max_commits: None, repo: None });
         assert!(envelope.ok, "{}", envelope.summary);
         assert!(envelope.summary.contains("reverse cleanly"), "{}", envelope.summary);
         assert!(out.join("ledger.json").is_file());

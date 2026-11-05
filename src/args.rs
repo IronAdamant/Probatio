@@ -51,12 +51,12 @@ impl Flags {
                     continue;
                 }
             }
-            let next = args.get(index + 1);
-            if next.is_none() || next.is_some_and(|item| item.starts_with("--")) {
-                values.entry(body.to_string()).or_default().push(FlagValue::Bool(true));
-            } else {
-                values.entry(body.to_string()).or_default().push(FlagValue::Text(next.unwrap().clone()));
-                index += 1;
+            match args.get(index + 1) {
+                Some(next) if !next.starts_with("--") => {
+                    values.entry(body.to_string()).or_default().push(FlagValue::Text(next.clone()));
+                    index += 1;
+                }
+                _ => values.entry(body.to_string()).or_default().push(FlagValue::Bool(true)),
             }
             index += 1;
         }
@@ -141,6 +141,18 @@ impl Flags {
 /// `(name, required)`. This table is what the CLI refuses against, and what each schema file lists.
 pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
     match command {
+        "mutate.diff" => Some(&[
+            ("package", true),
+            ("since", false),
+            ("out", false),
+            ("src", false),
+            ("suite-command", false),
+            ("timeout-ms", false),
+            ("workers", false),
+            ("confirm", false),
+            ("max-mutants", false),
+            ("operators", false),
+        ]),
         "mutate.generate" => Some(&[
             ("package", true),
             ("out", true),

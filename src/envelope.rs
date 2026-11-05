@@ -47,13 +47,20 @@ impl Envelope {
                     None => Value::Null,
                     Some(argv) => Value::object(vec![(
                         "argv",
-                        Value::Array(argv.iter().cloned().map(Value::String).collect()),
+                        Value::Array(slash_paths(argv, cfg!(windows)).into_iter().map(Value::String).collect()),
                     )]),
                 },
             ),
         ];
         for (key, value) in &self.extra {
-            entries.push((key.clone(), scrub_value(value, home, kept_verbatim(key))));
+            let value = match value {
+                // Paths to the files a command wrote, written with `/` on Windows like `nextCall`.
+                Value::String(path) if key == "full" || key == "results" => {
+                    Value::String(slash_paths(std::slice::from_ref(path), cfg!(windows)).remove(0))
+                }
+                other => other.clone(),
+            };
+            entries.push((key.clone(), scrub_value(&value, home, kept_verbatim(key))));
         }
         Value::Object(entries)
     }
@@ -61,6 +68,31 @@ impl Envelope {
     pub fn render(&self, home: &str) -> String {
         json::stringify(&self.to_value(home))
     }
+}
+
+/// Windows paths in a `nextCall` argv, written with `/`. Rust joins with `\`, so a path an agent
+/// passed as `C:/work` came back as `C:/work\out\mutants`: mixed, and each `\` costs a JSON
+/// escape. Windows accepts `/`. Only a value that is a Windows path changes: one that starts with
+/// a drive (`C:\`, `C:/`) or `.\`. A suite command is never touched.
+pub fn slash_paths(argv: &[String], windows: bool) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut previous = "";
+    for arg in argv {
+        let command_text = matches!(previous, "--suite-command" | "--build" | "--test-name-pattern");
+        if windows && !command_text && looks_like_windows_path(arg) {
+            out.push(arg.replace('\\', "/"));
+        } else {
+            out.push(arg.clone());
+        }
+        previous = arg;
+    }
+    out
+}
+
+fn looks_like_windows_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
+    drive || text.starts_with(".\\") || text.starts_with("..\\")
 }
 
 /// The home folder to scrub. Windows sets `USERPROFILE`, and `HOME` only under Git Bash or MSYS.
@@ -127,12 +159,10 @@ pub fn render_text(envelope: &Envelope, human: bool) -> String {
     let summary = value.get("summary").and_then(Value::as_str).unwrap_or("");
     let next = value.get("next").and_then(Value::as_str).unwrap_or("");
     let mut lines = vec![summary.to_string(), next.to_string()];
-    if let Some(argv) = value.get("nextCall").and_then(|item| item.get("argv")) {
-        if let Value::Array(items) = argv {
-            let words = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
-            if !words.is_empty() {
-                lines.push(format!("next call: probatio {words}"));
-            }
+    if let Some(Value::Array(items)) = value.get("nextCall").and_then(|item| item.get("argv")) {
+        let words = items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+        if !words.is_empty() {
+            lines.push(format!("next call: probatio {words}"));
         }
     }
     format!("{}\n", lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n"))
@@ -210,6 +240,20 @@ mod tests {
         assert!(rendered.contains("~/proj"));
         assert!(rendered.contains("\"/Users/ada/proj\""));
         assert!(!rendered.contains("see /Users/ada/proj"));
+    }
+
+    #[test]
+    fn a_windows_next_call_uses_forward_slashes_and_leaves_the_suite_alone() {
+        let argv: Vec<String> = ["mutate", "run", "--package", r"C:/work\app", "--out", r"C:\work\app\.probatio\run", "--suite-command", r"C:\py\python.exe -c 'print(1)'", "--tests", r".\names.txt"]
+            .iter()
+            .map(|item| item.to_string())
+            .collect();
+        let slashed = slash_paths(&argv, true);
+        assert_eq!(slashed[3], "C:/work/app");
+        assert_eq!(slashed[5], "C:/work/app/.probatio/run");
+        assert_eq!(slashed[7], argv[7]);
+        assert_eq!(slashed[9], "./names.txt");
+        assert_eq!(slash_paths(&argv, false), argv);
     }
 
     #[test]

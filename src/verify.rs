@@ -142,7 +142,7 @@ fn baseline_only(flags: &Flags, package: &Path, out: &Path, git_note: &str) -> E
         return Envelope::new(false, "verify-change", "No suite was run.", git_note);
     };
     let timeout = flags.int("timeout-ms", 120_000).unwrap_or(120_000).max(1);
-    let timed = crate::process::run_shell(&suite.to_string(), Some(package), std::time::Duration::from_millis(timeout));
+    let timed = crate::process::run_shell(suite, Some(package), std::time::Duration::from_millis(timeout));
     if !timed.spawned || timed.timed_out || timed.status != Some(0) {
         return Envelope::new(false, "verify-change", "The baseline suite failed. No mutant was introduced.", "Start from a green suite.");
     }
