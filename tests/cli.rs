@@ -238,8 +238,10 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
 fn assert_named_suite(value: &json::Value, command: &str) {
     assert_eq!(value.get("schemaVersion").and_then(json::Value::as_int), Some(2));
     assert_eq!(value.get("suiteCommand").and_then(json::Value::as_str), Some(command));
+    // `next` is prose, so a home path in it reads `~`. `suiteCommand` above stays runnable.
     let next = value.get("next").and_then(json::Value::as_str).unwrap_or("");
-    assert!(next.contains(command), "{next}");
+    let shown = probatio::envelope::scrub(command, &probatio::envelope::home_dir());
+    assert!(next.contains(&shown), "{next}");
 }
 
 fn assert_refused_without_kills(value: &json::Value) {
@@ -980,6 +982,7 @@ fn shipped_run_uses_node_bin_from_a_git_worktree() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
 fn marker_lines(path: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -990,6 +993,7 @@ fn marker_lines(path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+#[cfg(unix)]
 fn assert_survived_mutants(out: &std::path::Path) {
     let mut survived = 0usize;
     for entry in std::fs::read_dir(out.join("results")).unwrap() {
@@ -1000,6 +1004,7 @@ fn assert_survived_mutants(out: &std::path::Path) {
     assert!(survived >= 1, "no mutant result in {}", out.display());
 }
 
+#[cfg(unix)]
 fn git_commit(root: &std::path::Path, paths: &[&str]) {
     let mut init = std::process::Command::new("git");
     init.arg("-C").arg(root).args(["init"]);

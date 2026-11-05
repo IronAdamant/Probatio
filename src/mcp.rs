@@ -372,7 +372,7 @@ fn tools_call(id: &Value, params: Option<&Value>) -> String {
         "mutate_tally" => tally(&args),
         _ => return tool_error(id, "unknown tool"),
     };
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::envelope::home_dir();
     let text = envelope.render(&home);
     let structured = json::parse(text.trim()).unwrap_or_else(|_| Value::object(vec![]));
     let mut content = vec![Value::object(vec![

@@ -25,7 +25,7 @@ pub fn check(recorded_path: &Path, actual_path: &Path, update: Option<&str>, mes
     let mut ids: Vec<String> = recorded.keys().chain(actual.keys()).cloned().collect();
     ids.sort();
     ids.dedup();
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::envelope::home_dir();
     let mut wording = Vec::new();
     let mut contract = Vec::new();
     let mut invariant = Vec::new();

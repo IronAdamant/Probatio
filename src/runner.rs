@@ -69,6 +69,8 @@ struct BaselineRun {
     /// Set after a Python baseline has looked for a coverage map.
     /// `lines.json` is that map. An empty string means coverage.py wrote nothing.
     line_map: Option<String>,
+    /// The last lines the baseline printed. Not stored in `baseline.json`.
+    tail: String,
 }
 
 pub fn run(flags: &Flags) -> Envelope {
@@ -312,6 +314,12 @@ pub fn run(flags: &Flags) -> Envelope {
         );
     }
     if let Some((summary, next)) = decide::baseline_refusal(baseline.kind) {
+        let mut next = next.to_string();
+        if store_python_stub(&baseline.tail) {
+            next.push_str(" python3 here is the Microsoft Store placeholder, not Python. Install Python, or pass suiteCommand with the full path of python.exe.");
+        } else if !baseline.tail.is_empty() {
+            next.push_str(&format!(" Last output: {}", baseline.tail));
+        }
         return attach_suite(Envelope::new(false, command, summary, next), &suite);
     }
 
@@ -1001,6 +1009,9 @@ fn prepared_baseline(
         if let Some(kind) = shell_baseline(&timed, package) {
             run.kind = kind;
         }
+        if store_python_stub(&timed.stderr) {
+            run.kind = Baseline::MissingTool;
+        }
     }
     run.template = Some(template.to_string());
     Ok(run)
@@ -1012,6 +1023,7 @@ fn baseline_from(timed: &TimedRun) -> BaselineRun {
         duration_ms: Some(duration_ms(timed.duration)),
         template: None,
         line_map: None,
+        tail: output_tail(&timed.stdout, &timed.stderr),
     }
 }
 
@@ -1099,7 +1111,7 @@ fn read_baseline(path: &Path) -> Option<BaselineRun> {
         Some(Value::String(text)) => Some(text.clone()),
         _ => None,
     };
-    Some(BaselineRun { kind, duration_ms, template, line_map })
+    Some(BaselineRun { kind, duration_ms, template, line_map, tail: String::new() })
 }
 
 fn result_path(out: &Path, id: &str) -> PathBuf {
@@ -1900,6 +1912,7 @@ fn python_baseline(
         duration_ms: Some(duration_ms(timed.duration)),
         template: Some(template.to_string()),
         line_map: None,
+        tail: output_tail(&timed.stdout, &timed.stderr),
     })
 }
 
@@ -1911,6 +1924,9 @@ fn judge_python_baseline(timed: &TimedRun) -> Baseline {
         return Baseline::TimedOut;
     }
     if timed.status == Some(127) && timed.stderr.contains("command not found") {
+        return Baseline::MissingTool;
+    }
+    if store_python_stub(&timed.stderr) || store_python_stub(&timed.stdout) {
         return Baseline::MissingTool;
     }
     match report::parse(&timed.stdout) {
@@ -1945,13 +1961,12 @@ fn python_env(root: &Path, coverage: Option<&Path>) -> Vec<(String, String)> {
     let mut env = vec![("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string())];
     let src = root.join("src");
     if src.is_dir() {
-        let mut pythonpath = src.display().to_string();
-        if let Ok(existing) = std::env::var("PYTHONPATH") {
-            if !existing.is_empty() {
-                pythonpath.push(':');
-                pythonpath.push_str(&existing);
-            }
+        let mut dirs = vec![src];
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            dirs.extend(std::env::split_paths(&existing).filter(|dir| !dir.as_os_str().is_empty()));
         }
+        // `;` on Windows. A `:` there splits `C:\src` into two entries.
+        let pythonpath = std::env::join_paths(dirs).map(|joined| joined.to_string_lossy().into_owned()).unwrap_or_default();
         env.push(("PYTHONPATH".to_string(), pythonpath));
     }
     if let Some(path) = coverage {
@@ -2048,7 +2063,7 @@ fn interpreter_for(program: &str, package: &Path) -> String {
                 return joined.display().to_string();
             }
         }
-        return program.to_string();
+        return bare_python(program);
     }
     let parent = if path.is_absolute() {
         path.parent().map(|dir| dir.to_path_buf())
@@ -2065,7 +2080,49 @@ fn interpreter_for(program: &str, package: &Path) -> String {
             }
         }
     }
-    "python3".to_string()
+    bare_python("python3")
+}
+
+/// A bare `python3` or `python`. On Windows the Microsoft Store placeholder in `WindowsApps`
+/// prints "Python was not found" and exits, so a real interpreter elsewhere on `PATH` wins.
+/// With none, the name is returned unchanged and the baseline reports the missing tool.
+fn bare_python(program: &str) -> String {
+    #[cfg(windows)]
+    {
+        let order: [&str; 2] = if program == "python" { ["python", "python3"] } else { ["python3", "python"] };
+        let Some(path) = std::env::var_os("PATH") else { return program.to_string() };
+        for name in order {
+            for dir in std::env::split_paths(&path) {
+                if dir.to_string_lossy().to_ascii_lowercase().contains("windowsapps") {
+                    continue;
+                }
+                let candidate = dir.join(format!("{name}.exe"));
+                if candidate.is_file() {
+                    return candidate.display().to_string();
+                }
+            }
+        }
+    }
+    program.to_string()
+}
+
+/// The Microsoft Store placeholder for `python`/`python3` on Windows. It is not an interpreter.
+fn store_python_stub(text: &str) -> bool {
+    text.contains("Python was not found; run without arguments to install from the Microsoft Store")
+}
+
+/// The last few lines the suite printed, for a refusal's `next`. Stderr first, since that is
+/// where a crash or a missing module is written.
+fn output_tail(stdout: &str, stderr: &str) -> String {
+    let source = if stderr.trim().is_empty() { stdout } else { stderr };
+    let lines: Vec<&str> = source.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let start = lines.len().saturating_sub(3);
+    let mut tail = lines[start..].join(" | ");
+    if tail.chars().count() > 300 {
+        let skip = tail.chars().count() - 300;
+        tail = format!("...{}", tail.chars().skip(skip).collect::<String>());
+    }
+    tail
 }
 
 fn ensure_reporter(out: &Path, kind: PythonKind) -> Result<PathBuf, String> {
@@ -2217,8 +2274,7 @@ fn collect_rust(package: &Path, out: &Path, timeout: Duration) -> Collect {
 }
 
 fn tool_on_path(name: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else { return false };
-    path.split(':').any(|dir| Path::new(dir).join(name).is_file())
+    process::find_on_path(name).is_some()
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -2960,6 +3016,34 @@ mod tests {
         patches
     }
 
+    /// The interpreter a test writes into a shell suite command. Forward slashes keep `sh` from
+    /// reading a Windows path's backslashes as escapes.
+    fn shell_python() -> String {
+        bare_python("python3").replace('\\', "/")
+    }
+
+    #[test]
+    fn the_store_placeholder_is_a_missing_tool_and_a_red_baseline_shows_its_output() {
+        let stub = TimedRun {
+            spawned: true,
+            status: Some(9009),
+            timed_out: false,
+            duration: Duration::from_millis(5),
+            stdout: String::new(),
+            stderr: "Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.\n".into(),
+        };
+        assert!(judge_python_baseline(&stub) == Baseline::MissingTool);
+        let package = temp("red-tail");
+        write_source(&package, one_and());
+        let patches = generate_into(&package);
+        let envelope = run_with(&package, &patches, &package.join("out"), &["--suite-command", "echo first; echo ModuleNotFoundError: no module named gate >&2; exit 1"]);
+        assert_no_kill_count(&envelope);
+        assert!(envelope.next.contains("Last output: ModuleNotFoundError: no module named gate"), "{}", envelope.next);
+        assert_eq!(output_tail("a\n\nb\nc\nd\n", ""), "b | c | d");
+        assert!(output_tail("", &"x".repeat(900)).chars().count() <= 303);
+        let _ = fs::remove_dir_all(&package);
+    }
+
     fn json_string(text: &str) -> String {
         json::stringify_compact(&Value::String(text.to_string()))
     }
@@ -3017,7 +3101,7 @@ mod tests {
             &package,
             &value_patches,
             &shell_out,
-            &["--suite-command", "python3 -m unittest tests.test_gate"],
+            &["--suite-command", &format!("{} -m unittest tests.test_gate", shell_python())],
         );
         assert!(shell.ok, "{}", shell.summary);
         assert_eq!(one_result(&shell_out).get("outcome").and_then(Value::as_str), Some("unviable"));
@@ -3130,7 +3214,7 @@ mod tests {
 
     #[test]
     fn pytest_coverage_writes_a_line_map_when_the_module_imports() {
-        let pytest = Command::new("python3").args(["-c", "import pytest, coverage"]).status();
+        let pytest = Command::new(bare_python("python3")).args(["-c", "import pytest, coverage"]).status();
         if !pytest.map(|status| status.success()).unwrap_or(false) {
             return;
         }
@@ -3395,7 +3479,7 @@ mod tests {
             &out,
             &[
                 "--suite-command",
-                "python3 -c 'import pathlib,sys; t=pathlib.Path(\"src/a.js\").read_text(); print(\"ok\"); sys.exit(0 if \"||\" in t else 1)'",
+                &format!("{} -c 'import pathlib,sys; t=pathlib.Path(\"src/a.js\").read_text(); print(\"ok\"); sys.exit(0 if \"||\" in t else 1)'", shell_python()),
                 "--direction",
                 "reverse",
                 "--no-confirm",
