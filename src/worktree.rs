@@ -23,6 +23,7 @@ pub fn remove_leftovers(repo: &Path, run_id: &str) -> Result<Vec<String>, String
     let list = git(repo, &["worktree", "list", "--porcelain"])?;
     let paths = leftover_paths(&list, run_id);
     for path in &paths {
+        unlink_links(Path::new(path));
         let remove = git(repo, &["worktree", "remove", "--force", path]);
         if remove.is_err() {
             let _ = git(repo, &["worktree", "remove", "--force", path]);
@@ -119,7 +120,32 @@ fn prune_extras(src_root: &Path, dest_root: &Path, dir: &Path) -> Result<(), Str
     Ok(())
 }
 
+/// Remove each `node_modules` link under `dir` (a symlink, or a junction on Windows) without
+/// touching what it points at: the package's own `node_modules`. Called before a worktree or
+/// copy is deleted, so no delete can follow the link into the package.
+pub fn unlink_links(dir: &Path) {
+    fn walk(dir: &Path, depth: usize) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            let path = entry.path();
+            if kind.is_symlink() {
+                if entry.file_name() == "node_modules" {
+                    // A junction or a directory symlink is a directory on Windows, a file elsewhere.
+                    if std::fs::remove_file(&path).is_err() {
+                        let _ = std::fs::remove_dir(&path);
+                    }
+                }
+            } else if kind.is_dir() && depth > 0 && entry.file_name() != ".git" {
+                walk(&path, depth - 1);
+            }
+        }
+    }
+    walk(dir, 8);
+}
+
 pub fn remove_worktree(repo: &Path, dest: &Path) {
+    unlink_links(dest);
     let _ = git(repo, &["worktree", "remove", "--force", &dest.display().to_string()]);
     let _ = git(repo, &["worktree", "prune"]);
 }

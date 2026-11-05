@@ -1261,10 +1261,12 @@ fn score_copy(job: &ScoreJob, package: &Path, timeout: Duration) -> Scored {
         return error_scored(message);
     }
     if let Err(message) = link_node_modules(package, &dest) {
+        worktree::unlink_links(&dest);
         let _ = fs::remove_dir_all(&dest);
         return error_scored(message);
     }
     let scored = apply_and_run(job, &dest, package, timeout);
+    worktree::unlink_links(&dest);
     let _ = fs::remove_dir_all(&dest);
     scored
 }
@@ -1495,15 +1497,40 @@ fn link_node_modules(package: &Path, dest: &Path) -> Result<(), String> {
     if !source.is_dir() || linked.exists() {
         return Ok(());
     }
-    #[cfg(unix)]
-    {
-        return std::os::unix::fs::symlink(&source, &linked).map_err(|error| error.to_string());
+    link_dir(&source, &linked)
+}
+
+#[cfg(unix)]
+fn link_dir(source: &Path, linked: &Path) -> Result<(), String> {
+    std::os::unix::fs::symlink(source, linked).map_err(|error| error.to_string())
+}
+
+/// A directory symlink needs Developer Mode or admin on Windows. A junction does not, so it is
+/// the fallback. Either is removed as a link (`worktree::unlink_links`) before its tree is deleted.
+#[cfg(windows)]
+fn link_dir(source: &Path, linked: &Path) -> Result<(), String> {
+    if std::os::windows::fs::symlink_dir(source, linked).is_ok() {
+        return Ok(());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (source, linked);
+    let status = std::process::Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(linked)
+        .arg(source)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|error| error.to_string())?;
+    if status.success() {
         Ok(())
+    } else {
+        Err(format!("node_modules could not be linked into {}", linked.display()))
     }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_dir(_source: &Path, _linked: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// Never copied into a mutant's worktree or copy. `.probatio` is this tool's own output, which a
@@ -3181,6 +3208,23 @@ mod tests {
         assert!(cargo_target_dir(&job_for("npm test", Vec::new()), "abc", "0").is_none());
         let preset = vec![("CARGO_TARGET_DIR".to_string(), "/x".to_string())];
         assert!(cargo_target_dir(&job_for("cargo test", preset), "abc", "0").is_none());
+    }
+
+    /// Windows linked no `node_modules` at all, so a Node suite in a worktree could not resolve its
+    /// dependencies. It is a junction there now. Deleting the copy must not reach the package.
+    #[test]
+    fn node_modules_is_linked_into_a_copy_and_survives_its_removal() {
+        let package = temp("nm-link");
+        fs::create_dir_all(package.join("node_modules/dep")).unwrap();
+        fs::write(package.join("node_modules/dep/index.js"), "module.exports = 1;\n").unwrap();
+        let dest = temp("nm-link-dest");
+        link_node_modules(&package, &dest).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("node_modules/dep/index.js")).unwrap(), "module.exports = 1;\n");
+        worktree::unlink_links(&dest);
+        assert!(!dest.join("node_modules").exists());
+        let _ = fs::remove_dir_all(&dest);
+        assert!(package.join("node_modules/dep/index.js").is_file(), "the package node_modules was deleted");
+        let _ = fs::remove_dir_all(&package);
     }
 
     #[test]
