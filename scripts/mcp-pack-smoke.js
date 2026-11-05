@@ -13,7 +13,7 @@ const path = require("path");
 const prefix = process.argv[2];
 const pack = process.argv[3] || "";
 const platformPack = process.argv[4] || "";
-const expectedTools = ["probatio", "schema", "mutate_generate", "mutate_run", "mutate_tally"];
+const expectedTools = ["mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"];
 
 function fail(message) {
   process.stderr.write(message + "\n");
