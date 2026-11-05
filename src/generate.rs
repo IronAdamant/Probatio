@@ -207,67 +207,90 @@ struct Loaded {
     source: &'static str,
 }
 
-/// Reads source files from the commit through one `git cat-file --batch` process.
-/// One `git show` per file cost a process start each, about 0.1 s apiece on Windows.
+/// Reads source files from the commit through one `git cat-file --batch` process, started in the
+/// package with `<commit>:./<path>` specs, so no `git rev-parse` is needed first. A git start on
+/// Windows costs 50 to 100 ms, and the old path spent two per file.
 struct Reader {
     commit: String,
-    root: Option<PathBuf>,
+    /// `None` reads the working tree: `--working-tree`, no git, or not a git checkout.
+    package: Option<PathBuf>,
     batch: Option<(std::process::Child, std::io::BufReader<std::process::ChildStdout>)>,
 }
 
 impl Reader {
     fn new(package: &Path, commit: &str, working_tree: bool) -> Reader {
-        let root = if working_tree { None } else { git_root(package) };
-        Reader { commit: commit.to_string(), root, batch: None }
+        let package = if working_tree { None } else { Some(package.to_path_buf()) };
+        Reader { commit: commit.to_string(), package, batch: None }
     }
 
     fn read(&mut self, package: &Path, file: &Path) -> Result<Loaded, String> {
-        let Some(root) = self.root.clone() else {
-            let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-            return Ok(Loaded { text, source: "working-tree" });
+        let Some(root) = self.package.clone() else {
+            return disk(file);
         };
         let rel = crate::run_options::git_relative(&root, file);
-        match self.blob(&root, &format!("{}:{rel}", self.commit))? {
-            Some(bytes) => Ok(Loaded { text: String::from_utf8_lossy(&bytes).into_owned(), source: "commit" }),
-            None => {
+        match self.blob(&root, &format!("{}:./{rel}", self.commit)) {
+            Blob::Found(bytes) => Ok(Loaded { text: String::from_utf8_lossy(&bytes).into_owned(), source: "commit" }),
+            Blob::Missing => {
                 let shown = rel_to(package, file);
                 Err(format!("{shown} is not in {}. Pass --working-tree to read the checkout.", self.commit))
+            }
+            Blob::NoRepo => {
+                self.package = None;
+                self.batch = None;
+                disk(file)
             }
         }
     }
 
-    /// `None` when the commit has no such path.
-    fn blob(&mut self, root: &Path, spec: &str) -> Result<Option<Vec<u8>>, String> {
+    fn blob(&mut self, root: &Path, spec: &str) -> Blob {
         use std::io::{BufRead, Read, Write};
         if self.batch.is_none() {
-            let mut child = Command::new("git")
+            let spawned = Command::new("git")
                 .arg("-C")
                 .arg(root)
                 .args(["cat-file", "--batch"])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|error| format!("git did not start: {error}"))?;
-            let stdout = child.stdout.take().ok_or("git cat-file has no stdout")?;
+                .spawn();
+            let Ok(mut child) = spawned else { return Blob::NoRepo };
+            let Some(stdout) = child.stdout.take() else { return Blob::NoRepo };
             self.batch = Some((child, std::io::BufReader::new(stdout)));
         }
-        let (child, stdout) = self.batch.as_mut().ok_or("git cat-file did not start")?;
-        let stdin = child.stdin.as_mut().ok_or("git cat-file has no stdin")?;
-        writeln!(stdin, "{spec}").and_then(|_| stdin.flush()).map_err(|error| error.to_string())?;
+        let Some((child, stdout)) = self.batch.as_mut() else { return Blob::NoRepo };
+        let Some(stdin) = child.stdin.as_mut() else { return Blob::NoRepo };
+        if writeln!(stdin, "{spec}").and_then(|_| stdin.flush()).is_err() {
+            return Blob::NoRepo;
+        }
         let mut header = String::new();
-        stdout.read_line(&mut header).map_err(|error| error.to_string())?;
+        // Outside a git checkout, git exits at once: the header is end of file.
+        if stdout.read_line(&mut header).unwrap_or(0) == 0 {
+            return Blob::NoRepo;
+        }
         let mut fields = header.split_whitespace();
         let (_, kind, size) = (fields.next(), fields.next(), fields.next());
         if kind != Some("blob") {
-            return Ok(None);
+            return Blob::Missing;
         }
-        let size: usize = size.and_then(|text| text.parse().ok()).ok_or_else(|| format!("git cat-file: {}", header.trim()))?;
+        let Some(size) = size.and_then(|text| text.parse::<usize>().ok()) else { return Blob::Missing };
         let mut bytes = vec![0; size + 1];
-        stdout.read_exact(&mut bytes).map_err(|error| error.to_string())?;
+        if stdout.read_exact(&mut bytes).is_err() {
+            return Blob::NoRepo;
+        }
         bytes.truncate(size);
-        Ok(Some(bytes))
+        Blob::Found(bytes)
     }
+}
+
+enum Blob {
+    Found(Vec<u8>),
+    Missing,
+    NoRepo,
+}
+
+fn disk(file: &Path) -> Result<Loaded, String> {
+    let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
+    Ok(Loaded { text, source: "working-tree" })
 }
 
 impl Drop for Reader {
@@ -279,14 +302,6 @@ impl Drop for Reader {
     }
 }
 
-fn git_root(cwd: &Path) -> Option<PathBuf> {
-    let output = Command::new("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() { None } else { Some(PathBuf::from(text)) }
-}
 
 struct Walk {
     files: Vec<PathBuf>,
