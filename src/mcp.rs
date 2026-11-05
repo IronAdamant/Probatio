@@ -425,7 +425,7 @@ pub fn serve() -> i32 {
     let write_lock = Arc::new(Mutex::new(()));
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
-        let Ok(line) = line else { return 1 };
+        let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
@@ -462,7 +462,18 @@ pub fn serve() -> i32 {
             write_line(&write_lock, &response);
         }
     }
+    stop_running(&running);
     0
+}
+
+/// The client closed stdin, which is how MCP shuts a server down. A call still running would
+/// otherwise outlive the server and hold its worktree. Its source edits live only in that
+/// worktree or temp copy, and the next run with the same out removes the leftover.
+fn stop_running(running: &Mutex<HashMap<String, u32>>) {
+    let pids: Vec<u32> = running.lock().unwrap_or_else(|poison| poison.into_inner()).drain().map(|(_, pid)| pid).collect();
+    for pid in pids {
+        kill_group(pid);
+    }
 }
 
 fn write_line(lock: &Mutex<()>, line: &str) {
@@ -480,18 +491,9 @@ fn cancel_job(running: &Mutex<HashMap<String, u32>>, id: &Value) {
     }
 }
 
+/// A cancelled call stops with every process under it, including the suite's own process group.
 fn kill_group(pid: u32) {
-    #[cfg(unix)]
-    unsafe {
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        let _ = kill(-(pid as i32), 15);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
-    }
+    crate::process::kill_descendants(pid);
 }
 
 /// Every method except `tools/call`, which `serve` runs on its own thread.
