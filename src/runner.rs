@@ -617,6 +617,8 @@ pub fn run(flags: &Flags) -> Envelope {
         started_this_call += 1;
     }
     let workers_n = flags.int("workers", 1).unwrap_or(1).max(1) as usize;
+    // Written before the first mutant, so a second agent's tally can count what is still waiting.
+    let _ = write_run_json(&out, flags, &suite, false);
     if let Err(error) = run_jobs(&jobs, workers_n, git, &repo, &package, &run_id, score_timeout, &mut verdicts, max_selected) {
         return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
     }
@@ -1747,6 +1749,11 @@ fn counts_value(counts: &Counts) -> Value {
         ("errored", Value::Int(counts.errors as i64)),
         ("finished", Value::Int(counts.finished as i64)),
     ])
+}
+
+/// The ids a patches path holds, for a reader that only counts what is still waiting.
+pub(crate) fn mutant_ids(patches: &Path) -> Option<Vec<String>> {
+    load_mutants(patches).ok().map(|mutants| mutants.into_iter().map(|mutant| mutant.id).collect())
 }
 
 fn load_mutants(patches: &Path) -> Result<Vec<LoadedMutant>, String> {
