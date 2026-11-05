@@ -24,6 +24,8 @@ struct LoadedMutant {
     original: String,
     replacement: String,
     tests: Vec<String>,
+    /// From `mutants.json`. A hand-made mutant may leave it out.
+    line: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +71,8 @@ struct BaselineRun {
     /// Set after a Python baseline has looked for a coverage map.
     /// `lines.json` is that map. An empty string means coverage.py wrote nothing.
     line_map: Option<String>,
+    /// The last lines the baseline printed. Not stored in `baseline.json`.
+    tail: String,
 }
 
 pub fn run(flags: &Flags) -> Envelope {
@@ -311,7 +315,15 @@ pub fn run(flags: &Flags) -> Envelope {
             &suite,
         );
     }
-    if let Some((summary, next)) = decide::baseline_refusal(baseline.kind) {
+    if let Some((summary, next)) = decide::baseline_refusal(baseline.kind.clone()) {
+        let mut next = next.to_string();
+        if store_python_stub(&baseline.tail) {
+            next.push_str(" python3 here is the Microsoft Store placeholder, not Python. Install Python, or pass suiteCommand with the full path of python.exe.");
+        } else if baseline.kind == Baseline::NoReport && decide::ran_no_tests(&baseline.tail.replace(" | ", "\n")) {
+            next.push_str(" The suite exited 0 and counted 0 tests (# tests 0). Check that the test runner finds the test files.");
+        } else if !baseline.tail.is_empty() {
+            next.push_str(&format!(" Last output: {}", baseline.tail));
+        }
         return attach_suite(Envelope::new(false, command, summary, next), &suite);
     }
 
@@ -605,6 +617,8 @@ pub fn run(flags: &Flags) -> Envelope {
         started_this_call += 1;
     }
     let workers_n = flags.int("workers", 1).unwrap_or(1).max(1) as usize;
+    // Written before the first mutant, so a second agent's tally can count what is still waiting.
+    let _ = write_run_json(&out, flags, &suite, false);
     if let Err(error) = run_jobs(&jobs, workers_n, git, &repo, &package, &run_id, score_timeout, &mut verdicts, max_selected) {
         return attach_suite(Envelope::new(false, command, error, "A mutant result could not be written."), &suite);
     }
@@ -613,6 +627,7 @@ pub fn run(flags: &Flags) -> Envelope {
     let waiting_path = out.join("not-started.txt");
     if still.is_empty() {
         let _ = fs::remove_file(&waiting_path);
+        remove_cargo_targets(&run_id, workers_n);
     } else {
         let _ = fs::write(&waiting_path, format!("{}\n", still.join("\n")));
     }
@@ -1001,6 +1016,9 @@ fn prepared_baseline(
         if let Some(kind) = shell_baseline(&timed, package) {
             run.kind = kind;
         }
+        if store_python_stub(&timed.stderr) {
+            run.kind = Baseline::MissingTool;
+        }
     }
     run.template = Some(template.to_string());
     Ok(run)
@@ -1012,6 +1030,7 @@ fn baseline_from(timed: &TimedRun) -> BaselineRun {
         duration_ms: Some(duration_ms(timed.duration)),
         template: None,
         line_map: None,
+        tail: if decide::ran_no_tests(&timed.stdout) { "# tests 0".into() } else { output_tail(&timed.stdout, &timed.stderr) },
     }
 }
 
@@ -1099,13 +1118,14 @@ fn read_baseline(path: &Path) -> Option<BaselineRun> {
         Some(Value::String(text)) => Some(text.clone()),
         _ => None,
     };
-    Some(BaselineRun { kind, duration_ms, template, line_map })
+    Some(BaselineRun { kind, duration_ms, template, line_map, tail: String::new() })
 }
 
 fn result_path(out: &Path, id: &str) -> PathBuf {
     out.join("results").join(format!("{id}.json"))
 }
 
+#[derive(Clone)]
 struct ScoreJob {
     mutant: LoadedMutant,
     rendered: String,
@@ -1185,6 +1205,16 @@ fn run_jobs(
 }
 
 fn score_job(job: &ScoreJob, git: bool, repo: &Path, package: &Path, run_id: &str, timeout: Duration, slot: &str) -> Scored {
+    let shared;
+    let job = match cargo_target_dir(job, run_id, slot) {
+        Some(dir) => {
+            let mut with_target = job.clone();
+            with_target.project_env.push(("CARGO_TARGET_DIR".into(), dir.display().to_string()));
+            shared = with_target;
+            &shared
+        }
+        None => job,
+    };
     if git {
         score_git(job, repo, package, run_id, timeout, slot)
     } else {
@@ -1213,6 +1243,28 @@ fn score_git(job: &ScoreJob, repo: &Path, package: &Path, run_id: &str, timeout:
     let scored = apply_and_run(job, &root, package, timeout);
     worktree::remove_worktree(repo, &dest);
     scored
+}
+
+/// A Cargo suite in a fresh worktree has no `target/`, so every mutant rebuilt the crate and
+/// its dependencies from nothing. One build directory per worker slot, kept for the run, makes
+/// each mutant after the first an incremental build. A caller's `CARGO_TARGET_DIR` wins.
+fn cargo_target_dir(job: &ScoreJob, run_id: &str, slot: &str) -> Option<PathBuf> {
+    let words = command_words(&job.rendered);
+    let cargo = words.first().is_some_and(|word| {
+        let name = file_name(word);
+        name == "cargo" || name == "cargo.exe"
+    });
+    let preset = std::env::var_os("CARGO_TARGET_DIR").is_some() || job.project_env.iter().any(|(key, _)| key == "CARGO_TARGET_DIR");
+    if !cargo || preset || job.unset.iter().any(|key| key == "CARGO_TARGET_DIR") {
+        return None;
+    }
+    Some(std::env::temp_dir().join(format!("probatio-cargo-{run_id}-{slot}")))
+}
+
+fn remove_cargo_targets(run_id: &str, slots: usize) {
+    for slot in 0..slots.max(1) {
+        let _ = fs::remove_dir_all(std::env::temp_dir().join(format!("probatio-cargo-{run_id}-{slot}")));
+    }
 }
 
 fn score_copy(job: &ScoreJob, package: &Path, timeout: Duration) -> Scored {
@@ -1318,7 +1370,39 @@ fn apply_and_run(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration)
         scored.mutant_hash = job.mutant_hash.clone();
         scored.agent = job.agent.clone();
     }
+    scored.killed_by = relative_names(&scored.killed_by, root);
     scored
+}
+
+/// The node reporter names a test by its absolute file, which is inside this mutant's worktree
+/// or temp copy. That path changes per run and per worker, so the name is kept relative to it.
+fn relative_names(names: &[String], root: &Path) -> Vec<String> {
+    let mut prefixes = vec![root.display().to_string().replace('\\', "/")];
+    if let Ok(real) = root.canonicalize() {
+        let real = real.display().to_string().replace('\\', "/");
+        prefixes.push(real.strip_prefix("//?/").unwrap_or(&real).to_string());
+    }
+    names
+        .iter()
+        .map(|name| {
+            let forward = name.replace('\\', "/");
+            let bare = forward.strip_prefix("file:///").or_else(|| forward.strip_prefix("file://")).unwrap_or(&forward);
+            for prefix in &prefixes {
+                let prefix = prefix.trim_start_matches('/').trim_end_matches('/');
+                let body = bare.trim_start_matches('/');
+                // Windows paths compare without case: node may print `c:` where Rust has `C:`.
+                let same = body.len() > prefix.len()
+                    && body.is_char_boundary(prefix.len())
+                    && if cfg!(windows) { body[..prefix.len()].eq_ignore_ascii_case(prefix) } else { &body[..prefix.len()] == prefix };
+                if same {
+                    if let Some(rest) = body[prefix.len()..].strip_prefix('/') {
+                        return rest.to_string();
+                    }
+                }
+            }
+            name.clone()
+        })
+        .collect()
 }
 
 fn confirm_kill(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, scored: Scored) -> Scored {
@@ -1440,13 +1524,19 @@ fn link_node_modules(package: &Path, dest: &Path) -> Result<(), String> {
     }
 }
 
+/// Never copied into a mutant's worktree or copy. `.probatio` is this tool's own output, which a
+/// campaign usually writes inside the package. Copying it grew with every result.
+pub(crate) fn skipped_in_copy(name: &str) -> bool {
+    matches!(name, ".git" | "target" | "node_modules" | "dist" | ".probatio")
+}
+
 fn copy_tree(src: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|error| error.to_string())?;
     for entry in fs::read_dir(src).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == ".git" || name == "target" || name == "node_modules" || name == "dist" {
+        if skipped_in_copy(&name) {
             continue;
         }
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
@@ -1554,13 +1644,19 @@ fn write_result(
     }
     let mut entries = vec![
         ("id", Value::String(mutant.id.clone())),
+        ("file", Value::String(mutant.file.clone())),
+    ];
+    if let Some(line) = mutant.line {
+        entries.push(("line", Value::Int(line)));
+    }
+    entries.extend([
         ("outcome", Value::String(scored.kind.as_str().into())),
         ("selectedCount", Value::Int(selection.selected_count as i64)),
         ("selectionCapped", Value::Bool(selection.capped)),
         ("durationMs", Value::Int(scored.duration_ms as i64)),
         ("timedOut", Value::Bool(scored.timed_out)),
         ("tests", Value::Array(selection.tests.iter().cloned().map(Value::String).collect())),
-    ];
+    ]);
     if let Some(command) = command {
         entries.push(("command", Value::String(command.to_string())));
     }
@@ -1655,6 +1751,11 @@ fn counts_value(counts: &Counts) -> Value {
     ])
 }
 
+/// The ids a patches path holds, for a reader that only counts what is still waiting.
+pub(crate) fn mutant_ids(patches: &Path) -> Option<Vec<String>> {
+    load_mutants(patches).ok().map(|mutants| mutants.into_iter().map(|mutant| mutant.id).collect())
+}
+
 fn load_mutants(patches: &Path) -> Result<Vec<LoadedMutant>, String> {
     if patches.is_file() {
         return load_file(patches);
@@ -1716,6 +1817,7 @@ fn load_one(value: &Value) -> Result<LoadedMutant, String> {
         original: value.get("original").and_then(Value::as_str).unwrap_or("").to_string(),
         replacement: field("replacement")?.to_string(),
         tests,
+        line: value.get("line").and_then(Value::as_int),
     })
 }
 
@@ -1818,10 +1920,21 @@ fn ensure_node_reporter(out: &Path) -> Result<PathBuf, String> {
     Ok(reporter)
 }
 
+/// Node loads `--test-reporter` as an ES module. On Windows an absolute `C:` path is read as a
+/// URL scheme and refused (ERR_UNSUPPORTED_ESM_URL_SCHEME), so it is passed as a `file:` URL.
+fn reporter_arg(reporter: &Path) -> String {
+    if cfg!(windows) && reporter.is_absolute() {
+        let text = reporter.display().to_string().replace('\\', "/");
+        let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
+        return format!("'file:///{}'", text.replace(' ', "%20").replace('\'', "%27"));
+    }
+    shell_quote(reporter)
+}
+
 fn node_test_command(reporter: &Path, names: &[String], files: &[String], concurrency: u64, test_timeout_ms: u64) -> String {
     let mut command = format!(
         "node --test --test-reporter={} --test-concurrency={concurrency} --test-timeout={test_timeout_ms}",
-        shell_quote(reporter)
+        reporter_arg(reporter)
     );
     if !names.is_empty() {
         let pattern = names.iter().map(|name| regex_escape(name)).collect::<Vec<_>>().join("|");
@@ -1900,6 +2013,7 @@ fn python_baseline(
         duration_ms: Some(duration_ms(timed.duration)),
         template: Some(template.to_string()),
         line_map: None,
+        tail: output_tail(&timed.stdout, &timed.stderr),
     })
 }
 
@@ -1911,6 +2025,9 @@ fn judge_python_baseline(timed: &TimedRun) -> Baseline {
         return Baseline::TimedOut;
     }
     if timed.status == Some(127) && timed.stderr.contains("command not found") {
+        return Baseline::MissingTool;
+    }
+    if store_python_stub(&timed.stderr) || store_python_stub(&timed.stdout) {
         return Baseline::MissingTool;
     }
     match report::parse(&timed.stdout) {
@@ -1945,13 +2062,12 @@ fn python_env(root: &Path, coverage: Option<&Path>) -> Vec<(String, String)> {
     let mut env = vec![("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string())];
     let src = root.join("src");
     if src.is_dir() {
-        let mut pythonpath = src.display().to_string();
-        if let Ok(existing) = std::env::var("PYTHONPATH") {
-            if !existing.is_empty() {
-                pythonpath.push(':');
-                pythonpath.push_str(&existing);
-            }
+        let mut dirs = vec![src];
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            dirs.extend(std::env::split_paths(&existing).filter(|dir| !dir.as_os_str().is_empty()));
         }
+        // `;` on Windows. A `:` there splits `C:\src` into two entries.
+        let pythonpath = std::env::join_paths(dirs).map(|joined| joined.to_string_lossy().into_owned()).unwrap_or_default();
         env.push(("PYTHONPATH".to_string(), pythonpath));
     }
     if let Some(path) = coverage {
@@ -2048,7 +2164,7 @@ fn interpreter_for(program: &str, package: &Path) -> String {
                 return joined.display().to_string();
             }
         }
-        return program.to_string();
+        return bare_python(program);
     }
     let parent = if path.is_absolute() {
         path.parent().map(|dir| dir.to_path_buf())
@@ -2065,7 +2181,49 @@ fn interpreter_for(program: &str, package: &Path) -> String {
             }
         }
     }
-    "python3".to_string()
+    bare_python("python3")
+}
+
+/// A bare `python3` or `python`. On Windows the Microsoft Store placeholder in `WindowsApps`
+/// prints "Python was not found" and exits, so a real interpreter elsewhere on `PATH` wins.
+/// With none, the name is returned unchanged and the baseline reports the missing tool.
+fn bare_python(program: &str) -> String {
+    #[cfg(windows)]
+    {
+        let order: [&str; 2] = if program == "python" { ["python", "python3"] } else { ["python3", "python"] };
+        let Some(path) = std::env::var_os("PATH") else { return program.to_string() };
+        for name in order {
+            for dir in std::env::split_paths(&path) {
+                if dir.to_string_lossy().to_ascii_lowercase().contains("windowsapps") {
+                    continue;
+                }
+                let candidate = dir.join(format!("{name}.exe"));
+                if candidate.is_file() {
+                    return candidate.display().to_string();
+                }
+            }
+        }
+    }
+    program.to_string()
+}
+
+/// The Microsoft Store placeholder for `python`/`python3` on Windows. It is not an interpreter.
+fn store_python_stub(text: &str) -> bool {
+    text.contains("Python was not found; run without arguments to install from the Microsoft Store")
+}
+
+/// The last few lines the suite printed, for a refusal's `next`. Stderr first, since that is
+/// where a crash or a missing module is written.
+fn output_tail(stdout: &str, stderr: &str) -> String {
+    let source = if stderr.trim().is_empty() { stdout } else { stderr };
+    let lines: Vec<&str> = source.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let start = lines.len().saturating_sub(3);
+    let mut tail = lines[start..].join(" | ");
+    if tail.chars().count() > 300 {
+        let skip = tail.chars().count() - 300;
+        tail = format!("...{}", tail.chars().skip(skip).collect::<String>());
+    }
+    tail
 }
 
 fn ensure_reporter(out: &Path, kind: PythonKind) -> Result<PathBuf, String> {
@@ -2091,6 +2249,9 @@ fn score_timed(timed: &TimedRun, python: bool) -> Scored {
             scored.killed_by = judged.killed_by;
             return scored;
         }
+        // The reporter always prints its report. Without one, the reporter never ran, so no
+        // assertion was checked. Counting that exit as a kill scored a broken launch as a catch.
+        return Scored::new(Verdict::Error, duration_ms, false);
     }
     let text = format!("{}\n{}", timed.stdout, timed.stderr);
     Scored::new(decide::classify(false, timed.status, &text), duration_ms, false)
@@ -2217,8 +2378,7 @@ fn collect_rust(package: &Path, out: &Path, timeout: Duration) -> Collect {
 }
 
 fn tool_on_path(name: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else { return false };
-    path.split(':').any(|dir| Path::new(dir).join(name).is_file())
+    process::find_on_path(name).is_some()
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -2429,6 +2589,9 @@ mod tests {
         let envelope = run_with(&package, &patches, &out, &["--suite-command", "exit 0"]);
         assert_no_kill_count(&envelope);
         assert!(envelope.summary.contains("test report"), "{}", envelope.summary);
+        let empty = run_with(&package, &patches, &package.join("empty"), &["--suite-command", "printf 'TAP version 13\\n# tests 0\\n# pass 0\\n# duration_ms 1\\n'"]);
+        assert_no_kill_count(&empty);
+        assert!(empty.next.contains("counted 0 tests"), "{}", empty.next);
         let _ = fs::remove_dir_all(&package);
     }
 
@@ -2960,6 +3123,109 @@ mod tests {
         patches
     }
 
+    /// The interpreter a test writes into a shell suite command. Forward slashes keep `sh` from
+    /// reading a Windows path's backslashes as escapes.
+    fn job_for(rendered: &str, project_env: Vec<(String, String)>) -> ScoreJob {
+        ScoreJob {
+            mutant: LoadedMutant {
+                id: "m1".into(),
+                file: "src/lib.rs".into(),
+                start: 0,
+                end: 1,
+                original: "a".into(),
+                replacement: "b".into(),
+                tests: Vec::new(),
+                line: Some(1),
+            },
+            rendered: rendered.into(),
+            launch: None,
+            path: PathBuf::from("results/m1.json"),
+            selection: decide::Selection { tests: Vec::new(), selected_count: 0, capped: false },
+            confirm: true,
+            hide: Vec::new(),
+            direction: crate::run_options::Direction::Auto,
+            unset: Vec::new(),
+            build: None,
+            agent: String::new(),
+            commit: None,
+            overlay: true,
+            mutant_hash: String::new(),
+            project_env,
+        }
+    }
+
+    #[test]
+    fn a_kill_name_is_relative_to_the_worktree() {
+        let root = Path::new("/tmp/probatio-abc-0");
+        let names = vec![
+            "/tmp/probatio-abc-0/test/a.test.js::adds".to_string(),
+            "file:///tmp/probatio-abc-0/test/b.test.js::subtracts".to_string(),
+            "tests/test_gate.py::test_zero".to_string(),
+        ];
+        assert_eq!(relative_names(&names, root), ["test/a.test.js::adds", "test/b.test.js::subtracts", "tests/test_gate.py::test_zero"]);
+        if cfg!(windows) {
+            let names = vec!["c:/Temp/probatio-abc-0/test/a.test.js::adds".to_string()];
+            assert_eq!(relative_names(&names, Path::new(r"C:\Temp\probatio-abc-0")), ["test/a.test.js::adds"]);
+        }
+    }
+
+    #[test]
+    fn a_cargo_suite_shares_one_build_directory_per_worker() {
+        if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+            return;
+        }
+        let first = cargo_target_dir(&job_for("cargo test {tests}", Vec::new()), "abc", "0").unwrap();
+        assert!(first.ends_with("probatio-cargo-abc-0"), "{}", first.display());
+        assert!(cargo_target_dir(&job_for("cargo test", Vec::new()), "abc", "1").unwrap().ends_with("probatio-cargo-abc-1"));
+        assert!(cargo_target_dir(&job_for("npm test", Vec::new()), "abc", "0").is_none());
+        let preset = vec![("CARGO_TARGET_DIR".to_string(), "/x".to_string())];
+        assert!(cargo_target_dir(&job_for("cargo test", preset), "abc", "0").is_none());
+    }
+
+    #[test]
+    fn a_copy_skips_probatio_output_and_build_folders() {
+        let src = temp("copy-skip");
+        for dir in [".probatio/run", "target/debug", "src"] {
+            fs::create_dir_all(src.join(dir)).unwrap();
+        }
+        fs::write(src.join(".probatio/run/baseline.json"), "{}").unwrap();
+        fs::write(src.join("target/debug/x"), "").unwrap();
+        fs::write(src.join("src/keep.rs"), "").unwrap();
+        let dest = temp("copy-skip-dest");
+        copy_tree(&src, &dest).unwrap();
+        assert!(dest.join("src/keep.rs").is_file());
+        assert!(!dest.join(".probatio").exists());
+        assert!(!dest.join("target").exists());
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    fn shell_python() -> String {
+        bare_python("python3").replace('\\', "/")
+    }
+
+    #[test]
+    fn the_store_placeholder_is_a_missing_tool_and_a_red_baseline_shows_its_output() {
+        let stub = TimedRun {
+            spawned: true,
+            status: Some(9009),
+            timed_out: false,
+            duration: Duration::from_millis(5),
+            stdout: String::new(),
+            stderr: "Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.\n".into(),
+        };
+        assert!(judge_python_baseline(&stub) == Baseline::MissingTool);
+        let package = temp("red-tail");
+        write_source(&package, one_and());
+        let patches = generate_into(&package);
+        let envelope = run_with(&package, &patches, &package.join("out"), &["--suite-command", "echo first; echo ModuleNotFoundError: no module named gate >&2; exit 1"]);
+        assert_no_kill_count(&envelope);
+        assert!(envelope.next.contains("Last output: ModuleNotFoundError: no module named gate"), "{}", envelope.next);
+        assert_eq!(output_tail("a\n\nb\nc\nd\n", ""), "b | c | d");
+        assert!(output_tail("", &"x".repeat(900)).chars().count() <= 303);
+        let _ = fs::remove_dir_all(&package);
+    }
+
     fn json_string(text: &str) -> String {
         json::stringify_compact(&Value::String(text.to_string()))
     }
@@ -3017,7 +3283,7 @@ mod tests {
             &package,
             &value_patches,
             &shell_out,
-            &["--suite-command", "python3 -m unittest tests.test_gate"],
+            &["--suite-command", &format!("{} -m unittest tests.test_gate", shell_python())],
         );
         assert!(shell.ok, "{}", shell.summary);
         assert_eq!(one_result(&shell_out).get("outcome").and_then(Value::as_str), Some("unviable"));
@@ -3130,7 +3396,7 @@ mod tests {
 
     #[test]
     fn pytest_coverage_writes_a_line_map_when_the_module_imports() {
-        let pytest = Command::new("python3").args(["-c", "import pytest, coverage"]).status();
+        let pytest = Command::new(bare_python("python3")).args(["-c", "import pytest, coverage"]).status();
         if !pytest.map(|status| status.success()).unwrap_or(false) {
             return;
         }
@@ -3326,7 +3592,8 @@ mod tests {
     #[test]
     fn the_contract_names_the_discovery_markers() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        // The README points newcomers at docs/reference.md, which carries the discovery table.
+        let readme = fs::read_to_string(root.join("docs/reference.md")).unwrap();
         let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
         for text in [&readme, &agents] {
             assert!(text.contains("Package.swift"), "{text}");
@@ -3395,7 +3662,7 @@ mod tests {
             &out,
             &[
                 "--suite-command",
-                "python3 -c 'import pathlib,sys; t=pathlib.Path(\"src/a.js\").read_text(); print(\"ok\"); sys.exit(0 if \"||\" in t else 1)'",
+                &format!("{} -c 'import pathlib,sys; t=pathlib.Path(\"src/a.js\").read_text(); print(\"ok\"); sys.exit(0 if \"||\" in t else 1)'", shell_python()),
                 "--direction",
                 "reverse",
                 "--no-confirm",
@@ -3643,5 +3910,47 @@ mod tests {
         assert!(command.contains("--test-timeout=60000"), "{command}");
         assert!(command.contains("test/a.test.js"), "{command}");
         assert_eq!(with_concurrency(&command, 1).matches("--test-concurrency=1").count(), 1);
+    }
+
+    /// Windows node refused `--test-reporter='C:\...'`, every mutant exited 7, and each exit was
+    /// counted as a kill. The reporter is a `file:` URL there, and a run with no report is an error.
+    #[test]
+    fn a_node_mutant_runs_the_reporter_and_a_missing_report_is_not_a_kill() {
+        let reporter = std::env::temp_dir().join("probatio dir").join("fail-reporter.mjs");
+        let command = node_test_command(&reporter, &[], &[], 1, 60_000);
+        if cfg!(windows) {
+            assert!(command.contains("--test-reporter='file:///"), "{command}");
+            assert!(command.contains("probatio%20dir/fail-reporter.mjs'"), "{command}");
+        }
+        let crashed = TimedRun {
+            spawned: true,
+            status: Some(7),
+            timed_out: false,
+            duration: Duration::from_millis(100),
+            stdout: String::new(),
+            stderr: "Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]".into(),
+        };
+        assert!(score_timed(&crashed, true).kind == Verdict::Error);
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let package = temp("node-reporter");
+        fs::create_dir_all(package.join("test")).unwrap();
+        fs::write(package.join("src/calc.js"), "export function both(a, b) { return a && b; }\n").unwrap();
+        fs::write(package.join("package.json"), "{\"type\":\"module\"}\n").unwrap();
+        fs::write(
+            package.join("test/calc.test.js"),
+            "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { both } from '../src/calc.js';\ntest('both', () => { assert.equal(both(true, false), false); });\n",
+        )
+        .unwrap();
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", "node --test", "--no-confirm"]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        let body = one_result(&out);
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
+        let names = json::stringify_compact(body.get("killedBy").unwrap_or(&Value::Null));
+        assert_eq!(names, r#"["test/calc.test.js::both"]"#);
+        let _ = fs::remove_dir_all(&package);
     }
 }

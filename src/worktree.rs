@@ -77,7 +77,7 @@ fn copy_over(src: &Path, dest: &Path) -> Result<(), String> {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == ".git" || name == "target" || name == "node_modules" || name == "dist" {
+        if crate::runner::skipped_in_copy(&name) {
             continue;
         }
         let file_type = entry.file_type().map_err(|error| error.to_string())?;

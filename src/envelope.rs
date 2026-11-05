@@ -53,7 +53,7 @@ impl Envelope {
             ),
         ];
         for (key, value) in &self.extra {
-            entries.push((key.clone(), scrub_value(value, home, key == "nextCall")));
+            entries.push((key.clone(), scrub_value(value, home, kept_verbatim(key))));
         }
         Value::Object(entries)
     }
@@ -63,11 +63,33 @@ impl Envelope {
     }
 }
 
+/// The home folder to scrub. Windows sets `USERPROFILE`, and `HOME` only under Git Bash or MSYS.
+pub fn home_dir() -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && (cfg!(not(windows)) || Path::new(&home).is_absolute()) => home,
+        _ if cfg!(windows) => std::env::var("USERPROFILE").unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
 pub fn scrub(text: &str, home: &str) -> String {
-    if home.is_empty() || !text.contains(home) {
+    if home.is_empty() {
         return text.to_string();
     }
-    text.replace(home, "~")
+    let mut scrubbed = text.replace(home, "~");
+    if cfg!(windows) {
+        // An agent may pass the same folder with forward slashes.
+        let forward = home.replace('\\', "/");
+        if forward != home {
+            scrubbed = scrubbed.replace(&forward, "~");
+        }
+    }
+    scrubbed
+}
+
+/// `nextCall` and `suiteCommand` are run as written, so a home path in them stays real.
+fn kept_verbatim(key: &str) -> bool {
+    key == "nextCall" || key == "suiteCommand"
 }
 
 fn scrub_value(value: &Value, home: &str, keep: bool) -> Value {
@@ -81,7 +103,7 @@ fn scrub_value(value: &Value, home: &str, keep: bool) -> Value {
             entries
                 .iter()
                 .map(|(key, item)| {
-                    let keep_child = key == "nextCall";
+                    let keep_child = kept_verbatim(key);
                     (key.clone(), scrub_value(item, home, keep_child))
                 })
                 .collect(),
@@ -97,7 +119,7 @@ pub fn write_all_flush(mut writer: impl Write, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub fn render_text(envelope: &Envelope, human: bool) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::envelope::home_dir();
     if !human {
         return envelope.render(&home);
     }
@@ -188,5 +210,14 @@ mod tests {
         assert!(rendered.contains("~/proj"));
         assert!(rendered.contains("\"/Users/ada/proj\""));
         assert!(!rendered.contains("see /Users/ada/proj"));
+    }
+
+    #[test]
+    fn a_suite_command_keeps_its_home_path() {
+        let envelope = Envelope::new(false, "mutate.run", "red in /Users/ada/proj", "next")
+            .with_extra("suiteCommand", Value::String("sh '/Users/ada/proj/run.sh'".into()));
+        let rendered = envelope.render("/Users/ada");
+        assert!(rendered.contains("sh '/Users/ada/proj/run.sh'"), "{rendered}");
+        assert!(rendered.contains("red in ~/proj"), "{rendered}");
     }
 }

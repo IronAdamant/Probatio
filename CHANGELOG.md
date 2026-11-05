@@ -6,6 +6,41 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## 0.6.0 - 2026-11-05
+
+Windows now works end to end, the MCP surface checks its arguments and comes in groups, and Cargo campaigns are faster. Verified on Windows 11 through the MCP server against `examples/pytest`, a JavaScript sample, and a copy of a std-only Rust crate (Relatum). `schemaVersion` stays 2: fields were added, none renamed or removed.
+
+Added:
+
+- MCP tool groups. `core` (`mutate_generate`, `mutate_run`, `mutate_tally`) is always on, `diagnostics` is `schema`, `cli` is `probatio`. `PROBATIO_TOOLS` and `PROBATIO_DISABLE` shape the list; an unknown name, or `core`, exits 2 with one stderr line. A `probatio: tools ...` or `probatio: disable ...` line in an `agent-tools` block of `AGENTS.md` in the server's directory does the same per key, below the env vars. A bad line there is a warning in the `initialize` instructions. The file is restatted on each request, and a changed tool set sends `notifications/tools/list_changed`. `tools/list` is 3553 bytes with every group on and 2815 with only `core`.
+- MCP argument checks: an unknown argument, a missing required one, or a wrong type is one `isError` line naming the tool, the argument, and what is expected. `mutate_run` gains `workers` and `confirm`; `schema` gains `command`.
+- `mutate tally` during a run: it counts the mutants that have a result and the ones still waiting, so a second agent can read progress cold.
+- `initialize` carries short instructions and the active groups.
+
+Changed:
+
+- MCP text replies are compact JSON, about a third smaller. `initialize` no longer repeats the tool list.
+- `mutate generate` reads the commit through one `git cat-file --batch` process and stops walking at `--max-mutants`. On a copy of Relatum on Windows, through MCP: 2786 ms to 35 ms.
+- A `cargo` suite shares one `CARGO_TARGET_DIR` per worker for the run, so mutants after the first are incremental builds. Relatum, 4 mutants with confirm on: 113 s to 105 s, 13-20 s per mutant (was 16-28 s). A `CARGO_TARGET_DIR` you set wins.
+- Worktrees and copies skip `.probatio`.
+- A refused baseline ends `next` with the last lines the suite printed.
+- `suiteCommand` on the envelope is no longer home-scrubbed; it is run as written.
+- `scripts/benchmark.py` is now `scripts/benchmark.rs`, run with `cargo run --release --example benchmark`. The rows and report format are the same.
+
+Fixed:
+
+- Windows: shell suites ran only when Git Bash's `sh` was already on `PATH`. Git for Windows' `sh.exe` is now found from `git.exe`; WSL's `System32\bash.exe` is never used.
+- Windows: `PATH` and `PYTHONPATH` were joined with `:`, which splits `C:\`, so `node_modules/.bin` and `src/` were lost.
+- Windows: a bare `python3` ran the Microsoft Store placeholder, and the baseline read "no test report". A real interpreter on `PATH` is used, and the placeholder is reported as a missing tool.
+- Windows: with `core.autocrlf` (Git's default there), mutant offsets read from the commit did not match the `\r\n` checkout. They are mapped.
+- Windows: `node --test` refused the reporter path (`ERR_UNSUPPORTED_ESM_URL_SCHEME`), and each refusal counted as a kill: every JS mutant read killed. The reporter is a `file:` URL, and a reporter run that prints no report is an error, not a kill.
+- Windows: `scripts/validate-server-json.js` and the npm pack smoke could not start `npm`/`npx` (`.cmd` shims). `scripts/npm-pack-local.sh` packs the Windows package too.
+- `NODE_OPTIONS` scrubbing left a dangling `--import` behind the removed coverage hook.
+- A `node --test` baseline that ran no tests (`# tests 0`) was green.
+- A tally gap read `at :0`: result files did not carry the mutant's file and line.
+- A node kill was named by its path in the temp worktree.
+- Closing the MCP server, or cancelling a call, left the suite running; on Unix a cancel did not reach the suite's own process group.
+
 ## 0.5.1
 
 `server.json` is the MCP Registry listing. The name is `io.github.IronAdamant/probatio`, and the npm package records that same name in `mcpName`. A client starts the server over stdin with `npx -y probatio mcp`. The crate version, the four platform packages, and the version the MCP server reports are 0.5.1.

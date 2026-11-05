@@ -87,13 +87,34 @@ fn scrub_inherited(command: &mut Command, unset: &[&str]) {
         command.env_remove(key);
     }
     if let Ok(options) = std::env::var("NODE_OPTIONS") {
-        let kept: Vec<&str> = options.split_whitespace().filter(|part| !part.ends_with("child-lines.mjs")).collect();
+        let kept = without_child_lines(&options);
         if kept.is_empty() {
             command.env_remove("NODE_OPTIONS");
-        } else if kept.join(" ") != options {
-            command.env("NODE_OPTIONS", kept.join(" "));
+        } else if kept != options {
+            command.env("NODE_OPTIONS", kept);
         }
     }
+}
+
+/// Drop the coverage hook from `NODE_OPTIONS`, with the `--import` or `--require` flag that loads it.
+/// Leaving that flag behind would make it swallow the next option, or fail node on an empty value.
+fn without_child_lines(options: &str) -> String {
+    let parts: Vec<&str> = options.split_whitespace().collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut index = 0;
+    while index < parts.len() {
+        let part = parts[index];
+        let loader = matches!(part, "--import" | "--require" | "-r" | "--loader" | "--experimental-loader");
+        if loader && parts.get(index + 1).is_some_and(|next| next.ends_with("child-lines.mjs")) {
+            index += 2;
+            continue;
+        }
+        if !part.ends_with("child-lines.mjs") {
+            kept.push(part);
+        }
+        index += 1;
+    }
+    kept.join(" ")
 }
 
 fn run_group_with_path(
@@ -225,6 +246,50 @@ pub fn kill_tree(pid: u32) {
     }
 }
 
+/// Stop `pid` and every descendant, including ones in their own process group.
+/// A suite runs in its own group so its deadline can kill it, which `kill_tree` on its parent
+/// does not reach on Unix. The MCP server uses this when a call is cancelled or the client leaves.
+pub fn kill_descendants(pid: u32) {
+    #[cfg(unix)]
+    {
+        let table = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid="])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        let pairs: Vec<(u32, u32)> = table
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace().filter_map(|field| field.parse::<u32>().ok());
+                Some((fields.next()?, fields.next()?))
+            })
+            .collect();
+        let mut tree = vec![pid];
+        let mut index = 0;
+        while index < tree.len() {
+            let parent = tree[index];
+            tree.extend(pairs.iter().filter(|(_, ppid)| *ppid == parent).map(|(child, _)| *child));
+            index += 1;
+        }
+        // Children first is not needed with SIGKILL. Each group goes too, for grandchildren
+        // that were already reparented.
+        for member in tree {
+            kill_tree(member);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn spawn_drain(pipe: Option<impl Read + Send + 'static>, into: Arc<Mutex<String>>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let Some(mut pipe) = pipe else { return };
@@ -282,7 +347,90 @@ pub fn run_shell_prepared(
     unset: &[&str],
 ) -> TimedRun {
     let path = suite_path(bin_root, dir);
-    run_group_with_path("sh", &["-c".into(), script.into()], dir, timeout, path, env, unset)
+    let (program, args) = shell_argv(script);
+    run_group_with_path(&program, &args, dir, timeout, path, env, unset)
+}
+
+/// The POSIX shell and its arguments for a suite command.
+/// Windows has no `sh` on the default `PATH`, so Git for Windows' shell is found from `git.exe`.
+/// With no Git shell at all, `cmd /C` runs the command as written.
+pub fn shell_argv(script: &str) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        if let Some(sh) = windows_sh() {
+            return (sh.display().to_string(), vec!["-c".into(), script.into()]);
+        }
+        ("cmd".into(), vec!["/D".into(), "/S".into(), "/C".into(), script.into()])
+    }
+    #[cfg(not(windows))]
+    {
+        ("sh".into(), vec!["-c".into(), script.into()])
+    }
+}
+
+/// Git for Windows' `sh.exe`. `bin/sh.exe` is preferred over `usr/bin/sh.exe`, because the wrapper
+/// puts Git's own tools on `PATH` before it runs the command. `System32\bash.exe` is WSL and is skipped.
+#[cfg(windows)]
+pub fn windows_sh() -> Option<PathBuf> {
+    static FOUND: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            // Under Git Bash, `sh` is already on PATH with Git's tools beside it, and skips the wrapper.
+            if let Some(sh) = find_on_path("sh").filter(|path| !is_windows_system_dir(path)) {
+                return Some(sh);
+            }
+            let mut roots: Vec<PathBuf> = Vec::new();
+            if let Some(bash) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").map(PathBuf::from) {
+                roots.extend(bash.ancestors().skip(1).take(3).map(Path::to_path_buf));
+            }
+            if let Some(git) = find_on_path("git") {
+                roots.extend(git.ancestors().skip(1).take(3).map(Path::to_path_buf));
+            }
+            for key in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+                if let Some(base) = std::env::var_os(key) {
+                    roots.push(PathBuf::from(base).join("Git"));
+                }
+            }
+            if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+                roots.push(PathBuf::from(base).join("Programs").join("Git"));
+            }
+            for root in &roots {
+                for rel in ["bin/sh.exe", "usr/bin/sh.exe"] {
+                    let candidate = root.join(rel);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            None
+        })
+        .clone()
+}
+
+#[cfg(windows)]
+fn is_windows_system_dir(path: &Path) -> bool {
+    let text = path.display().to_string().to_ascii_lowercase();
+    text.contains("\\windows\\system32\\") || text.contains("\\windowsapps\\")
+}
+
+/// The first `name` on `PATH`. On Windows each `PATHEXT` suffix is tried, as a shell would.
+pub fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let suffixes: Vec<String> = if cfg!(windows) && Path::new(name).extension().is_none() {
+        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        pathext.split(';').filter(|ext| !ext.is_empty()).map(str::to_ascii_lowercase).collect()
+    } else {
+        vec![String::new()]
+    };
+    for dir in std::env::split_paths(&path) {
+        for suffix in &suffixes {
+            let candidate = dir.join(format!("{name}{suffix}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn suite_path(bin_root: Option<&Path>, dir: Option<&Path>) -> Option<OsString> {
@@ -296,18 +444,11 @@ fn suite_path(bin_root: Option<&Path>, dir: Option<&Path>) -> Option<OsString> {
     if bins.is_empty() {
         return None;
     }
-    let mut prefixed = OsString::new();
-    for (index, bin) in bins.iter().enumerate() {
-        if index > 0 {
-            prefixed.push(":");
-        }
-        prefixed.push(bin.as_os_str());
-    }
-    prefixed.push(":");
     if let Some(current) = std::env::var_os("PATH") {
-        prefixed.push(current);
+        bins.extend(std::env::split_paths(&current));
     }
-    Some(prefixed)
+    // The separator is the platform's: `;` on Windows, where `:` is part of `C:\`.
+    std::env::join_paths(bins).ok()
 }
 
 pub fn within_grace(duration: Duration, timeout: Duration) -> bool {
@@ -321,6 +462,7 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command as Proc;
 
+    #[cfg(unix)]
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
@@ -347,6 +489,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     fn wait_for_pid(path: &PathBuf) -> i32 {
         let start = Instant::now();
         loop {
@@ -362,7 +505,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// Windows runs this too: a `:`-joined `PATH` there split `C:\...` and lost every entry.
     #[test]
     fn a_local_node_bin_is_on_the_suite_path() {
         let dir = std::env::temp_dir().join(format!("probatio-bin-{}", std::process::id()));
@@ -371,10 +514,17 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         let tool = bin.join("probatio-local-ok");
         fs::write(&tool, "#!/bin/sh\necho from-local-bin\n").unwrap();
-        let mut permissions = fs::metadata(&tool).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(0o755);
-        fs::set_permissions(&tool, permissions).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&tool).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&tool, permissions).unwrap();
+        }
+        let prefixed = suite_path(Some(&dir), None).unwrap();
+        let entries: Vec<PathBuf> = std::env::split_paths(&prefixed).collect();
+        assert_eq!(entries[0], bin);
+        assert!(entries.len() > 1, "{entries:?}");
         let result = run_shell("probatio-local-ok", Some(&dir), Duration::from_secs(5));
         assert!(result.spawned, "{}", result.stderr);
         assert_eq!(result.status, Some(0), "{}", result.stderr);
@@ -387,6 +537,28 @@ mod tests {
         assert!(from_package.stdout.contains("from-local-bin"), "{}", from_package.stdout);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn the_coverage_hook_leaves_with_its_loader_flag() {
+        assert_eq!(without_child_lines("--import /tmp/child-lines.mjs --max-old-space-size=64"), "--max-old-space-size=64");
+        assert_eq!(without_child_lines("--import=/tmp/child-lines.mjs -r x.js"), "-r x.js");
+        assert_eq!(without_child_lines("--require ./child-lines.mjs"), "");
+        assert_eq!(without_child_lines("--inspect"), "--inspect");
+    }
+
+    /// The suite shell is a POSIX `sh` on every platform. On Windows it is Git's, found from
+    /// `git.exe` even when `sh` is not on `PATH`, and never WSL's `System32\bash.exe`.
+    #[test]
+    fn the_suite_shell_is_posix() {
+        let (program, args) = shell_argv("echo $((1 + 2))");
+        assert_eq!(args.last().map(String::as_str), Some("echo $((1 + 2))"));
+        if cfg!(windows) && program == "cmd" {
+            return;
+        }
+        assert!(!program.to_ascii_lowercase().contains("system32"), "{program}");
+        let result = run_shell("echo $((1 + 2))", None, Duration::from_secs(10));
+        assert_eq!(result.stdout.trim(), "3", "{program}: {}", result.stderr);
     }
 
     #[test]
@@ -410,7 +582,7 @@ mod tests {
         std::env::remove_var("NODE_OPTIONS");
         std::env::remove_var("NODE_TEST_FOO");
         assert!(timed.spawned, "{}", timed.stderr);
-        assert_eq!(timed.stdout, "--import --max-old-space-size=64|", "{}", timed.stderr);
+        assert_eq!(timed.stdout, "--max-old-space-size=64|", "{}", timed.stderr);
         assert!(!timed.stdout.contains("child-lines"));
     }
 }

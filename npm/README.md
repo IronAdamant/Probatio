@@ -1,6 +1,6 @@
 # probatio
 
-Version 0.5.1 installs the Rust binary. The `probatio` command is a small Node launcher. npm installs one platform package next to it and the launcher runs that binary.
+Version 0.6.0 installs the Rust binary. The `probatio` command is a small Node launcher. npm installs one platform package next to it and the launcher runs that binary.
 
 `probatio mcp` starts the MCP server on stdin. A client runs `npx -y probatio mcp`. The registry name is `io.github.IronAdamant/probatio`.
 

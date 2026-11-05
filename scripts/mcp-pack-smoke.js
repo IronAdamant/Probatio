@@ -13,7 +13,7 @@ const path = require("path");
 const prefix = process.argv[2];
 const pack = process.argv[3] || "";
 const platformPack = process.argv[4] || "";
-const expectedTools = ["probatio", "schema", "mutate_generate", "mutate_run", "mutate_tally"];
+const expectedTools = ["mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"];
 
 function fail(message) {
   process.stderr.write(message + "\n");
@@ -47,7 +47,9 @@ process.stdout.write("cwd: " + prefix + "\n");
 
 const args = ["-y", "probatio", "mcp"];
 process.stdout.write("command: npx " + args.join(" ") + "\n");
+// npx is npx.cmd on Windows, and Node starts a .cmd shim only through a shell.
 const child = spawn("npx", args, {
+  shell: process.platform === "win32",
   cwd: prefix,
   stdio: ["pipe", "pipe", "pipe"],
   env: Object.assign({}, process.env, {

@@ -71,7 +71,39 @@ pub fn mutant_timeout_ms(suite_ms: u64, baseline_ms: Option<u64>, multiple: u64,
     suite_ms.max(1).min(limit)
 }
 
+/// Apply a mutant at its byte span. Offsets read from `git show` count `\n` line ends. A checkout
+/// with `core.autocrlf` (the Git for Windows default) writes `\r\n`. When the span does not match
+/// and the file has `\r\n`, the same offsets are read again with each `\r\n` counted as one byte.
 pub fn apply_span(text: &str, start: usize, end: usize, original: &str, replacement: &str, direction: Direction) -> Result<(String, &'static str), String> {
+    let applied = apply_exact(text, start, end, original, replacement, direction);
+    if applied.is_ok() || !text.contains("\r\n") {
+        return applied;
+    }
+    let (Some(crlf_start), Some(crlf_end)) = (crlf_offset(text, start), crlf_offset(text, end)) else {
+        return applied;
+    };
+    apply_exact(text, crlf_start, crlf_end, original, replacement, direction).or(applied)
+}
+
+/// The byte in `text` at `offset` once each `\r\n` is read as `\n`.
+fn crlf_offset(text: &str, offset: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut lf = 0;
+    for index in 0..=bytes.len() {
+        if lf == offset {
+            return Some(index);
+        }
+        if index == bytes.len() {
+            break;
+        }
+        if !(bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n')) {
+            lf += 1;
+        }
+    }
+    None
+}
+
+fn apply_exact(text: &str, start: usize, end: usize, original: &str, replacement: &str, direction: Direction) -> Result<(String, &'static str), String> {
     if start > end || end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
         return Err("mutant range does not fit the file".into());
     }
@@ -319,6 +351,17 @@ mod tests {
         assert_eq!(chosen, "reverse");
         assert!(back.contains("&&"), "{back}");
         assert!(apply_span(text, start, end, "&&", "||", Direction::Reverse).is_err());
+    }
+
+    #[test]
+    fn an_lf_offset_applies_to_a_crlf_checkout() {
+        let committed = "fn a() {\n    let x = 1;\n    x > 0 && x < 9\n}\n";
+        let start = committed.find("&&").unwrap();
+        let checkout = committed.replace('\n', "\r\n");
+        let (updated, chosen) = apply_span(&checkout, start, start + 2, "&&", "||", Direction::Auto).unwrap();
+        assert_eq!(chosen, "forward");
+        assert_eq!(updated, checkout.replace("&&", "||"));
+        assert!(apply_span(&checkout, start, start + 2, "<", ">", Direction::Forward).is_err());
     }
 
     #[test]

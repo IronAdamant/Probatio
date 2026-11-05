@@ -77,7 +77,11 @@ pub fn generate(flags: &Flags) -> Envelope {
     let mut files_visited = 0usize;
     let mut budget_hit = walked.stopped || over(max_minutes);
     let mut source = if working_tree { "working-tree" } else { "commit" };
+    let mut reader = Reader::new(&package, commit, working_tree);
     for file in &files {
+        if limit.is_some_and(|limit| chosen.len() >= limit) {
+            break;
+        }
         if over(max_minutes) {
             budget_hit = true;
             break;
@@ -87,7 +91,10 @@ pub fn generate(flags: &Flags) -> Envelope {
         if rel.ends_with(".d.ts") {
             continue;
         }
-        let loaded = match file_text(&package, file, commit, working_tree) {
+        if !operators::kind_of(&rel) {
+            continue;
+        }
+        let loaded = match reader.read(&package, file) {
             Ok(value) => value,
             Err(message) => {
                 return Envelope::new(
@@ -99,9 +106,6 @@ pub fn generate(flags: &Flags) -> Envelope {
             }
         };
         source = loaded.source;
-        if !operators::kind_of(&rel) {
-            continue;
-        }
         let mut points = operators::scan(&rel, &loaded.text, wide);
         points = shuffle(points, &mut rng);
         let slice: Vec<Mutant> = if let Some(per_file) = per_file {
@@ -203,34 +207,101 @@ struct Loaded {
     source: &'static str,
 }
 
-fn file_text(package: &Path, file: &Path, commit: &str, working_tree: bool) -> Result<Loaded, String> {
-    if working_tree {
-        let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-        return Ok(Loaded { text, source: "working-tree" });
-    }
-    let Some(root) = git_root(package) else {
-        let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-        return Ok(Loaded { text, source: "working-tree" });
-    };
-    let rel = crate::run_options::git_relative(&root, file);
-    let spec = format!("{commit}:{rel}");
-    let output = Command::new("git").arg("-C").arg(&root).args(["show", &spec]).output().map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        let shown = rel_to(package, file);
-        return Err(format!("{shown} is not in {commit}. Pass --working-tree to read the checkout."));
-    }
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    Ok(Loaded { text, source: "commit" })
+/// Reads source files from the commit through one `git cat-file --batch` process, started in the
+/// package with `<commit>:./<path>` specs, so no `git rev-parse` is needed first. A git start on
+/// Windows costs 50 to 100 ms, and the old path spent two per file.
+struct Reader {
+    commit: String,
+    /// `None` reads the working tree: `--working-tree`, no git, or not a git checkout.
+    package: Option<PathBuf>,
+    batch: Option<(std::process::Child, std::io::BufReader<std::process::ChildStdout>)>,
 }
 
-fn git_root(cwd: &Path) -> Option<PathBuf> {
-    let output = Command::new("git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"]).output().ok()?;
-    if !output.status.success() {
-        return None;
+impl Reader {
+    fn new(package: &Path, commit: &str, working_tree: bool) -> Reader {
+        let package = if working_tree { None } else { Some(package.to_path_buf()) };
+        Reader { commit: commit.to_string(), package, batch: None }
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() { None } else { Some(PathBuf::from(text)) }
+
+    fn read(&mut self, package: &Path, file: &Path) -> Result<Loaded, String> {
+        let Some(root) = self.package.clone() else {
+            return disk(file);
+        };
+        let rel = crate::run_options::git_relative(&root, file);
+        match self.blob(&root, &format!("{}:./{rel}", self.commit)) {
+            Blob::Found(bytes) => Ok(Loaded { text: String::from_utf8_lossy(&bytes).into_owned(), source: "commit" }),
+            Blob::Missing => {
+                let shown = rel_to(package, file);
+                Err(format!("{shown} is not in {}. Pass --working-tree to read the checkout.", self.commit))
+            }
+            Blob::NoRepo => {
+                self.package = None;
+                self.batch = None;
+                disk(file)
+            }
+        }
+    }
+
+    fn blob(&mut self, root: &Path, spec: &str) -> Blob {
+        use std::io::{BufRead, Read, Write};
+        if self.batch.is_none() {
+            let spawned = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["cat-file", "--batch"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            let Ok(mut child) = spawned else { return Blob::NoRepo };
+            let Some(stdout) = child.stdout.take() else { return Blob::NoRepo };
+            self.batch = Some((child, std::io::BufReader::new(stdout)));
+        }
+        let Some((child, stdout)) = self.batch.as_mut() else { return Blob::NoRepo };
+        let Some(stdin) = child.stdin.as_mut() else { return Blob::NoRepo };
+        if writeln!(stdin, "{spec}").and_then(|_| stdin.flush()).is_err() {
+            return Blob::NoRepo;
+        }
+        let mut header = String::new();
+        // Outside a git checkout, git exits at once: the header is end of file.
+        if stdout.read_line(&mut header).unwrap_or(0) == 0 {
+            return Blob::NoRepo;
+        }
+        let mut fields = header.split_whitespace();
+        let (_, kind, size) = (fields.next(), fields.next(), fields.next());
+        if kind != Some("blob") {
+            return Blob::Missing;
+        }
+        let Some(size) = size.and_then(|text| text.parse::<usize>().ok()) else { return Blob::Missing };
+        let mut bytes = vec![0; size + 1];
+        if stdout.read_exact(&mut bytes).is_err() {
+            return Blob::NoRepo;
+        }
+        bytes.truncate(size);
+        Blob::Found(bytes)
+    }
 }
+
+enum Blob {
+    Found(Vec<u8>),
+    Missing,
+    NoRepo,
+}
+
+fn disk(file: &Path) -> Result<Loaded, String> {
+    let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
+    Ok(Loaded { text, source: "working-tree" })
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        if let Some((mut child, _)) = self.batch.take() {
+            drop(child.stdin.take());
+            let _ = child.wait();
+        }
+    }
+}
+
 
 struct Walk {
     files: Vec<PathBuf>,

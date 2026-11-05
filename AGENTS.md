@@ -2,13 +2,13 @@
 
 Probatio is the program in this repository. Agents run it. A person who is not going to run commands can stop after the top of `README.md`.
 
-The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.5.1, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
+The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.6.0, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
 
 Probatio scores a test suite. It does not replace the suite, write the missing test, fetch a toolchain, or prove a change is safe. A kill is an assertion the suite already had.
 
 ## How to run it
 
-Prefer the `probatio` MCP server when it is connected. The tools are `schema`, `mutate_generate`, `mutate_run`, and `mutate_tally`. Argument names are camelCase. The server is `probatio mcp` on stdin. `src/main.rs` handles that before dispatch. A normal command named `mcp` is a refusal, because the server is the process that reads stdin.
+Prefer the `probatio` MCP server when it is connected. The tools are `mutate_generate`, `mutate_run`, and `mutate_tally` (group `core`), `schema` (group `diagnostics`), and `probatio`, which runs any CLI command by argv (group `cli`). Argument names are camelCase. An unknown argument, a missing required one, or a wrong type is refused in one line that names the argument and what is expected; fix the call rather than retrying it. The server is `probatio mcp` on stdin. `src/main.rs` handles that before dispatch. A normal command named `mcp` is a refusal, because the server is the process that reads stdin.
 
 This checkout launches it from `.grok/config.toml` through `.grok/probatio-mcp.sh` (`cargo run --quiet --offline -- mcp`). A session that is already open does not see a server that was just added.
 
@@ -30,15 +30,15 @@ The package is the directory the user named. It can be this repo or another chec
 1. Call `mutate_generate` with `package` and `out`. Use `<package>/.probatio/generate` unless the user named a directory. Pass `src` when they named one directory. Pass `maxMutants` only when they asked for a slice. Generate does not run the suite. The summary states the count, and the bound when the walk stopped early.
 2. Tell the user the mutant count and the suite command you will use. If the count is above 100 and they did not ask for the whole repository or a serial campaign, stop and wait.
 3. Call `mutate_run` with `package`, `patches` set to the generate directory, and `out` set to `<package>/.probatio/run` unless they named one. Set `timeoutMs` to one full suite run with room to spare. The default is 120000. A Maven suite needs 600000 or more.
-4. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, pass a real line map, or set `serial` to true. See "Line map" below. With a line map, one call scores every mutant that has no result yet. Without one, more than 30 mutants stop before the first mutant. `confirmCount`, when you pass it, must equal the waiting count. `--workers` runs that many worktrees at once. A kill is confirmed by rerunning the killing test unless you pass `--no-confirm`.
+4. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, pass a real line map, or set `serial` to true. See "Line map" below. With a line map, one call scores every mutant that has no result yet. Without one, more than 30 mutants stop before the first mutant. `confirmCount`, when you pass it, must equal the waiting count. `workers` (`--workers`) runs that many worktrees at once. A kill is confirmed by rerunning the killing test twice unless you pass `confirm: false` (`--no-confirm`).
 5. Read the envelope. `ok` false is a stop. Show `summary` and `next`. A red baseline, a missing report, a timeout, a missing tool, or "No line map" means nothing was mutated. Do not read a kill count from that run.
 6. When `ok` is true, call `mutate_tally` on the same `out`. `deletedTests` is 0. `noKillsYet` is not a deletion list. Do not delete a test.
 
-`mutate generate` sets `nextCall` to `mutate run` with `--patches` at the generate directory and `--out` at `<that-directory>-run`. That argv has no suite command, so resolution below supplies one. A campaign that already chose `<package>/.probatio/run` should keep using that directory.
+`mutate generate` sets `nextCall` to `mutate run` with `--patches` at `<generate-out>/mutants` and `--out` at `<generate-out>/runs`. That argv has no suite command, so resolution below supplies one. A campaign that already chose `<package>/.probatio/run` should keep using that directory.
 
 A `nextCall` from `mutate run` continues the same out dir. It keeps `--suite-command` as the template, and it omits `--confirm-count`. A finished run sets `nextCall` to null. Reusing an out dir keeps the result files already there and scores the mutants that do not have one. A new campaign uses a new out dir.
 
-A long `mutate_run` holds the MCP server until that call returns. If the tool call is cut off, run the same call again. A green `baseline.json` is kept when its `command` is the same template. A mutant that already has `results/<id>.json` is not run again.
+A long `mutate_run` holds that tool call until it returns. Other calls are answered meanwhile, and another agent may call `mutate_tally` on the same `out`: it counts the mutants that have a result and the ones still waiting. If the tool call is cut off, run the same call again. Closing the server, or cancelling the call, stops the suite it started. The package is never edited, so nothing needs restoring. A green `baseline.json` is kept when its `command` is the same template. A mutant that already has `results/<id>.json` is not run again.
 
 ## Suite command
 
@@ -74,7 +74,7 @@ Pytest is `pytest`, a path whose last component is `pytest` (including `.venv/bi
 
 There is no `--only-test` flag. A keep id is a test name the suite can collect. To score names, put `{tests}` or `{tests,}` in the suite command and supply the names from a `files` map or a `--tests` file. Do not invent a flag.
 
-When the package has `node_modules/.bin`, that directory is on the suite process PATH for the baseline and for a mutant worktree or copy. The command string is not rewritten. The worktree (git) and the copy (no git) skip `.git`, `target`, `node_modules`, and `dist`. Each gets a symlink to the package `node_modules` when the destination does not already have one. Removing the worktree or the copy does not delete the package `node_modules`. A shell exit 127 whose stderr contains `command not found` or `: not found` is a missing tool on the baseline (`judgement` `missing-tool`) and outcome `error` on a mutant. Bash prints the first phrase. Dash, the usual `/bin/sh` on Ubuntu, prints the second. An exit 1 whose text happens to contain those words can still be a kill. The binary does not fetch a toolchain.
+When the package has `node_modules/.bin`, that directory is on the suite process PATH for the baseline and for a mutant worktree or copy. The command string is not rewritten. The worktree (git) and the copy (no git) skip `.git`, `target`, `node_modules`, `dist`, and `.probatio`. Each gets a symlink to the package `node_modules` when the destination does not already have one. Removing the worktree or the copy does not delete the package `node_modules`. A shell exit 127 whose stderr contains `command not found` or `: not found` is a missing tool on the baseline (`judgement` `missing-tool`) and outcome `error` on a mutant. Bash prints the first phrase. Dash, the usual `/bin/sh` on Ubuntu, prints the second. An exit 1 whose text happens to contain those words can still be a kill. The binary does not fetch a toolchain.
 
 A command with `{tests}` or `{tests,}`, an empty name list, and a line map that does not choose tests, refuses before the baseline.
 
@@ -130,7 +130,7 @@ Baseline judgements, and the run stops before any mutant: `green`, `red` ("alrea
 
 ## Commands
 
-MCP, in preference: `schema`, `mutate_generate`, `mutate_run`, `mutate_tally`.
+MCP, in preference: `mutate_generate`, `mutate_run`, `mutate_tally`, then `schema` and `probatio`.
 
 CLI. Flags for each one live in `schemas/<name>.schema.json`. Ask with `probatio schema mutate.generate` (dots, not spaces). Do not invent a flag the schema does not list.
 
@@ -157,6 +157,15 @@ CLI. Flags for each one live in `schemas/<name>.schema.json`. Ask with `probatio
 Before calling a sealed kill a catch, check that the fix commit did not also edit the killing test. If it did, the kill came from the fix, and it is a miss.
 
 Do not publish around the release checks. A release needs a reason in the CHANGELOG. `docs/releasing.md` is the publish path. Do not push a tag or publish from a campaign.
+
+## Choosing groups
+
+The MCP tools come in groups. `core` (`mutate_generate`, `mutate_run`, `mutate_tally`) is always on. Choose the rest for the project you are in, by adding one line to a fenced block whose info string is `agent-tools` in the `AGENTS.md` at the directory the server starts in:
+
+- `diagnostics` (`schema`): a command's flags and output fields. Turn it off once you know the flags; each tool's own schema already covers the MCP calls.
+- `cli` (`probatio`): every CLI command by argv, for ledger, golden, matrix, queue, check-kill, verify-change, sealed, gap, guard, findings, status, and seal. Turn it off when the work here is mutation campaigns only.
+
+The line, inside that block: `probatio: disable cli, diagnostics`. `probatio: tools <groups>` is an allowlist instead. The server rereads the file on the next request and tells the client the tool list changed. A name it does not know is ignored and named in the `initialize` instructions. `PROBATIO_TOOLS` and `PROBATIO_DISABLE` in the client's `env` win over the file; a bad name there stops the server.
 
 ## Rules
 

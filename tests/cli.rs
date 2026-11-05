@@ -173,7 +173,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["probatio", "schema", "mutate_generate", "mutate_run", "mutate_tally"]);
+    assert_eq!(names, ["mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
@@ -238,8 +238,10 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
 fn assert_named_suite(value: &json::Value, command: &str) {
     assert_eq!(value.get("schemaVersion").and_then(json::Value::as_int), Some(2));
     assert_eq!(value.get("suiteCommand").and_then(json::Value::as_str), Some(command));
+    // `next` is prose, so a home path in it reads `~`. `suiteCommand` above stays runnable.
     let next = value.get("next").and_then(json::Value::as_str).unwrap_or("");
-    assert!(next.contains(command), "{next}");
+    let shown = probatio::envelope::scrub(command, &probatio::envelope::home_dir());
+    assert!(next.contains(&shown), "{next}");
 }
 
 fn assert_refused_without_kills(value: &json::Value) {
@@ -980,6 +982,7 @@ fn shipped_run_uses_node_bin_from_a_git_worktree() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
 fn marker_lines(path: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -990,6 +993,7 @@ fn marker_lines(path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+#[cfg(unix)]
 fn assert_survived_mutants(out: &std::path::Path) {
     let mut survived = 0usize;
     for entry in std::fs::read_dir(out.join("results")).unwrap() {
@@ -1000,6 +1004,7 @@ fn assert_survived_mutants(out: &std::path::Path) {
     assert!(survived >= 1, "no mutant result in {}", out.display());
 }
 
+#[cfg(unix)]
 fn git_commit(root: &std::path::Path, paths: &[&str]) {
     let mut init = std::process::Command::new("git");
     init.arg("-C").arg(root).args(["init"]);
@@ -1251,4 +1256,106 @@ fn tool_envelope(stdin: &mut impl Write, stdout: &mut impl BufRead, id: i64, nam
         .and_then(json::Value::as_str)
         .unwrap_or_else(|| panic!("no tool text in {response:?}"));
     json::parse(text).unwrap_or_else(|error| panic!("{error}\n{text}"))
+}
+
+#[test]
+fn mcp_exits_2_on_an_unknown_or_core_group_in_the_env() {
+    for (key, value, expected) in [
+        ("PROBATIO_DISABLE", "lokcs", "PROBATIO_DISABLE: unknown group \"lokcs\"; groups: core, diagnostics, cli; tools: "),
+        ("PROBATIO_TOOLS", "mutate", "PROBATIO_TOOLS: unknown group \"mutate\"; groups: "),
+        ("PROBATIO_DISABLE", "core", "PROBATIO_DISABLE: group \"core\" is always on and cannot be disabled"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_probatio"))
+            .arg("mcp")
+            .env(key, value)
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn mcp");
+        assert_eq!(output.status.code(), Some(2), "{key}={value}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with(expected), "{stderr}");
+        assert_eq!(stderr.trim_end().lines().count(), 1, "{stderr}");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
+    let dir = std::env::temp_dir().join(format!("probatio-mcp-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+        .arg("mcp")
+        .current_dir(&dir)
+        .env_remove("PROBATIO_TOOLS")
+        .env_remove("PROBATIO_DISABLE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(60));
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let count = |listed: &json::Value| match listed.get("result").and_then(|value| value.get("tools")) {
+        Some(json::Value::Array(items)) => items.len(),
+        other => panic!("{other:?}"),
+    };
+    let first = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    assert_eq!(count(&first), 5);
+    std::fs::write(dir.join("AGENTS.md"), "```agent-tools\nprobatio: disable cli, diagnostics\n```\n").unwrap();
+    let notice = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    assert_eq!(notice.get("method").and_then(json::Value::as_str), Some("notifications/tools/list_changed"), "{notice:?}");
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let second = json::parse(line.trim()).unwrap();
+    assert_eq!(count(&second), 3);
+    let refused = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{}}}"#);
+    let text = json::stringify_compact(&refused);
+    assert!(text.contains("is disabled (group \\\"diagnostics\\\") by the probatio: disable line in AGENTS.md"), "{text}");
+    drop(stdin);
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A client that closes stdin shuts the server down. A call still running stops with it, so it
+/// cannot keep scoring in a worktree after the session is gone.
+#[test]
+fn mcp_stops_a_running_call_when_the_client_leaves() {
+    let root = std::env::temp_dir().join(format!("probatio-mcp-leave-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/A.java"), "class A { boolean f(boolean a, boolean b) { return a && b; } }\n").unwrap();
+    let marker = root.join("finished.txt");
+    let (code, generated) = launch(&["mutate", "generate", "--package", &root.display().to_string(), "--out", &root.join("patches").display().to_string()]);
+    assert_eq!(code, 0, "{generated}");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+        .arg("mcp")
+        .current_dir(&root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(60));
+    let mut stdin = child.stdin.take().unwrap();
+    let suite = format!("sleep 4; echo done > '{}'", marker.display().to_string().replace('\\', "/"));
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"mutate_run","arguments":{{"package":{},"patches":{},"out":{},"suiteCommand":{}}}}}}}"#,
+        json_string(&root.display().to_string()),
+        json_string(&root.join("patches").display().to_string()),
+        json_string(&root.join("out").display().to_string()),
+        json_string(&suite),
+    );
+    writeln!(stdin, "{call}").unwrap();
+    stdin.flush().unwrap();
+    thread::sleep(Duration::from_millis(1500));
+    let started = std::time::Instant::now();
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    thread::sleep(Duration::from_secs(5));
+    assert!(!marker.exists(), "the suite kept running after the server left");
+    let _ = std::fs::remove_dir_all(&root);
 }

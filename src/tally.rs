@@ -11,8 +11,16 @@ pub fn tally(out: &Path) -> Envelope {
     let results_dir = out.join("results");
     let full = out.join("tally.json");
     let results = read_results(&results_dir);
+    let progress = progress(out, &results_dir);
     if results.is_empty() {
-        return Envelope::new(false, command, "No mutant results in that directory.", "Run mutate run, then tally the same --out directory.")
+        let (summary, next) = match progress {
+            Some((_, total)) if total > 0 => (
+                format!("No mutant has a result yet. {total} are waiting."),
+                "A mutate run may still be going in this out directory. Call mutate tally again later. Nothing was deleted.".to_string(),
+            ),
+            _ => ("No mutant results in that directory.".to_string(), "Run mutate run, then tally the same --out directory.".to_string()),
+        };
+        return Envelope::new(false, command, summary, next)
             .with_extra("keep", Value::Array(Vec::new()))
             .with_extra("noKillsYet", Value::Array(Vec::new()))
             .with_extra("gaps", Value::Array(Vec::new()))
@@ -85,12 +93,18 @@ pub fn tally(out: &Path) -> Envelope {
         file.then(left.get("line").and_then(Value::as_int).unwrap_or(0).cmp(&right.get("line").and_then(Value::as_int).unwrap_or(0)))
             .then(left.get("id").and_then(Value::as_str).unwrap_or("").cmp(right.get("id").and_then(Value::as_str).unwrap_or("")))
     });
-    let summary = format!(
-        "{no_coverage} no coverage, {survived} survived, {} tests killed a mutant, {} tests saw no kill in this batch, {} gaps. No test file was deleted.",
+    let killed = results.iter().filter(|item| item.outcome == "killed").count();
+    let unnamed = results.iter().filter(|item| item.outcome == "killed" && item.killed_by.iter().all(|name| !is_test_name(name))).count();
+    let mut summary = format!(
+        "{no_coverage} no coverage, {survived} survived, {killed} killed, {} tests killed a mutant, {} tests saw no kill in this batch, {} gaps.",
         keep.len(),
         no_kills.len(),
         gaps.len()
     );
+    if unnamed > 0 {
+        summary.push_str(&format!(" {unnamed} kills name no test, because the suite output does not."));
+    }
+    summary.push_str(" No test file was deleted.");
     let mut notes = Vec::new();
     if no_coverage > 0 {
         notes.push(format!("{no_coverage} no coverage. That line was not seen. It is not a pass and not a gap."));
@@ -103,6 +117,11 @@ pub fn tally(out: &Path) -> Envelope {
     }
     if timeouts > 0 {
         notes.push("Timed out. The mutant ran longer than the baseline allows.".into());
+    }
+    if let Some((done, total)) = progress {
+        if done < total {
+            notes.push(format!("{done} of {total} mutants have a result. {} are still waiting; a run may still be going.", total - done));
+        }
     }
     if notes.is_empty() {
         notes.push("No survivor in this run. No test file was deleted.".into());
@@ -122,6 +141,20 @@ pub fn tally(out: &Path) -> Envelope {
     let _ = fs::create_dir_all(out);
     let _ = fs::write(&full, envelope.render(""));
     envelope
+}
+
+/// Mutants with a result, and mutants in the run's patches. `run.json` names the patches.
+/// A second agent can tally an out directory while the first is still scoring it.
+fn progress(out: &Path, results_dir: &Path) -> Option<(usize, usize)> {
+    let run = json::parse(&fs::read_to_string(out.join("run.json")).ok()?).ok()?;
+    let patches = match run.get("patches") {
+        Some(Value::Array(items)) => items.first().and_then(Value::as_str)?.to_string(),
+        Some(Value::String(path)) => path.clone(),
+        _ => return None,
+    };
+    let ids = crate::runner::mutant_ids(Path::new(&patches))?;
+    let done = ids.iter().filter(|id| results_dir.join(format!("{id}.json")).is_file()).count();
+    Some((done, ids.len()))
 }
 
 fn pruning() -> Value {
@@ -236,6 +269,7 @@ fn read_results(dir: &Path) -> Vec<Row> {
                 _ => None,
             })
             .and_then(|item| item.get("file"))
+            .or_else(|| value.get("file"))
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
@@ -298,4 +332,53 @@ fn is_test_name(name: &str) -> bool {
     }
     let leaf = name.rsplit("::").next().unwrap_or(name);
     !matches!(leaf, "suite" | "pytest" | "unittest" | "command" | "build" | "javac" | "compiler" | "cargo" | "tsc" | "dotnet" | "swiftc" | "cobc" | "nasm" | "clang")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_gap_names_its_file_and_line_and_an_unnamed_kill_is_counted() {
+        let out = std::env::temp_dir().join(format!("probatio-tally-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(out.join("results")).unwrap();
+        fs::write(out.join("results/m1.json"), r#"{"id":"m1","file":"src/cli.rs","line":161,"outcome":"survived","tests":[]}"#).unwrap();
+        fs::write(out.join("results/m2.json"), r#"{"id":"m2","file":"src/cli.rs","line":110,"outcome":"killed","tests":[]}"#).unwrap();
+        let envelope = tally(&out);
+        assert!(envelope.ok);
+        assert!(!envelope.next.contains("still waiting"), "{}", envelope.next);
+        assert!(envelope.next.contains("First gap is m1 at src/cli.rs:161."), "{}", envelope.next);
+        assert!(envelope.summary.contains("1 killed, 0 tests killed a mutant"), "{}", envelope.summary);
+        assert!(envelope.summary.contains("1 kills name no test"), "{}", envelope.summary);
+        let _ = fs::remove_dir_all(&out);
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn a_tally_during_a_run_counts_what_is_still_waiting() {
+        let out = std::env::temp_dir().join(format!("probatio-tally-live-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(out.join("patches")).unwrap();
+        fs::write(
+            out.join("patches/mutants.json"),
+            r#"{"mutants":[{"id":"m1","file":"a.js","start":0,"end":1,"original":"a","replacement":"b"},{"id":"m2","file":"a.js","start":1,"end":2,"original":"a","replacement":"b"}]}"#,
+        )
+        .unwrap();
+        let patches = json::stringify_compact(&Value::String(out.join("patches").display().to_string()));
+        fs::write(out.join("run.json"), format!(r#"{{"patches":[{patches}]}}"#)).unwrap();
+        let empty = tally(&out);
+        assert!(!empty.ok);
+        assert_eq!(empty.summary, "No mutant has a result yet. 2 are waiting.");
+        fs::create_dir_all(out.join("results")).unwrap();
+        fs::write(out.join("results/m1.json"), r#"{"id":"m1","file":"a.js","line":1,"outcome":"survived"}"#).unwrap();
+        let partial = tally(&out);
+        assert!(partial.ok);
+        assert!(partial.next.contains("1 of 2 mutants have a result. 1 are still waiting"), "{}", partial.next);
+        let _ = fs::remove_dir_all(&out);
+    }
 }
