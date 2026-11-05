@@ -75,6 +75,9 @@ pub fn judge_baseline(spawned: bool, timed_out: bool, code: Option<i32>, stdout:
     if shell_reports_missing_command(code, stderr) {
         return Baseline::MissingTool;
     }
+    if code == Some(0) && ran_no_tests(stdout) {
+        return Baseline::NoReport;
+    }
     if code == Some(0) {
         Baseline::Green
     } else {
@@ -103,6 +106,16 @@ pub fn baseline_refusal(kind: Baseline) -> Option<(&'static str, &'static str)> 
         ),
     };
     Some((summary, next))
+}
+
+/// A TAP summary (node --test) that counted no test. Exit 0 with nothing run is not a green suite:
+/// every mutant would then read survived, or error.
+pub fn ran_no_tests(stdout: &str) -> bool {
+    let counts: Vec<i64> = stdout
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("# tests ").and_then(|rest| rest.trim().parse().ok()))
+        .collect();
+    !counts.is_empty() && counts.iter().all(|count| *count == 0)
 }
 
 /// A compile or link failure is unviable. An assertion failure is a kill. A timeout is neither.
@@ -388,6 +401,15 @@ pub fn deleted_tests() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tap_run_with_no_tests_is_not_green() {
+        let empty = "TAP version 13\n1..0\n# tests 0\n# pass 0\n# fail 0\n";
+        assert_eq!(judge_baseline(true, false, Some(0), empty, ""), Baseline::NoReport);
+        let real = "# tests 4\n# pass 4\n# fail 0\n";
+        assert_eq!(judge_baseline(true, false, Some(0), real, ""), Baseline::Green);
+        assert_eq!(judge_baseline(true, false, Some(0), "ok\n", ""), Baseline::Green);
+    }
 
     #[test]
     fn red_baseline_and_missing_report_have_no_kill_count() {

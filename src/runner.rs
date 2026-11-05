@@ -315,10 +315,12 @@ pub fn run(flags: &Flags) -> Envelope {
             &suite,
         );
     }
-    if let Some((summary, next)) = decide::baseline_refusal(baseline.kind) {
+    if let Some((summary, next)) = decide::baseline_refusal(baseline.kind.clone()) {
         let mut next = next.to_string();
         if store_python_stub(&baseline.tail) {
             next.push_str(" python3 here is the Microsoft Store placeholder, not Python. Install Python, or pass suiteCommand with the full path of python.exe.");
+        } else if baseline.kind == Baseline::NoReport && decide::ran_no_tests(&baseline.tail.replace(" | ", "\n")) {
+            next.push_str(" The suite exited 0 and counted 0 tests (# tests 0). Check that the test runner finds the test files.");
         } else if !baseline.tail.is_empty() {
             next.push_str(&format!(" Last output: {}", baseline.tail));
         }
@@ -1026,7 +1028,7 @@ fn baseline_from(timed: &TimedRun) -> BaselineRun {
         duration_ms: Some(duration_ms(timed.duration)),
         template: None,
         line_map: None,
-        tail: output_tail(&timed.stdout, &timed.stderr),
+        tail: if decide::ran_no_tests(&timed.stdout) { "# tests 0".into() } else { output_tail(&timed.stdout, &timed.stderr) },
     }
 }
 
@@ -2548,6 +2550,9 @@ mod tests {
         let envelope = run_with(&package, &patches, &out, &["--suite-command", "exit 0"]);
         assert_no_kill_count(&envelope);
         assert!(envelope.summary.contains("test report"), "{}", envelope.summary);
+        let empty = run_with(&package, &patches, &package.join("empty"), &["--suite-command", "printf 'TAP version 13\\n# tests 0\\n# pass 0\\n# duration_ms 1\\n'"]);
+        assert_no_kill_count(&empty);
+        assert!(empty.next.contains("counted 0 tests"), "{}", empty.next);
         let _ = fs::remove_dir_all(&package);
     }
 
