@@ -17,3 +17,8 @@ path = "src/main.rs"
 [dependencies]
 
 [dev-dependencies]
+
+# Benchmark against the TypeScript CLI. Not shipped: `cargo run --release --example benchmark`.
+[[example]]
+name = "benchmark"
+path = "scripts/benchmark.rs"
