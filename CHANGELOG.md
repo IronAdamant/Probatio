@@ -6,6 +6,17 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## 0.7.1 - 2026-11-05
+
+Fixes from a live run on Specula, a Cargo workspace.
+
+Fixed:
+
+- A false green on a workspace member (Specula B10). With `package` set to `crates/specula-locus`, each mutant tree held only that crate's files, cargo failed with "failed to find a workspace root", every mutant read "did not build", and `mutate diff` said there was no survivor. The mutant worktree is now the whole git checkout that holds the package, and the suite runs in the package folder inside it, where `cargo test` tests that member. On Specula, with a one-line edit to `geom.rs`, `mutate_diff` with the crate folder as `package` now scores 1 killed and 2 survived in 50 s, the same result as the repo-root workaround.
+- A tree that does not build is no longer a score. A build failure that does not name the mutated file is an `error`, and when most mutants in a call error, `mutate run` and `mutate diff` refuse with "N of M mutants errored before any test ran. This run is not a score.", the first error in `next`, and no kill count. Those results are removed so the same call retries them. Results that errored or did not build keep their last output lines in `output`.
+- `mutate diff` counted survivors as changed lines (Specula B11): "2 changed lines are not tested" for one line with two survivors. It now says "1 changed line is not tested: 2 mutants survived there", and the summary pluralises ("1 changed line in 1 file").
+- Mutant builds never share a Cargo target directory with your tree. Each mutant suite gets Probatio's own `CARGO_TARGET_DIR`, replacing one from the environment or `.probatio.json`; before, a caller's value won, and mutated artifacts could land where cargo would later treat them as fresh for your own code.
+
 ## 0.7.0 - 2026-11-05
 
 `mutate diff` answers the question an agent has right after an edit, in one call: are the lines I changed tested? `schemaVersion` stays 2.

@@ -1,6 +1,6 @@
 {
   "name": "probatio",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "mcpName": "io.github.IronAdamant/probatio",
   "description": "Mutation runner. Scores a test suite by the bugs it catches. Installs the Rust binary.",
   "license": "MIT",
@@ -21,10 +21,10 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "probatio-linux-x64": "0.7.0",
-    "probatio-darwin-arm64": "0.7.0",
-    "probatio-darwin-x64": "0.7.0",
-    "@iron_adamant/probatio-win32-x64": "0.7.0"
+    "probatio-linux-x64": "0.7.1",
+    "probatio-darwin-arm64": "0.7.1",
+    "probatio-darwin-x64": "0.7.1",
+    "@iron_adamant/probatio-win32-x64": "0.7.1"
   },
   "engines": {
     "node": ">=18"
