@@ -6,6 +6,23 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## 0.7.0 - 2026-11-05
+
+`mutate diff` answers the question an agent has right after an edit, in one call: are the lines I changed tested? `schemaVersion` stays 2.
+
+Added:
+
+- `mutate diff` (MCP `mutate_diff`, first in the `core` group): diffs the working tree against `--since` (default `HEAD`, so uncommitted edits; untracked source files count whole), mutates only the changed lines, runs the suite on each, and returns `survivors` with `file`, `line`, `column`, `original`, and `replacement`. Each call clears `<package>/.probatio/diff`, so a test added since the last call is scored. Measured through MCP on Windows: a one-line edit to a JS sample, 3 mutants, 1.5 s; a one-line edit to the Relatum crate, 4 mutants, 38 s with confirm, 36 s without. The Relatum survivor was the `==` the edit added, at column 50.
+- Rust kills are named from libtest's `test <name> ... FAILED` lines, with no `cargo llvm-cov`. The confirm reruns `-- --exact <name>` instead of the whole suite twice. A per-line test map for Rust still needs llvm-cov: libtest reports no coverage.
+- `.github/workflows/mcp-registry.yml` publishes the tag's `server.json` to the MCP Registry with GitHub Actions OIDC after npm, and can be run by hand for a tag already on npm. The registry had no Probatio listing: nothing had published `server.json`.
+
+Fixed:
+
+- Killing only the MCP server process left its call's suite running. On Windows the server joins a kill-on-close job object (std-only FFI to kernel32), so the job ends every process under it. On Unix each call's child checks for its parent every 200 ms and, when the server is gone, kills the suite groups it started and exits.
+- Windows: a worktree or copy got no `node_modules`, so a Node suite there could not resolve its dependencies. It is a directory symlink, or a junction, and every such link is removed as a link before its tree is deleted.
+- Windows: `nextCall`, `full`, and `results` paths mixed `/` and `\`. Windows paths there use `/`; a suite command is not rewritten.
+- Every clippy warning, including the old ones; CI now runs clippy with `-D warnings`.
+
 ## 0.6.0 - 2026-11-05
 
 Windows now works end to end, the MCP surface checks its arguments and comes in groups, and Cargo campaigns are faster. Verified on Windows 11 through the MCP server against `examples/pytest`, a JavaScript sample, and a copy of a std-only Rust crate (Relatum). `schemaVersion` stays 2: fields were added, none renamed or removed.
