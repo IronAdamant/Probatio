@@ -106,3 +106,12 @@ jobs:
             exit 0
           fi
           bash scripts/npm-publish.sh
+
+  mcp-registry:
+    needs: npm
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/mcp-registry.yml
+    with:
+      tag: ${{ github.ref_name }}
