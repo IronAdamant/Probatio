@@ -85,12 +85,18 @@ pub fn tally(out: &Path) -> Envelope {
         file.then(left.get("line").and_then(Value::as_int).unwrap_or(0).cmp(&right.get("line").and_then(Value::as_int).unwrap_or(0)))
             .then(left.get("id").and_then(Value::as_str).unwrap_or("").cmp(right.get("id").and_then(Value::as_str).unwrap_or("")))
     });
-    let summary = format!(
-        "{no_coverage} no coverage, {survived} survived, {} tests killed a mutant, {} tests saw no kill in this batch, {} gaps. No test file was deleted.",
+    let killed = results.iter().filter(|item| item.outcome == "killed").count();
+    let unnamed = results.iter().filter(|item| item.outcome == "killed" && item.killed_by.iter().all(|name| !is_test_name(name))).count();
+    let mut summary = format!(
+        "{no_coverage} no coverage, {survived} survived, {killed} killed, {} tests killed a mutant, {} tests saw no kill in this batch, {} gaps.",
         keep.len(),
         no_kills.len(),
         gaps.len()
     );
+    if unnamed > 0 {
+        summary.push_str(&format!(" {unnamed} kills name no test, because the suite output does not."));
+    }
+    summary.push_str(" No test file was deleted.");
     let mut notes = Vec::new();
     if no_coverage > 0 {
         notes.push(format!("{no_coverage} no coverage. That line was not seen. It is not a pass and not a gap."));
@@ -236,6 +242,7 @@ fn read_results(dir: &Path) -> Vec<Row> {
                 _ => None,
             })
             .and_then(|item| item.get("file"))
+            .or_else(|| value.get("file"))
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
@@ -298,4 +305,24 @@ fn is_test_name(name: &str) -> bool {
     }
     let leaf = name.rsplit("::").next().unwrap_or(name);
     !matches!(leaf, "suite" | "pytest" | "unittest" | "command" | "build" | "javac" | "compiler" | "cargo" | "tsc" | "dotnet" | "swiftc" | "cobc" | "nasm" | "clang")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_gap_names_its_file_and_line_and_an_unnamed_kill_is_counted() {
+        let out = std::env::temp_dir().join(format!("probatio-tally-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(out.join("results")).unwrap();
+        fs::write(out.join("results/m1.json"), r#"{"id":"m1","file":"src/cli.rs","line":161,"outcome":"survived","tests":[]}"#).unwrap();
+        fs::write(out.join("results/m2.json"), r#"{"id":"m2","file":"src/cli.rs","line":110,"outcome":"killed","tests":[]}"#).unwrap();
+        let envelope = tally(&out);
+        assert!(envelope.ok);
+        assert!(envelope.next.contains("First gap is m1 at src/cli.rs:161."), "{}", envelope.next);
+        assert!(envelope.summary.contains("1 killed, 0 tests killed a mutant"), "{}", envelope.summary);
+        assert!(envelope.summary.contains("1 kills name no test"), "{}", envelope.summary);
+        let _ = fs::remove_dir_all(&out);
+    }
 }

@@ -24,6 +24,8 @@ struct LoadedMutant {
     original: String,
     replacement: String,
     tests: Vec<String>,
+    /// From `mutants.json`. A hand-made mutant may leave it out.
+    line: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1566,13 +1568,19 @@ fn write_result(
     }
     let mut entries = vec![
         ("id", Value::String(mutant.id.clone())),
+        ("file", Value::String(mutant.file.clone())),
+    ];
+    if let Some(line) = mutant.line {
+        entries.push(("line", Value::Int(line)));
+    }
+    entries.extend([
         ("outcome", Value::String(scored.kind.as_str().into())),
         ("selectedCount", Value::Int(selection.selected_count as i64)),
         ("selectionCapped", Value::Bool(selection.capped)),
         ("durationMs", Value::Int(scored.duration_ms as i64)),
         ("timedOut", Value::Bool(scored.timed_out)),
         ("tests", Value::Array(selection.tests.iter().cloned().map(Value::String).collect())),
-    ];
+    ]);
     if let Some(command) = command {
         entries.push(("command", Value::String(command.to_string())));
     }
@@ -1728,6 +1736,7 @@ fn load_one(value: &Value) -> Result<LoadedMutant, String> {
         original: value.get("original").and_then(Value::as_str).unwrap_or("").to_string(),
         replacement: field("replacement")?.to_string(),
         tests,
+        line: value.get("line").and_then(Value::as_int),
     })
 }
 
