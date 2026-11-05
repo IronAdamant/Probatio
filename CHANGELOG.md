@@ -14,7 +14,7 @@ Added:
 
 - `mutate diff` (MCP `mutate_diff`, first in the `core` group): diffs the working tree against `--since` (default `HEAD`, so uncommitted edits; untracked source files count whole), mutates only the changed lines, runs the suite on each, and returns `survivors` with `file`, `line`, `column`, `original`, and `replacement`. Each call clears `<package>/.probatio/diff`, so a test added since the last call is scored. Measured through MCP on Windows: a one-line edit to a JS sample, 3 mutants, 1.5 s; a one-line edit to the Relatum crate, 4 mutants, 38 s with confirm, 36 s without. The Relatum survivor was the `==` the edit added, at column 50.
 - Rust kills are named from libtest's `test <name> ... FAILED` lines, with no `cargo llvm-cov`. The confirm reruns `-- --exact <name>` instead of the whole suite twice. A per-line test map for Rust still needs llvm-cov: libtest reports no coverage.
-- `.github/workflows/mcp-registry.yml` publishes the tag's `server.json` to the MCP Registry with GitHub Actions OIDC after npm, and can be run by hand for a tag already on npm. The registry had no Probatio listing: nothing had published `server.json`.
+- `.github/workflows/mcp-registry.yml` publishes the tag's `server.json` to the MCP Registry with GitHub Actions OIDC. It runs after npm only when the repository variable `MCP_REGISTRY_PUBLISH` is `true`, and can be run by hand for a tag already on npm. The registry had no Probatio listing: nothing had published `server.json`.
 
 Fixed:
 

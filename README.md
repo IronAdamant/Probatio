@@ -28,7 +28,7 @@ Linux x64, macOS (Apple silicon and Intel), and Windows x64 are published. Elsew
 }
 ```
 
-In Claude Code: `claude mcp add probatio -- npx -y probatio mcp`. The MCP Registry name is `io.github.IronAdamant/probatio` ([server.json](server.json)); a release tag publishes the listing.
+In Claude Code: `claude mcp add probatio -- npx -y probatio mcp`. The MCP Registry name is `io.github.IronAdamant/probatio` ([server.json](server.json)); the `mcp registry` workflow publishes the listing (automatic on tags once `MCP_REGISTRY_PUBLISH` is set).
 
 ## Example
 

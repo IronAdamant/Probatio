@@ -109,6 +109,10 @@ jobs:
 
   mcp-registry:
     needs: npm
+    # Publishing the listing is opt-in: set the repository variable
+    # MCP_REGISTRY_PUBLISH to "true" to publish on every tag. The
+    # "mcp registry" workflow can always be run by hand for a tag.
+    if: vars.MCP_REGISTRY_PUBLISH == 'true'
     permissions:
       contents: read
       id-token: write
