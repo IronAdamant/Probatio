@@ -87,7 +87,11 @@ Two limits both use the number 30. They are different limits.
 
 **Names recorded for one mutant.** One mutant records at most 30 test names unless `--max-selected` raises the cap. The result says when the cap applied (`selectionCapped`, `selectedCount`). A line map that chooses tests still feeds every one of its names into the baseline command. The cap applies per mutant, after that.
 
-`--workers` defaults to 1. A higher value runs that many git worktrees at once, or that many copies when the package is not a git checkout. A `cargo` suite shares one `CARGO_TARGET_DIR` per worker under the temp directory, so each mutant after the first is an incremental build. It is removed when the run finishes, and a `CARGO_TARGET_DIR` you set wins.
+`--workers` defaults to 1. A higher value runs that many git worktrees at once, or that many copies when the package is not a git checkout. Every mutant suite gets its own `CARGO_TARGET_DIR`, one per worker under the temp directory, so each Cargo mutant after the first is an incremental build. It is removed when the run finishes. It replaces any `CARGO_TARGET_DIR` from your environment or `.probatio.json`: a mutant must never build into your tree's target directory, where cargo could later run a stale, mutated binary for your own code. The baseline runs in your package with your settings.
+
+The worktree is the whole git checkout that holds the package, and the suite runs in the package's own folder inside it. A Cargo workspace member (or a Maven module) therefore builds with its workspace, and `cargo test` in a member folder tests that member. `--repo` names a different checkout root.
+
+A mutant whose build fails without naming the mutated file is an `error`, not `unviable`: the tree did not build, the mutant did not break it. When most mutants in one call error, the run refuses: "N of M mutants errored before any test ran. This run is not a score." `next` carries the first error, the error results are removed, and the same call scores them once the cause is fixed. A result that errored or did not build stores the last lines it printed as `output`.
 
 The package itself is never edited. A mutant is applied in the worktree or copy, so stopping a run, even by killing the process, cannot leave a mutant in your source. The next run on the same out directory removes a leftover worktree. The MCP server stops a running call, and everything under it, when the client cancels it or closes stdin.
 

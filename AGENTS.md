@@ -2,7 +2,7 @@
 
 Probatio is the program in this repository. Agents run it. A person who is not going to run commands can stop after the top of `README.md`.
 
-The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.7.0, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
+The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.7.1, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
 
 Probatio scores a test suite. It does not replace the suite, write the missing test, fetch a toolchain, or prove a change is safe. A kill is an assertion the suite already had.
 
@@ -126,7 +126,7 @@ Read no coverage first, then survivors. Neither is a pass.
 - `timeout`: the baseline clock ran out.
 - `error`: the process failed in a way that is not an assertion. Exit 127 with `command not found` or `: not found` is this.
 
-A timeout, an unviable mutant, and an error are not kills and not gaps. For a ledger fix, write a hand-made mutant that keeps the API and restores the old behaviour.
+A timeout, an unviable mutant, and an error are not kills and not gaps. A build failure that does not name the mutated file is an `error` (the tree did not build), and when most mutants in a call error, the run refuses with the first error: nothing was scored, which is never a pass. The mutant worktree is the whole git checkout, so a workspace member builds with its workspace; pass the member folder as `package`. Mutant builds always get their own `CARGO_TARGET_DIR`, never yours. For a ledger fix, write a hand-made mutant that keeps the API and restores the old behaviour.
 
 A result file that already says `flaky` is counted as flaky. The scorer does not assign that outcome itself.
 
