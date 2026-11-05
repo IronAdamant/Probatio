@@ -173,7 +173,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["probatio", "schema", "mutate_generate", "mutate_run", "mutate_tally"]);
+    assert_eq!(names, ["mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
@@ -1256,4 +1256,64 @@ fn tool_envelope(stdin: &mut impl Write, stdout: &mut impl BufRead, id: i64, nam
         .and_then(json::Value::as_str)
         .unwrap_or_else(|| panic!("no tool text in {response:?}"));
     json::parse(text).unwrap_or_else(|error| panic!("{error}\n{text}"))
+}
+
+#[test]
+fn mcp_exits_2_on_an_unknown_or_core_group_in_the_env() {
+    for (key, value, expected) in [
+        ("PROBATIO_DISABLE", "lokcs", "PROBATIO_DISABLE: unknown group \"lokcs\"; groups: core, diagnostics, cli; tools: "),
+        ("PROBATIO_TOOLS", "mutate", "PROBATIO_TOOLS: unknown group \"mutate\"; groups: "),
+        ("PROBATIO_DISABLE", "core", "PROBATIO_DISABLE: group \"core\" is always on and cannot be disabled"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_probatio"))
+            .arg("mcp")
+            .env(key, value)
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn mcp");
+        assert_eq!(output.status.code(), Some(2), "{key}={value}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with(expected), "{stderr}");
+        assert_eq!(stderr.trim_end().lines().count(), 1, "{stderr}");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
+    let dir = std::env::temp_dir().join(format!("probatio-mcp-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+        .arg("mcp")
+        .current_dir(&dir)
+        .env_remove("PROBATIO_TOOLS")
+        .env_remove("PROBATIO_DISABLE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(60));
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let count = |listed: &json::Value| match listed.get("result").and_then(|value| value.get("tools")) {
+        Some(json::Value::Array(items)) => items.len(),
+        other => panic!("{other:?}"),
+    };
+    let first = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    assert_eq!(count(&first), 5);
+    std::fs::write(dir.join("AGENTS.md"), "```agent-tools\nprobatio: disable cli, diagnostics\n```\n").unwrap();
+    let notice = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    assert_eq!(notice.get("method").and_then(json::Value::as_str), Some("notifications/tools/list_changed"), "{notice:?}");
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let second = json::parse(line.trim()).unwrap();
+    assert_eq!(count(&second), 3);
+    let refused = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{}}}"#);
+    let text = json::stringify_compact(&refused);
+    assert!(text.contains("is disabled (group \\\"diagnostics\\\") by the probatio: disable line in AGENTS.md"), "{text}");
+    drop(stdin);
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
 }
