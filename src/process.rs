@@ -22,6 +22,125 @@ const SIGKILL: i32 = 9;
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn setpgid(pid: i32, pgid: i32) -> i32;
+    fn getppid() -> i32;
+}
+
+/// Suite processes started by this process and still running. Each leads its own process group.
+static LIVE: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Removes a suite pid from `LIVE` on every return path.
+struct Tracked(u32);
+
+impl Tracked {
+    fn new(pid: u32) -> Tracked {
+        LIVE.lock().unwrap_or_else(|poison| poison.into_inner()).push(pid);
+        Tracked(pid)
+    }
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        LIVE.lock().unwrap_or_else(|poison| poison.into_inner()).retain(|pid| *pid != self.0);
+    }
+}
+
+/// The environment variable the MCP server sets on each call it starts: its own pid.
+pub const PARENT_ENV: &str = "PROBATIO_PARENT_PID";
+
+/// Unix: when `PROBATIO_PARENT_PID` names this process's parent, a thread checks every 200 ms that
+/// the parent is still there. When it is gone (the MCP server was killed), every suite this process
+/// started is killed with its group, and this process exits. A suite runs in its own process group
+/// for its deadline, so the parent's death does not reach it otherwise. Windows uses a job object.
+pub fn watch_parent() {
+    #[cfg(unix)]
+    {
+        let Some(expected) = std::env::var(PARENT_ENV).ok().and_then(|text| text.parse::<i32>().ok()) else { return };
+        if unsafe { getppid() } != expected {
+            return;
+        }
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(200));
+            if unsafe { getppid() } != expected {
+                let pids: Vec<u32> = LIVE.lock().unwrap_or_else(|poison| poison.into_inner()).clone();
+                for pid in pids {
+                    kill_tree(pid);
+                }
+                std::process::exit(1);
+            }
+        });
+    }
+}
+
+/// Windows: put this process in a job object that kills every member when its last handle closes.
+/// Children join the job when they start, so killing this process alone, which closes the handle,
+/// also ends every call it started and every suite under them. The handle is kept for the life
+/// of the process on purpose. Unix uses `watch_parent` in each child instead.
+pub fn contain_descendants() {
+    #[cfg(windows)]
+    windows_job::contain();
+}
+
+#[cfg(windows)]
+mod windows_job {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimit {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io: [u64; 6],
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    const EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+    extern "system" {
+        fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> Handle;
+        fn SetInformationJobObject(job: Handle, class: i32, info: *mut c_void, length: u32) -> i32;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn GetCurrentProcess() -> Handle;
+        fn CloseHandle(handle: Handle) -> i32;
+    }
+
+    /// True when this process is now in a kill-on-close job. A failure leaves things as they were.
+    pub fn contain() -> bool {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if job.is_null() {
+                return false;
+            }
+            let mut limit = ExtendedLimit::default();
+            limit.basic.limit_flags = KILL_ON_JOB_CLOSE;
+            let size = std::mem::size_of::<ExtendedLimit>() as u32;
+            let set = SetInformationJobObject(job, EXTENDED_LIMIT_INFORMATION, &mut limit as *mut ExtendedLimit as *mut c_void, size);
+            if set == 0 || AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
+                CloseHandle(job);
+                return false;
+            }
+            // Not closed: the job lives exactly as long as this process.
+            true
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -163,6 +282,7 @@ fn run_group_with_path(
     unsafe {
         setpgid(pid as i32, pid as i32);
     }
+    let _tracked = Tracked::new(pid);
     let stdout_buf = Arc::new(Mutex::new(String::new()));
     let stderr_buf = Arc::new(Mutex::new(String::new()));
     let stdout_handle = spawn_drain(child.stdout.take(), Arc::clone(&stdout_buf));

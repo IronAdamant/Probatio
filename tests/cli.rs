@@ -1359,3 +1359,43 @@ fn mcp_stops_a_running_call_when_the_client_leaves() {
     assert!(!marker.exists(), "the suite kept running after the server left");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Killing only the server process, with stdin still open, also stops the suite under its call:
+/// a job object on Windows, a parent check in the child on Unix.
+#[test]
+fn mcp_stops_a_running_call_when_only_the_server_is_killed() {
+    let root = std::env::temp_dir().join(format!("probatio-mcp-killed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/A.java"), "class A { boolean f(boolean a, boolean b) { return a && b; } }\n").unwrap();
+    let marker = root.join("finished.txt");
+    let (code, generated) = launch(&["mutate", "generate", "--package", &root.display().to_string(), "--out", &root.join("patches").display().to_string()]);
+    assert_eq!(code, 0, "{generated}");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+        .arg("mcp")
+        .current_dir(&root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(60));
+    let mut stdin = child.stdin.take().unwrap();
+    let suite = format!("sleep 4; echo done > '{}'", marker.display().to_string().replace('\\', "/"));
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"mutate_run","arguments":{{"package":{},"patches":{},"out":{},"suiteCommand":{}}}}}}}"#,
+        json_string(&root.display().to_string()),
+        json_string(&root.join("patches").display().to_string()),
+        json_string(&root.join("out").display().to_string()),
+        json_string(&suite),
+    );
+    writeln!(stdin, "{call}").unwrap();
+    stdin.flush().unwrap();
+    thread::sleep(Duration::from_millis(1500));
+    child.kill().unwrap();
+    let _ = child.wait();
+    thread::sleep(Duration::from_secs(5));
+    assert!(!marker.exists(), "the suite kept running after the server was killed");
+    drop(stdin);
+    let _ = std::fs::remove_dir_all(&root);
+}

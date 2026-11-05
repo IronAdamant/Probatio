@@ -429,6 +429,7 @@ fn unknown(var: &str, name: &str) -> String {
 const LIST_CHANGED: &str = r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
 
 pub fn serve() -> i32 {
+    crate::process::contain_descendants();
     let env = |key: &str| std::env::var(key).ok();
     let path = std::env::current_dir().unwrap_or_default().join("AGENTS.md");
     let mut watcher = match Watcher::start(path, env("PROBATIO_TOOLS"), env("PROBATIO_DISABLE")) {
@@ -592,6 +593,8 @@ fn tools_call_live(id: &Value, params: Option<&Value>, running: &Mutex<HashMap<S
     let exe = std::env::current_exe().unwrap_or_else(|_| Path::new("probatio").to_path_buf());
     let mut command = Command::new(exe);
     command.args(&argv).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    // The child stops its suites and exits if this server dies (Unix; Windows uses the job).
+    command.env(crate::process::PARENT_ENV, std::process::id().to_string());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
