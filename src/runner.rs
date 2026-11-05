@@ -1879,10 +1879,21 @@ fn ensure_node_reporter(out: &Path) -> Result<PathBuf, String> {
     Ok(reporter)
 }
 
+/// Node loads `--test-reporter` as an ES module. On Windows an absolute `C:` path is read as a
+/// URL scheme and refused (ERR_UNSUPPORTED_ESM_URL_SCHEME), so it is passed as a `file:` URL.
+fn reporter_arg(reporter: &Path) -> String {
+    if cfg!(windows) && reporter.is_absolute() {
+        let text = reporter.display().to_string().replace('\\', "/");
+        let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
+        return format!("'file:///{}'", text.replace(' ', "%20").replace('\'', "%27"));
+    }
+    shell_quote(reporter)
+}
+
 fn node_test_command(reporter: &Path, names: &[String], files: &[String], concurrency: u64, test_timeout_ms: u64) -> String {
     let mut command = format!(
         "node --test --test-reporter={} --test-concurrency={concurrency} --test-timeout={test_timeout_ms}",
-        shell_quote(reporter)
+        reporter_arg(reporter)
     );
     if !names.is_empty() {
         let pattern = names.iter().map(|name| regex_escape(name)).collect::<Vec<_>>().join("|");
@@ -2197,6 +2208,9 @@ fn score_timed(timed: &TimedRun, python: bool) -> Scored {
             scored.killed_by = judged.killed_by;
             return scored;
         }
+        // The reporter always prints its report. Without one, the reporter never ran, so no
+        // assertion was checked. Counting that exit as a kill scored a broken launch as a catch.
+        return Scored::new(Verdict::Error, duration_ms, false);
     }
     let text = format!("{}\n{}", timed.stdout, timed.stderr);
     Scored::new(decide::classify(false, timed.status, &text), duration_ms, false)
@@ -3836,5 +3850,47 @@ mod tests {
         assert!(command.contains("--test-timeout=60000"), "{command}");
         assert!(command.contains("test/a.test.js"), "{command}");
         assert_eq!(with_concurrency(&command, 1).matches("--test-concurrency=1").count(), 1);
+    }
+
+    /// Windows node refused `--test-reporter='C:\...'`, every mutant exited 7, and each exit was
+    /// counted as a kill. The reporter is a `file:` URL there, and a run with no report is an error.
+    #[test]
+    fn a_node_mutant_runs_the_reporter_and_a_missing_report_is_not_a_kill() {
+        let reporter = std::env::temp_dir().join("probatio dir").join("fail-reporter.mjs");
+        let command = node_test_command(&reporter, &[], &[], 1, 60_000);
+        if cfg!(windows) {
+            assert!(command.contains("--test-reporter='file:///"), "{command}");
+            assert!(command.contains("probatio%20dir/fail-reporter.mjs'"), "{command}");
+        }
+        let crashed = TimedRun {
+            spawned: true,
+            status: Some(7),
+            timed_out: false,
+            duration: Duration::from_millis(100),
+            stdout: String::new(),
+            stderr: "Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]".into(),
+        };
+        assert!(score_timed(&crashed, true).kind == Verdict::Error);
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let package = temp("node-reporter");
+        fs::create_dir_all(package.join("test")).unwrap();
+        fs::write(package.join("src/calc.js"), "export function both(a, b) { return a && b; }\n").unwrap();
+        fs::write(package.join("package.json"), "{\"type\":\"module\"}\n").unwrap();
+        fs::write(
+            package.join("test/calc.test.js"),
+            "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { both } from '../src/calc.js';\ntest('both', () => { assert.equal(both(true, false), false); });\n",
+        )
+        .unwrap();
+        let patches = generate_into(&package);
+        let out = package.join("out");
+        let envelope = run_with(&package, &patches, &out, &["--suite-command", "node --test", "--no-confirm"]);
+        assert!(envelope.ok, "{}", envelope.summary);
+        let body = one_result(&out);
+        assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
+        let names = json::stringify_compact(body.get("killedBy").unwrap_or(&Value::Null));
+        assert!(names.contains("both"), "{names}");
+        let _ = fs::remove_dir_all(&package);
     }
 }
