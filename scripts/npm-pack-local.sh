@@ -38,6 +38,7 @@ case "$(uname -s):$(uname -m)" in
   Linux:x86_64) platform=linux-x64; exe=probatio ;;
   Darwin:arm64) platform=darwin-arm64; exe=probatio ;;
   Darwin:x86_64) platform=darwin-x64; exe=probatio ;;
+  MINGW*:x86_64|MSYS*:x86_64|CYGWIN*:x86_64) platform=win32-x64; exe=probatio.exe ;;
   *)
     echo "No platform package for $(uname -s) $(uname -m)" >&2
     exit 1
@@ -52,7 +53,7 @@ if [ -n "${PROBATIO_BIN:-}" ]; then
   fi
 else
   cargo build --release --offline --manifest-path "$root/Cargo.toml"
-  bin=$root/target/release/probatio
+  bin=$root/target/release/$exe
 fi
 
 stage=$root/npm/$platform/bin
@@ -71,7 +72,9 @@ if [ "$smoke" -ne 1 ]; then
   exit 0
 fi
 
-platform_tgz=$dist/probatio-${platform}-${version}.tgz
+# npm names a scoped package's tarball <scope>-<name>-<version>.tgz.
+platform_name=$(node -p "require(process.argv[1]).name" "$root/npm/$platform/package.json")
+platform_tgz=$dist/$(printf '%s' "$platform_name" | sed 's|^@||; s|/|-|')-${version}.tgz
 main_tgz=$dist/probatio-${version}.tgz
 if [ ! -f "$platform_tgz" ] || [ ! -f "$main_tgz" ]; then
   echo "Expected $platform_tgz and $main_tgz" >&2

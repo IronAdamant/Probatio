@@ -113,8 +113,12 @@ async function schemaFor(server) {
 
 function compileValidator(schema) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "probatio-server-schema-"));
-  execFileSync("npm", ["install", "--prefix", tmp, "--silent", "--no-fund", "--no-audit", ...schemaPins], {
+  // npm is npm.cmd on Windows, and Node starts a .cmd shim only through a shell.
+  const windows = process.platform === "win32";
+  const prefix = windows ? '"' + tmp + '"' : tmp;
+  execFileSync("npm", ["install", "--prefix", prefix, "--silent", "--no-fund", "--no-audit", ...schemaPins], {
     stdio: "inherit",
+    shell: windows,
   });
   const Ajv = require(path.join(tmp, "node_modules", "ajv"));
   const addFormats = require(path.join(tmp, "node_modules", "ajv-formats"));
