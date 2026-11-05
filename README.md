@@ -1,31 +1,21 @@
 # Probatio
 
-Probatio asks one question. If this code were a little bit wrong, would the tests you already have notice?
+Probatio asks one question: if this code were a little bit wrong, would the tests you already have notice?
 
-It keeps the test command the project already uses. It makes one small change, runs that command, and writes down whether a test failed. It does not write a new test, and it does not take over how the project runs its suite.
+It makes one small change to the code (a mutant: `>` becomes `>=`, `&&` becomes `||`, `true` becomes `false`), runs the project's own test command, and records whether a test failed. A change no test catches is a gap, reported as `file:line`. It is built for AI agents: every command prints one short JSON object with the next step, and an MCP server exposes the same commands.
 
-A catch means a test failed on that small change. The suite saw it. That is news about the tests. It does not say the original code is ready to ship, and it is not a gate on a merge.
+It does not write tests, and a caught mutant is not proof the code is right. If the suite is already failing, Probatio stops before the first change.
 
-If the tests are already failing, or they never print a report, Probatio stops before the first change. There is no score until the suite is green.
-
-Hand the project to an agent when you want a run. The instructions that agent follows are in [AGENTS.md](AGENTS.md). The rest of this page is the detail.
-
-## Detail
-
-### The program
-
-This repository ships one program, the `probatio` binary. The crate uses the Rust standard library and nothing else. `cargo build` writes the binary. `cargo test` runs the suite that locks these rules.
+## Install
 
 ```bash
-cargo build --release
-./target/release/probatio schema
+npm install -g probatio      # a Node launcher plus the binary for this machine
+probatio --version
 ```
 
-An earlier TypeScript program lived here, and that rewrite is finished. Changelog entries through 0.3.0, and the notes in `docs/` other than [docs/releasing.md](docs/releasing.md), describe that program. The binary, the files in [schemas/](schemas/), and [AGENTS.md](AGENTS.md) are the current contract. Small samples live in [examples/](examples/).
+Linux x64, macOS (Apple silicon and Intel), and Windows x64 are published. Elsewhere, build from source: `cargo build --release` writes `target/release/probatio`. It uses only the Rust standard library. At run time it needs `git` and the project's own test tools. On Windows it runs suite commands with Git for Windows' `sh`.
 
-The crate version is 0.5.1. The MCP server reports that version. `npm install probatio` installs a Node launcher and the binary for this machine. The platform packages are `probatio-linux-x64`, `probatio-darwin-arm64`, `probatio-darwin-x64`, and `@iron_adamant/probatio-win32-x64`. A `v*` tag builds the GitHub release for x86_64 Linux musl, aarch64 macOS, x86_64 macOS, and x86_64 Windows.
-
-An agent talks to the binary over stdin with `probatio mcp`, or it calls the same commands itself. From npm, a client starts that same server with `npx -y probatio mcp`. The MCP Registry name is `io.github.IronAdamant/probatio`. [`server.json`](server.json) is that listing.
+## Connect an MCP client
 
 ```json
 {
@@ -38,161 +28,73 @@ An agent talks to the binary over stdin with `probatio mcp`, or it calls the sam
 }
 ```
 
-### Migrating from the TypeScript version
+In Claude Code: `claude mcp add probatio -- npx -y probatio mcp`. The MCP Registry name is `io.github.IronAdamant/probatio` ([server.json](server.json)).
 
-The last TypeScript program is commit `c5cd175`, published on npm as 0.3.0. The branch `typescript-legacy` points at that commit. This tree is the Rust binary, crate 0.5.1.
+## Example
 
-[MIGRATION.md](MIGRATION.md) lists install, platforms, commands, flags, JSON, exit codes, MCP, config, files, discovery, and operators. A row that changed is marked intentional change or not supported. A row marked same was checked against `c5cd175` and matches. Nothing in that list is marked as a bug fixed from TypeScript: the fixes through 0.3.0 are already in `c5cd175`.
+An agent makes three calls. The package is never edited: each mutant is applied in a git worktree, or a temp copy when the package is not a git checkout.
 
-The short form:
+```text
+mutate_generate {"package": "/work/app", "out": "/work/app/.probatio/generate"}
+  -> "6 mutants in 1 files."
+mutate_run      {"package": "/work/app", "patches": "/work/app/.probatio/generate", "out": "/work/app/.probatio/run"}
+  -> "0 no coverage, 4 survived, 2 killed, 0 flaky, 0 timed out, 0 errored, of 6 finished."
+mutate_tally    {"out": "/work/app/.probatio/run"}
+  -> "First gap is me96bde61bf73 at src/calc.js:2. ... Add one test that fails on that mutant and passes on the code."
+```
 
-- `npm install probatio` installs a Node launcher and one platform binary. It does not install the TypeScript CLI or the `typescript` package.
-- The launcher ships Linux x64 (musl), macOS Apple silicon, macOS Intel, and Windows x64. The Windows package is `@iron_adamant/probatio-win32-x64`.
-- There is no Node 22.6 gate, and there is no `probatio-mcp` bin. The server is `probatio mcp`.
-- `help`, `--help`, and `-h` exit 0. `--version` and `-V` print the crate version.
-- `mutate run` and `ledger check` default `--suite-timeout-ms` to 120000. The TypeScript program defaulted both to 600000.
-- A batch of more than 30 mutants with no line map stops before the first mutant, including when the baseline took under five seconds.
-- Discovery names a command from a marker file at the package root. It does not require a test file to be present, and it does not look for `run_tests.sh`.
-
-### What a command prints
-
-Every command prints one JSON object and exits 0 only when `ok` is true. The object has `schemaVersion`, `ok`, `command`, `summary`, `next`, and `nextCall`. `schemaVersion` is 2. Read `summary` and `next`. Run `nextCall` as printed. It continues in the out directory it names.
-
-Kill lists and the full list of mutants that were not started are files under the out directory. They are not required on stdout. A home directory that appears in `summary` or `next` is written as `~`. The argv inside `nextCall` keeps its real paths.
+The same commands from a shell:
 
 ```bash
 probatio mutate generate --package . --out .probatio/generate
-probatio mutate run --package . --patches .probatio/generate --out .probatio/runs --suite-command 'cargo test'
-probatio mutate tally --out .probatio/runs
+probatio mutate run --package . --patches .probatio/generate --out .probatio/run
+probatio mutate tally --out .probatio/run
 ```
 
-### Generate, then run, then tally
+Each reply has `ok`, `summary`, `next`, and `nextCall` (the argv to run next, or null). `ok: false` is a stop: show `summary` and `next`.
 
-`mutate generate` walks the package and writes `mutants.json`. It does not run the suite. A mutant is a text replacement in a condition, a comparison, or a boolean. Strings and comments are left alone. The id comes from the file, the offset, the operator, and the replacement. The walk skips directories named `target`, `node_modules`, and `dist`, and anything whose name starts with `.`.
+## How it works
 
-`mutate run` needs `--package`, `--patches`, and `--out`. It runs the suite once on the unchanged code. That is the baseline. Then it scores mutants that do not already have a result file.
+1. **Generate** walks `src/` (or `src` you name) and writes `mutants.json`: text operators on conditions, comparisons, and booleans, never inside strings or comments. It runs no tests.
+2. **Run** finds the test command (your `suiteCommand`, then `.probatio.json`, then a marker such as `Cargo.toml`, `package.json`, `go.mod`, `pom.xml`, or `pytest.ini`) and runs it once on the unchanged code. A red baseline, a missing tool, or a suite that ran no tests stops here, with the last lines it printed. Then each mutant is applied in a worktree and the suite runs again.
+3. Each mutant is **killed** (a test failed), **survived** (a gap), **no coverage** (no test ran that line), **unviable** (did not build), **timeout**, or **error**. Kills are confirmed by rerunning the killing test twice unless you pass `confirm: false`.
+4. **Tally** lists the tests that killed something and the gaps with `file:line`. It works while a run is still going, so a second agent can read progress. It never deletes a test.
 
-`mutate tally` reads `results/*.json`. `deletedTests` is 0. `noKillsYet` lists names that saw no kill in this batch. It is not a list of tests to delete. Tally does not delete a file.
+More than 30 mutants with no line map stop before the first mutant: pass `serial: true`, or a line map that names tests per line. Python (`coverage.py`), Go, Node, Java (JaCoCo), and Rust (`cargo llvm-cov`) baselines write that map when the tool is installed. A run that is interrupted resumes with the same call. [docs/reference.md](docs/reference.md) has the detail, and [AGENTS.md](AGENTS.md) is the contract an agent follows.
 
-### Where the suite command comes from
+## Tool groups
 
-The first match wins:
+| Group | Tools | Overlaps with |
+| --- | --- | --- |
+| `core` (always on) | `mutate_generate`, `mutate_run`, `mutate_tally` | none |
+| `diagnostics` | `schema` | none |
+| `cli` | `probatio` (any CLI command by argv: ledger, golden, matrix, queue, check-kill, verify-change, ...) | none |
 
-1. `--suite-command`
-2. A non-empty `suiteCommand` string in `.probatio.json`
-3. A marker file at the package root
+No group overlaps another tool in the suite, so the shared names (`locks`, `notes`, `tasks`, `messages`, `history`) are not used. `tools/list` is 3553 bytes with every group on, 3108 with `cli` off, 3260 with `diagnostics` off, and 2815 with only `core`.
 
-`env` is an object of strings and is passed to the suite. `testLine` and `passLine` are regular expressions: a shell suite names a test from each `testLine` match, and a non-zero exit blames the last of those lines unless `passLine` was printed. Any other key is ignored. If the file is not valid JSON, or a pattern does not compile, the run stops and discovery is not used. The same is true of a `package.json` that is not valid JSON.
-
-Discovery does not launch the tool. It only names the command, from the package root:
-
-| Marker | Command |
-| --- | --- |
-| `go.mod` | `go test ./...` |
-| `Cargo.toml` | `cargo test` |
-| `pom.xml` | `mvn -B test` |
-| `package.json` with a non-empty `scripts.test` string | that string, as written |
-| any other `package.json` | `node --test` |
-| `pytest.ini` or `pyproject.toml` | `python3 -m pytest` |
-| `Package.swift` | `swift test` |
-| a root `.sln`, `.csproj`, or `.fsproj` | `dotnet test` |
-| `Makefile`, `makefile`, or `GNUmakefile` | `make test` |
-| `.mocharc.json`, `.mocharc.js`, `.mocharc.cjs`, `.mocharc.yml`, or `.mocharc.yaml` | `mocha` |
-| `CMakeLists.txt` | `ctest --output-on-failure` |
-| `test_*.py` in the package root, or in a direct child directory named `tests` | `python3 -m unittest discover` |
-| a root `.cob`, `.cbl`, or `.cobol` | `cobc -xj` |
-| a root `.c`, `.cc`, `.cpp`, `.h`, or `.hpp` | `make test` |
-| a root `.s`, `.S`, or `.asm` | `make test` |
-
-`Cargo.toml` is checked before `package.json`, so a package with both uses `cargo test`. If none of these markers is present, the run stops and asks for `--suite-command`.
-
-`pytest`, a path whose last component is `pytest` (including `.venv/bin/pytest`), and `python` or `python3` followed by `-m pytest` are run by a reporter shipped in the binary. Arguments after that program are passed through. `{tests}` and `{tests,}` stay tokens. The same Python programs followed by `-m unittest discover`, with an optional `-s` directory, use the unittest reporter. That run loads `test_*.py` by file path from the package root, from `tests/`, and from `test/`, including a folder with no `__init__.py`. `-s` limits the walk to the directory given. The reporter prints one JSON line, and that line decides the score. A test that ran and failed is a kill, including a failure whose exception is `ValueError`. A mutant that fails to load (`SyntaxError`, `IndentationError`, `ImportError`, or `ModuleNotFoundError`) is "did not build". On a pytest baseline, if `coverage.py` imports, Probatio writes `<out>/lines.json` and uses it as the line map. Names from that map are arguments to the reporter, and the command does not need a `{tests}` token. If `coverage.py` does not import, the map is not written, and more than 30 mutants still stop before the first mutant. A `--line-map` you pass is kept. `make test` stays on the process exit. It is also the command for C, COBOL, and assembly. When a mutant is scored from the process exit, a crash whose text contains `error:` can be filed as did not build.
-
-`{tests}` puts each selected name in single quotes. `{tests,}` joins the names with commas. A name may contain ASCII letters, digits, and `_` `-` `.` `/` `:`. Anything else is refused, and so is an empty name. The `suiteCommand` field on the envelope is the template, before the names are filled in. `baseline.json` stores that same template. A result written after the suite started stores the rendered line in `command`. A no-coverage result that never started the suite has no `command` field.
-
-When the package has `node_modules/.bin`, that directory is placed on the suite process `PATH`. That includes a mutant run from a git worktree or a copy. Both skip `node_modules` when they are created, and both get a symlink to the package `node_modules` when they do not already have one. The command string itself is not rewritten. A shell exit 127 whose text says `command not found` or `: not found` means the tool is missing on the baseline, and it is an error on a mutant. The first is bash. The second is dash, which is `/bin/sh` on Ubuntu. The binary does not download a toolchain.
-
-### What a result means
-
-- **killed**: a test the suite already had failed an assertion.
-- **survived**: a test ran the change and the suite did not notice. That is a gap.
-- **no coverage**: nothing executed that line. Leave it. There is no evidence either way.
-- **unviable**: the mutant failed to compile or link. The summary text says "did not build". A Node test file that no longer links counts here.
-- **timeout**: the suite clock ran out. The clock is the baseline's clock.
-- **error**: the suite process failed in some other way. Exit 127 with `command not found` or `: not found` is this.
-
-A killed mutant is an assertion failure. Golden checks and contract checks are what say the expected result is still the expected result.
-
-A red baseline, a baseline with no test report, a baseline timeout, or a missing tool stops before the first mutant. That envelope has no kill count.
-
-### When a run stops
-
-The suite runs in its own process group. When the deadline hits, the binary kills that group, including a grandchild that ignores `SIGTERM`. The default deadline is 120000 milliseconds. A Maven suite needs 600000 or more.
-
-Two limits both use the number 30. They are different limits.
-
-**Mutants in one call.** With no line map, more than 30 mutants waiting stops the run before the first mutant. A baseline under five seconds does not waive that stop. The ids go to `not-started.txt`. With a line map, one call scores every mutant that has no result yet. `--max-mutants`, `--budget-ms`, or `--max-minutes` can stop that call earlier, and `nextCall` continues in the same out directory. `--confirm-count` scores every mutant still waiting only when the number you pass equals that waiting count. The resume argv leaves `--confirm-count` off.
-
-**Names recorded for one mutant.** One mutant records at most 30 test names unless `--max-selected` raises the cap. The result says when the cap applied (`selectionCapped`, `selectedCount`). A line map that chooses tests still feeds every one of its names into the baseline command. The cap applies per mutant, after that.
-
-`--workers` defaults to 1. A higher value runs that many git worktrees at once, or that many copies when the package is not a git checkout.
-
-A green `baseline.json` is kept when its command template matches the new call. A different template runs the baseline again. A mutant that already has `results/<id>.json` is not run again. The checkout you started in is left as it was.
-
-### Naming tests with a line map
-
-A line map whose top-level value is a `files` object names the tests for a covered line:
+An operator sets `PROBATIO_TOOLS` (an allowlist; `core` is always added) or `PROBATIO_DISABLE` in the client's `env` block. Names are groups or tool names, commas or spaces, any case. An unknown name, or `core`, stops the server with one line on stderr and exit code 2.
 
 ```json
-{
-  "files": {
-    "src/A.java": [
-      {"start": 3, "end": 5, "tests": ["FooTest", "BarTest"]}
-    ]
-  }
-}
+{ "mcpServers": { "probatio": { "command": "npx", "args": ["-y", "probatio", "mcp"], "env": { "PROBATIO_DISABLE": "cli" } } } }
 ```
 
-`start` and `end` are inclusive, counting from line 1 of the unmutated file.
+### Choosing groups
 
-`{"lines":[1]}` is a permission slip. So is any other non-empty file that is not a `files` object, including a file that is not JSON. A permission slip allows a large batch. It does not choose tests. On the MCP tool, `serial: true` writes that slip at `<out>/lines.json` when you did not pass a map.
+An agent chooses the groups for a project with an `agent-tools` block in the `AGENTS.md` at the directory the server starts in. The server rereads the file when it changes and sends `notifications/tools/list_changed`, so no restart is needed. An env var wins over the file for the same key. A bad line in the file is ignored and named in the `initialize` instructions.
 
-An empty `{"files":{}}` does choose tests, and it names none of them. Every mutant in that run is no coverage, and the suite is not started for them.
+- Keep `core`. It is the campaign.
+- Turn off `cli` when the agent only runs campaigns: no ledger, golden, matrix, queue, or check-kill work.
+- Turn off `diagnostics` once the agent knows the flags; the tools' own schemas are enough for the MCP calls.
 
-A line the map lists with an empty `tests` array was executed, and the report named no test. The whole suite runs for that mutant. A line the map does not list is no coverage: duration 0, the suite does not start, and the result has no `command` field.
+The line to add, in a fenced block whose info string is `agent-tools`:
 
-When the map names at least one mutant, the suite command needs `{tests}` or `{tests,}`. Without a token, the run refuses after the green baseline and before it writes a result. These are the usual shapes:
-
-```bash
-mvn -B test -Dtest={tests,}
-cargo test {tests}
-python3 -m pytest {tests}
-node --test {tests}
+```text
+probatio: disable cli, diagnostics
 ```
 
-A line map written by the baseline to `<out>/lines.json` is the exception. A pytest map passes those names to the reporter, with no token in the command. A map from Go, Node, Java, or Rust runs the suite command as written when that command has no token, and records the names on the result. A line map you passed still needs the token when it names tests.
+## Benchmarks
 
-After a green baseline, and only when you did not pass `--line-map`, Probatio tries to write that file for these commands. It does not download a tool. If the report is missing, `baseline.json` records `lineMap` as an empty string, the large-batch stop still applies, and `next` names the tool. A failure of that second step leaves the baseline green.
-
-- `go test ./...` runs `go test -coverprofile=<out>/coverage-raw.out ./...`. A span with count 0 is not a hit. A span with count above 0 and no `# test` name runs the whole suite. A profile that already has `# test Name` keeps that name.
-- `node --test` runs `node --test --experimental-test-coverage`, with the report under the out directory. If Node rejects the flag, the baseline stays green and the map stays empty.
-- `mvn -B test`, or that command with a `{tests}` token: if `pom.xml` contains `jacoco` and `target/site/jacoco/jacoco.xml` exists, a line with `ci` above 0 is a hit. Otherwise the suite did not write a coverage report. The binary does not add a plugin and does not fetch an agent.
-- `cargo test`: if `cargo llvm-cov` is on `PATH`, its report is read. If it is not, `next` says so, and the green baseline stands.
-- pytest, including a venv path: the `coverage.py` map above. That map still names tests. Unittest does not grow a coverage tool.
-
-A map this binary writes does not stamp one list of test classes onto every line.
-
-A command that already contains a token, and that has no names, and whose map does not choose tests, refuses before the baseline.
-
-### The other commands
-
-Each of these does the work its name says, and the envelope is `ok: false` when that work did not succeed. `schema` with no argument lists the commands and, with a name, returns that command's JSON Schema from inside the binary, so it works outside this checkout. `check-kill` reapplies the mutant and reruns it. `mutate sealed` runs with the hidden test removed, checks the label file for `bug_id`, `issue_id`, and `expected_fail`, and does not restore the hidden test. `verify-change` mutates the lines a commit changed. `golden record` logs plain calls from the tests you name. `golden compare` asks whether that table kills what those tests kill, and it deletes nothing. `ledger build` reverts fix commits into forward patches and defaults `--commit` to HEAD. `ledger check` runs those patches again. A red ledger is not re-recorded away. `gap fix` records the guard. It does not invent the missing test. `status` writes `PROBATIO.md`.
-
-`git`, Maven, Go, Cargo, Node, and Python stay outside this binary.
-
-### Benchmarks
-
-Five runs of each command on one machine, median milliseconds with the min and max in parentheses. TypeScript is commit `c5cd175` (`node /tmp/probatio-ts/dist/cli.js`, Node 22.23.4). Rust is `target/release/probatio` from this checkout. The machine was Linux 6.12, x86_64, 4 cores, Intel Xeon, 16 GB. Peak RSS and the raw envelopes are in [scripts/benchmark_results.md](scripts/benchmark_results.md). Re-run with `python3 scripts/benchmark.py`.
+Five runs of each command on one machine, median milliseconds with the min and max in parentheses. TypeScript is commit `c5cd175` (`node /tmp/probatio-ts/dist/cli.js`, Node 22.23.4). Rust is `target/release/probatio` from this checkout. The machine was Linux 6.12, x86_64, 4 cores, Intel Xeon, 16 GB. Peak RSS and the raw envelopes are in [scripts/benchmark_results.md](scripts/benchmark_results.md). Re-run with `cargo run --release --example benchmark`.
 
 Kill counts matched on every scored run. `--no-confirm` is on for the run rows so the clock is the suite, not the confirmation rerun. The JS run was measured again after that command gained `--test-concurrency` and `--test-timeout`; the count stayed 2 killed and 4 survived. itsdangerous is Pallets itsdangerous at the depth-1 checkout used here: 10 mutants in 8 files, so `--max-mutants 20` did not drop any.
 
@@ -206,3 +108,12 @@ Kill counts matched on every scored run. `--no-confirm` is on for the run rows s
 | run, Python sample, `--workers 4`, same 2 killed | 805 (796–851) | 491 (471–495) |
 | generate, itsdangerous `src`, 10 mutants | 369 (360–371) | 21 (21–21) |
 | run, itsdangerous, 7 killed / 3 survived | 7568 (7528–7625) | 7003 (6995–7049) |
+
+## More
+
+- [AGENTS.md](AGENTS.md): the agent contract, including suite discovery, line maps, and every CLI command.
+- [docs/reference.md](docs/reference.md): what each command prints, discovery, results, stops, and line maps.
+- [MIGRATION.md](MIGRATION.md): differences from the TypeScript program (npm 0.3.0, branch `typescript-legacy`).
+- [CHANGELOG.md](CHANGELOG.md) and [docs/releasing.md](docs/releasing.md).
+
+MIT licensed.

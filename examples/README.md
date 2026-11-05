@@ -1,6 +1,6 @@
 # Examples
 
-Small suites Probatio can score. Each one is copied to a temp git repo by `tests/examples.test.ts`. A missing compiler skips that example with `missing tool: <name>`.
+Small suites Probatio can score. `expected.json` is the least each one should kill. `examples/node-ts` runs TypeScript tests with `node --test`, which needs Node 22.18 or later (type stripping on by default).
 
 ```bash
 npx probatio mutate generate --package examples/node-ts --src src --out .probatio/generate
