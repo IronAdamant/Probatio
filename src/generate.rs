@@ -77,7 +77,11 @@ pub fn generate(flags: &Flags) -> Envelope {
     let mut files_visited = 0usize;
     let mut budget_hit = walked.stopped || over(max_minutes);
     let mut source = if working_tree { "working-tree" } else { "commit" };
+    let mut reader = Reader::new(&package, commit, working_tree);
     for file in &files {
+        if limit.is_some_and(|limit| chosen.len() >= limit) {
+            break;
+        }
         if over(max_minutes) {
             budget_hit = true;
             break;
@@ -87,7 +91,10 @@ pub fn generate(flags: &Flags) -> Envelope {
         if rel.ends_with(".d.ts") {
             continue;
         }
-        let loaded = match file_text(&package, file, commit, working_tree) {
+        if !operators::kind_of(&rel) {
+            continue;
+        }
+        let loaded = match reader.read(&package, file) {
             Ok(value) => value,
             Err(message) => {
                 return Envelope::new(
@@ -99,9 +106,6 @@ pub fn generate(flags: &Flags) -> Envelope {
             }
         };
         source = loaded.source;
-        if !operators::kind_of(&rel) {
-            continue;
-        }
         let mut points = operators::scan(&rel, &loaded.text, wide);
         points = shuffle(points, &mut rng);
         let slice: Vec<Mutant> = if let Some(per_file) = per_file {
@@ -203,24 +207,76 @@ struct Loaded {
     source: &'static str,
 }
 
-fn file_text(package: &Path, file: &Path, commit: &str, working_tree: bool) -> Result<Loaded, String> {
-    if working_tree {
-        let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-        return Ok(Loaded { text, source: "working-tree" });
+/// Reads source files from the commit through one `git cat-file --batch` process.
+/// One `git show` per file cost a process start each, about 0.1 s apiece on Windows.
+struct Reader {
+    commit: String,
+    root: Option<PathBuf>,
+    batch: Option<(std::process::Child, std::io::BufReader<std::process::ChildStdout>)>,
+}
+
+impl Reader {
+    fn new(package: &Path, commit: &str, working_tree: bool) -> Reader {
+        let root = if working_tree { None } else { git_root(package) };
+        Reader { commit: commit.to_string(), root, batch: None }
     }
-    let Some(root) = git_root(package) else {
-        let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-        return Ok(Loaded { text, source: "working-tree" });
-    };
-    let rel = crate::run_options::git_relative(&root, file);
-    let spec = format!("{commit}:{rel}");
-    let output = Command::new("git").arg("-C").arg(&root).args(["show", &spec]).output().map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        let shown = rel_to(package, file);
-        return Err(format!("{shown} is not in {commit}. Pass --working-tree to read the checkout."));
+
+    fn read(&mut self, package: &Path, file: &Path) -> Result<Loaded, String> {
+        let Some(root) = self.root.clone() else {
+            let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
+            return Ok(Loaded { text, source: "working-tree" });
+        };
+        let rel = crate::run_options::git_relative(&root, file);
+        match self.blob(&root, &format!("{}:{rel}", self.commit))? {
+            Some(bytes) => Ok(Loaded { text: String::from_utf8_lossy(&bytes).into_owned(), source: "commit" }),
+            None => {
+                let shown = rel_to(package, file);
+                Err(format!("{shown} is not in {}. Pass --working-tree to read the checkout.", self.commit))
+            }
+        }
     }
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    Ok(Loaded { text, source: "commit" })
+
+    /// `None` when the commit has no such path.
+    fn blob(&mut self, root: &Path, spec: &str) -> Result<Option<Vec<u8>>, String> {
+        use std::io::{BufRead, Read, Write};
+        if self.batch.is_none() {
+            let mut child = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["cat-file", "--batch"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|error| format!("git did not start: {error}"))?;
+            let stdout = child.stdout.take().ok_or("git cat-file has no stdout")?;
+            self.batch = Some((child, std::io::BufReader::new(stdout)));
+        }
+        let (child, stdout) = self.batch.as_mut().ok_or("git cat-file did not start")?;
+        let stdin = child.stdin.as_mut().ok_or("git cat-file has no stdin")?;
+        writeln!(stdin, "{spec}").and_then(|_| stdin.flush()).map_err(|error| error.to_string())?;
+        let mut header = String::new();
+        stdout.read_line(&mut header).map_err(|error| error.to_string())?;
+        let mut fields = header.split_whitespace();
+        let (_, kind, size) = (fields.next(), fields.next(), fields.next());
+        if kind != Some("blob") {
+            return Ok(None);
+        }
+        let size: usize = size.and_then(|text| text.parse().ok()).ok_or_else(|| format!("git cat-file: {}", header.trim()))?;
+        let mut bytes = vec![0; size + 1];
+        stdout.read_exact(&mut bytes).map_err(|error| error.to_string())?;
+        bytes.truncate(size);
+        Ok(Some(bytes))
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        if let Some((mut child, _)) = self.batch.take() {
+            drop(child.stdin.take());
+            let _ = child.wait();
+        }
+    }
 }
 
 fn git_root(cwd: &Path) -> Option<PathBuf> {

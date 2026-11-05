@@ -246,6 +246,50 @@ pub fn kill_tree(pid: u32) {
     }
 }
 
+/// Stop `pid` and every descendant, including ones in their own process group.
+/// A suite runs in its own group so its deadline can kill it, which `kill_tree` on its parent
+/// does not reach on Unix. The MCP server uses this when a call is cancelled or the client leaves.
+pub fn kill_descendants(pid: u32) {
+    #[cfg(unix)]
+    {
+        let table = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid="])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        let pairs: Vec<(u32, u32)> = table
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace().filter_map(|field| field.parse::<u32>().ok());
+                Some((fields.next()?, fields.next()?))
+            })
+            .collect();
+        let mut tree = vec![pid];
+        let mut index = 0;
+        while index < tree.len() {
+            let parent = tree[index];
+            tree.extend(pairs.iter().filter(|(_, ppid)| *ppid == parent).map(|(child, _)| *child));
+            index += 1;
+        }
+        // Children first is not needed with SIGKILL. Each group goes too, for grandchildren
+        // that were already reparented.
+        for member in tree {
+            kill_tree(member);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn spawn_drain(pipe: Option<impl Read + Send + 'static>, into: Arc<Mutex<String>>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let Some(mut pipe) = pipe else { return };
@@ -331,6 +375,10 @@ pub fn windows_sh() -> Option<PathBuf> {
     static FOUND: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     FOUND
         .get_or_init(|| {
+            // Under Git Bash, `sh` is already on PATH with Git's tools beside it, and skips the wrapper.
+            if let Some(sh) = find_on_path("sh").filter(|path| !is_windows_system_dir(path)) {
+                return Some(sh);
+            }
             let mut roots: Vec<PathBuf> = Vec::new();
             if let Some(bash) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").map(PathBuf::from) {
                 roots.extend(bash.ancestors().skip(1).take(3).map(Path::to_path_buf));
@@ -354,7 +402,7 @@ pub fn windows_sh() -> Option<PathBuf> {
                     }
                 }
             }
-            find_on_path("sh").filter(|path| !is_windows_system_dir(path))
+            None
         })
         .clone()
 }

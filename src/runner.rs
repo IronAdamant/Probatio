@@ -623,6 +623,7 @@ pub fn run(flags: &Flags) -> Envelope {
     let waiting_path = out.join("not-started.txt");
     if still.is_empty() {
         let _ = fs::remove_file(&waiting_path);
+        remove_cargo_targets(&run_id, workers_n);
     } else {
         let _ = fs::write(&waiting_path, format!("{}\n", still.join("\n")));
     }
@@ -1120,6 +1121,7 @@ fn result_path(out: &Path, id: &str) -> PathBuf {
     out.join("results").join(format!("{id}.json"))
 }
 
+#[derive(Clone)]
 struct ScoreJob {
     mutant: LoadedMutant,
     rendered: String,
@@ -1199,6 +1201,16 @@ fn run_jobs(
 }
 
 fn score_job(job: &ScoreJob, git: bool, repo: &Path, package: &Path, run_id: &str, timeout: Duration, slot: &str) -> Scored {
+    let shared;
+    let job = match cargo_target_dir(job, run_id, slot) {
+        Some(dir) => {
+            let mut with_target = job.clone();
+            with_target.project_env.push(("CARGO_TARGET_DIR".into(), dir.display().to_string()));
+            shared = with_target;
+            &shared
+        }
+        None => job,
+    };
     if git {
         score_git(job, repo, package, run_id, timeout, slot)
     } else {
@@ -1227,6 +1239,28 @@ fn score_git(job: &ScoreJob, repo: &Path, package: &Path, run_id: &str, timeout:
     let scored = apply_and_run(job, &root, package, timeout);
     worktree::remove_worktree(repo, &dest);
     scored
+}
+
+/// A Cargo suite in a fresh worktree has no `target/`, so every mutant rebuilt the crate and
+/// its dependencies from nothing. One build directory per worker slot, kept for the run, makes
+/// each mutant after the first an incremental build. A caller's `CARGO_TARGET_DIR` wins.
+fn cargo_target_dir(job: &ScoreJob, run_id: &str, slot: &str) -> Option<PathBuf> {
+    let words = command_words(&job.rendered);
+    let cargo = words.first().is_some_and(|word| {
+        let name = file_name(word);
+        name == "cargo" || name == "cargo.exe"
+    });
+    let preset = std::env::var_os("CARGO_TARGET_DIR").is_some() || job.project_env.iter().any(|(key, _)| key == "CARGO_TARGET_DIR");
+    if !cargo || preset || job.unset.iter().any(|key| key == "CARGO_TARGET_DIR") {
+        return None;
+    }
+    Some(std::env::temp_dir().join(format!("probatio-cargo-{run_id}-{slot}")))
+}
+
+fn remove_cargo_targets(run_id: &str, slots: usize) {
+    for slot in 0..slots.max(1) {
+        let _ = fs::remove_dir_all(std::env::temp_dir().join(format!("probatio-cargo-{run_id}-{slot}")));
+    }
 }
 
 fn score_copy(job: &ScoreJob, package: &Path, timeout: Duration) -> Scored {
@@ -1454,13 +1488,19 @@ fn link_node_modules(package: &Path, dest: &Path) -> Result<(), String> {
     }
 }
 
+/// Never copied into a mutant's worktree or copy. `.probatio` is this tool's own output, which a
+/// campaign usually writes inside the package. Copying it grew with every result.
+pub(crate) fn skipped_in_copy(name: &str) -> bool {
+    matches!(name, ".git" | "target" | "node_modules" | "dist" | ".probatio")
+}
+
 fn copy_tree(src: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|error| error.to_string())?;
     for entry in fs::read_dir(src).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == ".git" || name == "target" || name == "node_modules" || name == "dist" {
+        if skipped_in_copy(&name) {
             continue;
         }
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
@@ -3027,6 +3067,66 @@ mod tests {
 
     /// The interpreter a test writes into a shell suite command. Forward slashes keep `sh` from
     /// reading a Windows path's backslashes as escapes.
+    fn job_for(rendered: &str, project_env: Vec<(String, String)>) -> ScoreJob {
+        ScoreJob {
+            mutant: LoadedMutant {
+                id: "m1".into(),
+                file: "src/lib.rs".into(),
+                start: 0,
+                end: 1,
+                original: "a".into(),
+                replacement: "b".into(),
+                tests: Vec::new(),
+                line: Some(1),
+            },
+            rendered: rendered.into(),
+            launch: None,
+            path: PathBuf::from("results/m1.json"),
+            selection: decide::Selection { tests: Vec::new(), selected_count: 0, capped: false },
+            confirm: true,
+            hide: Vec::new(),
+            direction: crate::run_options::Direction::Auto,
+            unset: Vec::new(),
+            build: None,
+            agent: String::new(),
+            commit: None,
+            overlay: true,
+            mutant_hash: String::new(),
+            project_env,
+        }
+    }
+
+    #[test]
+    fn a_cargo_suite_shares_one_build_directory_per_worker() {
+        if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+            return;
+        }
+        let first = cargo_target_dir(&job_for("cargo test {tests}", Vec::new()), "abc", "0").unwrap();
+        assert!(first.ends_with("probatio-cargo-abc-0"), "{}", first.display());
+        assert!(cargo_target_dir(&job_for("cargo test", Vec::new()), "abc", "1").unwrap().ends_with("probatio-cargo-abc-1"));
+        assert!(cargo_target_dir(&job_for("npm test", Vec::new()), "abc", "0").is_none());
+        let preset = vec![("CARGO_TARGET_DIR".to_string(), "/x".to_string())];
+        assert!(cargo_target_dir(&job_for("cargo test", preset), "abc", "0").is_none());
+    }
+
+    #[test]
+    fn a_copy_skips_probatio_output_and_build_folders() {
+        let src = temp("copy-skip");
+        for dir in [".probatio/run", "target/debug", "src"] {
+            fs::create_dir_all(src.join(dir)).unwrap();
+        }
+        fs::write(src.join(".probatio/run/baseline.json"), "{}").unwrap();
+        fs::write(src.join("target/debug/x"), "").unwrap();
+        fs::write(src.join("src/keep.rs"), "").unwrap();
+        let dest = temp("copy-skip-dest");
+        copy_tree(&src, &dest).unwrap();
+        assert!(dest.join("src/keep.rs").is_file());
+        assert!(!dest.join(".probatio").exists());
+        assert!(!dest.join("target").exists());
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dest);
+    }
+
     fn shell_python() -> String {
         bare_python("python3").replace('\\', "/")
     }
