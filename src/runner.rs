@@ -3592,7 +3592,8 @@ mod tests {
     #[test]
     fn the_contract_names_the_discovery_markers() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        // The README points newcomers at docs/reference.md, which carries the discovery table.
+        let readme = fs::read_to_string(root.join("docs/reference.md")).unwrap();
         let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
         for text in [&readme, &agents] {
             assert!(text.contains("Package.swift"), "{text}");

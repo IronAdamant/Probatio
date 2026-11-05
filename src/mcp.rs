@@ -217,7 +217,7 @@ impl Surface {
     }
 
     pub fn is_enabled(&self, tool: &str) -> bool {
-        self.enabled.iter().any(|name| *name == tool)
+        self.enabled.contains(&tool)
     }
 
     pub fn enabled(&self) -> &[&'static str] {
@@ -337,7 +337,7 @@ fn agent_tools_lines(markdown: &str) -> Vec<(String, Vec<String>)> {
             } else if inside {
                 let line = trimmed.split('#').next().unwrap_or("").trim();
                 let Some((tool, rest)) = line.split_once(':') else { continue };
-                if tool.trim().to_ascii_lowercase() != "probatio" {
+                if !tool.trim().eq_ignore_ascii_case("probatio") {
                     continue;
                 }
                 let rest = rest.trim();
