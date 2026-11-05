@@ -20,7 +20,7 @@ Added:
 Changed:
 
 - MCP text replies are compact JSON, about a third smaller. `initialize` no longer repeats the tool list.
-- `mutate generate` reads the commit through one `git cat-file --batch` process and stops walking at `--max-mutants`. On a copy of Relatum on Windows: 2786 ms to 96 ms.
+- `mutate generate` reads the commit through one `git cat-file --batch` process and stops walking at `--max-mutants`. On a copy of Relatum on Windows, through MCP: 2786 ms to 35 ms.
 - A `cargo` suite shares one `CARGO_TARGET_DIR` per worker for the run, so mutants after the first are incremental builds. Relatum, 4 mutants with confirm on: 113 s to 105 s, 13-20 s per mutant (was 16-28 s). A `CARGO_TARGET_DIR` you set wins.
 - Worktrees and copies skip `.probatio`.
 - A refused baseline ends `next` with the last lines the suite printed.
