@@ -6,6 +6,14 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## 0.8.1 - 2026-11-12
+
+0.8.0's code, released. The `v0.8.0` tag has no GitHub release and nothing was published from it: the release workflow's macOS builds were cancelled with "The configuration 'macos-14-arm64-us-default' is not supported", so the release and publish jobs did not run.
+
+Fixed:
+
+- The release workflow builds both Apple targets on `macos-latest` (the image `test.yml` runs on) instead of `macos-14`, which GitHub no longer runs.
+
 ## 0.8.0 - 2026-11-11
 
 Fixes from Specula's M5 lanes, where Probatio found real gaps but `mutate_diff` died at Claude Code's 30-minute MCP timeout on large crates (about five times), scored test code and unrelated lines, and left worktrees and `.probatio/` folders behind. `schemaVersion` stays 2: fields were added, none renamed or removed. MIGRATION.md has a row for each behaviour change.

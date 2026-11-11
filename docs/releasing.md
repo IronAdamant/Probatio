@@ -1,6 +1,6 @@
 # Releasing Probatio
 
-The program is the Rust binary. The crate version is 0.8.0. `README.md` and `AGENTS.md` are the contract. Changelog entries through 0.3.0 describe the TypeScript program.
+The program is the Rust binary. The crate version is 0.8.1. `README.md` and `AGENTS.md` are the contract. Changelog entries through 0.3.0 describe the TypeScript program.
 
 A release needs a green `cargo test` on Linux, macOS, and Windows, and a reason in the CHANGELOG. The version string is the same in `Cargo.toml`, `Cargo.lock`, `server.json`, the npm `package.json` files, the README, and the CHANGELOG. The MCP server reports `CARGO_PKG_VERSION`. `probatio --version` prints that same version.
 
