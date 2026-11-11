@@ -243,11 +243,20 @@ impl Slot {
             self.manifest.remove(rel);
             return Ok(());
         };
-        if !meta.is_file() {
-            return Ok(());
-        }
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("{} could not be created: {error}", parent.display()))?;
+        }
+        if meta.file_type().is_symlink() {
+            // A tracked symlink stays a link to the same target, as a checkout would make it.
+            if fs::symlink_metadata(&to).is_err() {
+                if let Ok(target) = fs::read_link(&from) {
+                    link_like(&from, &target, &to);
+                }
+            }
+            return Ok(());
+        }
+        if !meta.is_file() {
+            return Ok(());
         }
         clear_readonly(&to);
         fs::copy(&from, &to).map_err(|error| format!("{rel} could not be copied into the mutant tree: {error}"))?;
@@ -347,6 +356,26 @@ fn walk_with(root: &Path, skip: bool) -> Vec<String> {
     out
 }
 
+/// A symlink at `to` with the same target as `from`. Windows needs Developer Mode or admin for a
+/// symlink; without it, a link to a file is copied as that file.
+fn link_like(from: &Path, target: &Path, to: &Path) {
+    #[cfg(unix)]
+    {
+        let _ = (from, std::os::unix::fs::symlink(target, to));
+    }
+    #[cfg(windows)]
+    {
+        let made = if from.is_dir() { std::os::windows::fs::symlink_dir(target, to) } else { std::os::windows::fs::symlink_file(target, to) };
+        if made.is_err() && from.is_file() {
+            let _ = fs::copy(from, to);
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (from, target, to);
+    }
+}
+
 fn stat(path: &Path) -> Option<(u64, SystemTime)> {
     let meta = fs::symlink_metadata(path).ok()?;
     meta.is_file().then(|| (meta.len(), meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
@@ -443,7 +472,9 @@ pub fn sweep(source: &Path) -> Vec<String> {
     if let Ok(keys) = fs::read_dir(&root) {
         for key in keys.flatten() {
             let key_dir = key.path();
-            if !key_dir.is_dir() {
+            let name = key.file_name().to_string_lossy().into_owned();
+            // Only checkout keys (16 hex digits); `jobs/` and anything else is left alone.
+            if !key_dir.is_dir() || name.len() != 16 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 continue;
             }
             let mine = key.file_name().to_string_lossy() == own;
@@ -634,6 +665,8 @@ mod tests {
         fs::write(repo.join(".gitignore"), "big/\n").unwrap();
         fs::write(repo.join("src/a.rs"), "one\n").unwrap();
         fs::write(repo.join("keep.txt"), "keep\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("src/a.rs", repo.join("link.rs")).unwrap();
         git_ok(&repo, &["add", "."]);
         git_ok(&repo, &["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-q", "-m", "init"]);
         fs::write(repo.join("big/cache.bin"), "ignored\n").unwrap();
@@ -650,6 +683,8 @@ mod tests {
         assert_eq!(mtime(&tree.join("src/a.rs")), old);
         assert!(tree.join("new.rs").is_file() && tree.join(".git").exists());
         assert!(!tree.join("big").exists(), "an ignored folder was copied");
+        #[cfg(unix)]
+        assert_eq!(fs::read_link(tree.join("link.rs")).unwrap(), Path::new("src/a.rs"), "a tracked symlink is a link in the tree");
 
         slot.mark_dirty("src/a.rs");
         fs::write(tree.join("src/a.rs"), "MUTATED\n").unwrap();
