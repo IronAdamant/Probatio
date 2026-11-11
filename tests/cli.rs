@@ -1,5 +1,7 @@
 //! Launch the shipped binary. The parser is the library the binary uses.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -9,7 +11,7 @@ use std::time::Duration;
 use probatio::json;
 
 fn launch(args: &[&str]) -> (i32, String) {
-    let output = output_with_deadline(Command::new(env!("CARGO_BIN_EXE_probatio")).args(args), Duration::from_secs(90), args);
+    let output = output_with_deadline(probatio_command().args(args), Duration::from_secs(90), args);
     let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
     let code = output.status.code().unwrap_or(1);
     (code, stdout)
@@ -145,7 +147,7 @@ fn a_windows_path_is_legal_json() {
 
 #[test]
 fn mcp_lists_tools_and_a_serial_run_starts() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+    let mut child = probatio_command()
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -173,12 +175,12 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
+    assert_eq!(names, ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema", "probatio"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
 
-    let root = std::env::temp_dir().join(format!("probatio-mcp-{}", std::process::id()));
+    let root = common::TempDir::new("mcp");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     let mut source = String::from("class A {\n");
@@ -259,8 +261,8 @@ fn result_count(out: &std::path::Path) -> usize {
     std::fs::read_dir(out.join("results")).map(|entries| entries.count()).unwrap_or(0)
 }
 
-fn java_package(name: &str, ands: usize) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("probatio-cli-{name}-{}", std::process::id()));
+fn java_package(name: &str, ands: usize) -> common::TempDir {
+    let root = common::TempDir::new(&format!("cli-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     let mut body = String::from("class A {\n  boolean f(boolean a, boolean b) {\n");
@@ -899,8 +901,9 @@ fn shipped_run_uses_node_bin_from_scripts_test() {
     assert!(baseline.contains("\"green\""), "{baseline}");
     assert!(baseline.contains("probatio-local-ok"), "{baseline}");
     let lines = marker_lines(&marker);
-    assert!(lines.iter().any(|line| line.contains("probatio-cli-nodebin-")), "{lines:?}");
-    assert!(lines.iter().any(|line| line.contains("probatio-copy-")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cli-nodebin-")), "{lines:?}");
+    // A mutant ran in its slot's tree in the mutant cache.
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/tree")), "{lines:?}");
     assert_survived_mutants(&out);
     assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0), "{value:?}");
 
@@ -971,11 +974,9 @@ fn shipped_run_uses_node_bin_from_a_git_worktree() {
     assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(true), "{value:?}");
     assert_named_suite(&value, "probatio-local-ok");
     let lines = marker_lines(&marker);
-    assert!(lines.iter().any(|line| line.contains("probatio-cli-nodegit-")), "{lines:?}");
-    assert!(
-        lines.iter().any(|line| line.contains("probatio-") && line.ends_with("-0") && !line.contains("probatio-cli-") && !line.contains("probatio-copy-")),
-        "{lines:?}"
-    );
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cli-nodegit-")), "{lines:?}");
+    // A mutant ran in the slot's worktree in the mutant cache.
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/0/tree")), "{lines:?}");
     assert_survived_mutants(&out);
     assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0), "{value:?}");
 
@@ -1100,7 +1101,8 @@ fn shipped_run_uses_a_files_map_and_records_the_command() {
     }
     assert!(spawned >= 1, "{value:?}");
     assert!(uncovered >= 1, "{value:?}");
-    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), spawned + 1);
+    // The baseline, one unmutated run in the mutant tree, and each spawned mutant.
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), spawned + 2);
     assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0));
 
     let stopped_out = root.join("stopped");
@@ -1265,7 +1267,7 @@ fn mcp_exits_2_on_an_unknown_or_core_group_in_the_env() {
         ("PROBATIO_TOOLS", "mutate", "PROBATIO_TOOLS: unknown group \"mutate\"; groups: "),
         ("PROBATIO_DISABLE", "core", "PROBATIO_DISABLE: group \"core\" is always on and cannot be disabled"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_probatio"))
+        let output = probatio_command()
             .arg("mcp")
             .env(key, value)
             .stdin(Stdio::null())
@@ -1281,10 +1283,10 @@ fn mcp_exits_2_on_an_unknown_or_core_group_in_the_env() {
 
 #[test]
 fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
-    let dir = std::env::temp_dir().join(format!("probatio-mcp-agents-{}", std::process::id()));
+    let dir = common::TempDir::new("mcp-agents");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+    let mut child = probatio_command()
         .arg("mcp")
         .current_dir(&dir)
         .env_remove("PROBATIO_TOOLS")
@@ -1302,14 +1304,14 @@ fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
         other => panic!("{other:?}"),
     };
     let first = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
-    assert_eq!(count(&first), 6);
+    assert_eq!(count(&first), 8);
     std::fs::write(dir.join("AGENTS.md"), "```agent-tools\nprobatio: disable cli, diagnostics\n```\n").unwrap();
     let notice = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
     assert_eq!(notice.get("method").and_then(json::Value::as_str), Some("notifications/tools/list_changed"), "{notice:?}");
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let second = json::parse(line.trim()).unwrap();
-    assert_eq!(count(&second), 4);
+    assert_eq!(count(&second), 6);
     let refused = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{}}}"#);
     let text = json::stringify_compact(&refused);
     assert!(text.contains("is disabled (group \\\"diagnostics\\\") by the probatio: disable line in AGENTS.md"), "{text}");
@@ -1322,14 +1324,14 @@ fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
 /// cannot keep scoring in a worktree after the session is gone.
 #[test]
 fn mcp_stops_a_running_call_when_the_client_leaves() {
-    let root = std::env::temp_dir().join(format!("probatio-mcp-leave-{}", std::process::id()));
+    let root = common::TempDir::new("mcp-leave");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/A.java"), "class A { boolean f(boolean a, boolean b) { return a && b; } }\n").unwrap();
     let marker = root.join("finished.txt");
     let (code, generated) = launch(&["mutate", "generate", "--package", &root.display().to_string(), "--out", &root.join("patches").display().to_string()]);
     assert_eq!(code, 0, "{generated}");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+    let mut child = probatio_command()
         .arg("mcp")
         .current_dir(&root)
         .stdin(Stdio::piped())
@@ -1364,14 +1366,14 @@ fn mcp_stops_a_running_call_when_the_client_leaves() {
 /// a job object on Windows, a parent check in the child on Unix.
 #[test]
 fn mcp_stops_a_running_call_when_only_the_server_is_killed() {
-    let root = std::env::temp_dir().join(format!("probatio-mcp-killed-{}", std::process::id()));
+    let root = common::TempDir::new("mcp-killed");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/A.java"), "class A { boolean f(boolean a, boolean b) { return a && b; } }\n").unwrap();
     let marker = root.join("finished.txt");
     let (code, generated) = launch(&["mutate", "generate", "--package", &root.display().to_string(), "--out", &root.join("patches").display().to_string()]);
     assert_eq!(code, 0, "{generated}");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_probatio"))
+    let mut child = probatio_command()
         .arg("mcp")
         .current_dir(&root)
         .stdin(Stdio::piped())
@@ -1398,4 +1400,11 @@ fn mcp_stops_a_running_call_when_only_the_server_is_killed() {
     assert!(!marker.exists(), "the suite kept running after the server was killed");
     drop(stdin);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The binary, with its mutant cache in the temp folder instead of the user's cache folder.
+fn probatio_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_probatio"));
+    command.env("PROBATIO_CACHE_DIR", std::env::temp_dir().join("probatio-test-cache"));
+    command
 }

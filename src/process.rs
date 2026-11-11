@@ -467,24 +467,132 @@ pub fn run_shell_prepared(
     unset: &[&str],
 ) -> TimedRun {
     let path = suite_path(bin_root, dir);
-    let (program, args) = shell_argv(script);
-    run_group_with_path(&program, &args, dir, timeout, path, env, unset)
+    let (program, args, script_env) = shell_argv(script);
+    let mut env: Vec<(&str, &str)> = env.to_vec();
+    if let Some(value) = &script_env {
+        env.push((SCRIPT_ENV, value.as_str()));
+    }
+    run_group_with_path(&program, &args, dir, timeout, path, &env, unset)
 }
 
-/// The POSIX shell and its arguments for a suite command.
+/// Windows: the suite command reaches Git's `sh` through this variable, not the command line.
+pub const SCRIPT_ENV: &str = "PROBATIO_SUITE_SCRIPT";
+
+/// Windows: what `sh -c` runs. The MSYS runtime parses a Windows command line with its own
+/// backslash rules before `sh` sees it, so a script passed as an argument lost a level of
+/// backslashes there and another in `sh`. An environment value is not parsed, so the script
+/// arrives as written and `sh` reads it once, the way it does on Linux and macOS.
+#[cfg(windows)]
+const EVAL_SCRIPT: &str = "probatio_script=$PROBATIO_SUITE_SCRIPT; unset PROBATIO_SUITE_SCRIPT; eval \"$probatio_script\"";
+
+/// The POSIX shell, its arguments, and on Windows the script to pass in `SCRIPT_ENV`.
 /// Windows has no `sh` on the default `PATH`, so Git for Windows' shell is found from `git.exe`.
 /// With no Git shell at all, `cmd /C` runs the command as written.
-pub fn shell_argv(script: &str) -> (String, Vec<String>) {
+pub fn shell_argv(script: &str) -> (String, Vec<String>, Option<String>) {
     #[cfg(windows)]
     {
         if let Some(sh) = windows_sh() {
-            return (sh.display().to_string(), vec!["-c".into(), script.into()]);
+            return (sh.display().to_string(), vec!["-c".into(), EVAL_SCRIPT.into()], Some(keep_windows_backslashes(script)));
         }
-        ("cmd".into(), vec!["/D".into(), "/S".into(), "/C".into(), script.into()])
+        ("cmd".into(), vec!["/D".into(), "/S".into(), "/C".into(), script.into()], None)
     }
     #[cfg(not(windows))]
     {
-        ("sh".into(), vec!["-c".into(), script.into()])
+        ("sh".into(), vec!["-c".into(), script.into()], None)
+    }
+}
+
+/// A Windows path written without quotes in a suite command, such as `--target-dir C:\x\target`,
+/// reaches `sh`, which reads each `\` outside quotes as an escape and drops it (`C:xtarget`).
+/// On Windows such a backslash is a path separator, so it is doubled before `sh` sees it. A
+/// backslash that escapes a character `sh` gives meaning to (a space, a quote, `$`, `\` itself, an
+/// operator) is left alone, and so is everything inside quotes: `sh` keeps a backslash in double
+/// quotes before an ordinary character, and single quotes keep everything.
+pub fn keep_windows_backslashes(script: &str) -> String {
+    let chars: Vec<char> = script.chars().collect();
+    let mut out = String::with_capacity(script.len() + 8);
+    let mut single = false;
+    let mut double = false;
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if single {
+            if ch == '\'' {
+                single = false;
+            }
+            out.push(ch);
+            index += 1;
+            continue;
+        }
+        if ch == '\\' {
+            let next = chars.get(index + 1).copied();
+            let path_char = next.is_some_and(|next| next.is_ascii_alphanumeric() || matches!(next, '.' | '_' | '-' | '+' | ',' | '@' | '%' | ':'));
+            if !double && path_char {
+                out.push_str("\\\\");
+                index += 1;
+                continue;
+            }
+            // An escape `sh` reads (or any backslash inside double quotes, which `sh` keeps
+            // before an ordinary character): the pair goes through untouched.
+            out.push(ch);
+            if let Some(next) = next {
+                out.push(next);
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        if ch == '\'' && !double {
+            single = true;
+        } else if ch == '"' {
+            double = !double;
+        }
+        out.push(ch);
+        index += 1;
+    }
+    out
+}
+
+/// True while a process with this id is running. An id can be reused after its process exits, so
+/// a stale lock can read as live until that id is free again; that only delays a cleanup.
+pub fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        // Signal 0 checks existence. EPERM (another user's process) still means it exists.
+        let result = unsafe { kill(pid as i32, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(1)
+    }
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+        const QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let handle = OpenProcess(QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                // Access denied (5) still means the process exists. A free id is error 87.
+                return std::io::Error::last_os_error().raw_os_error() == Some(5);
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            ok != 0 && code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
     }
 }
 
@@ -590,7 +698,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn deadline_kills_a_grandchild_that_ignores_sigterm() {
-        let dir = std::env::temp_dir().join(format!("probatio-kill-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("kill");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let pid_path = dir.join("grand.pid");
@@ -628,7 +736,7 @@ mod tests {
     /// Windows runs this too: a `:`-joined `PATH` there split `C:\...` and lost every entry.
     #[test]
     fn a_local_node_bin_is_on_the_suite_path() {
-        let dir = std::env::temp_dir().join(format!("probatio-bin-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("bin");
         let _ = fs::remove_dir_all(&dir);
         let bin = dir.join("node_modules/.bin");
         fs::create_dir_all(&bin).unwrap();
@@ -649,7 +757,7 @@ mod tests {
         assert!(result.spawned, "{}", result.stderr);
         assert_eq!(result.status, Some(0), "{}", result.stderr);
         assert!(result.stdout.contains("from-local-bin"), "{}", result.stdout);
-        let work = std::env::temp_dir().join(format!("probatio-binwork-{}", std::process::id()));
+        let work = crate::testdir::TempDir::new("binwork");
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(&work).unwrap();
         let from_package = run_shell_with_bin_root("probatio-local-ok", Some(&work), Some(&dir), Duration::from_secs(5));
@@ -671,14 +779,37 @@ mod tests {
     /// `git.exe` even when `sh` is not on `PATH`, and never WSL's `System32\bash.exe`.
     #[test]
     fn the_suite_shell_is_posix() {
-        let (program, args) = shell_argv("echo $((1 + 2))");
-        assert_eq!(args.last().map(String::as_str), Some("echo $((1 + 2))"));
+        let (program, args, script) = shell_argv("echo $((1 + 2))");
+        assert_eq!(script.as_deref().or(args.last().map(String::as_str)), Some("echo $((1 + 2))"));
         if cfg!(windows) && program == "cmd" {
             return;
         }
         assert!(!program.to_ascii_lowercase().contains("system32"), "{program}");
         let result = run_shell("echo $((1 + 2))", None, Duration::from_secs(10));
         assert_eq!(result.stdout.trim(), "3", "{program}: {}", result.stderr);
+    }
+
+    /// Specula M5: `cargo test --target-dir C:\x\target` lost its backslashes in `sh`.
+    #[test]
+    fn a_windows_path_keeps_its_backslashes() {
+        assert_eq!(keep_windows_backslashes(r"cargo test --target-dir C:\x\target"), r"cargo test --target-dir C:\\x\\target");
+        let left = r#"echo "C:\x" 'C:\y' a\ b \$HOME \\ \"q\""#;
+        assert_eq!(keep_windows_backslashes(left), left);
+        if cfg!(windows) && shell_argv("x").0 != "cmd" {
+            let dir = std::env::temp_dir();
+            let result = run_shell(r"printf '%s|' C:\Users\x\target --target-dir=D:\a\b", Some(&dir), Duration::from_secs(10));
+            assert_eq!(result.stdout, r"C:\Users\x\target|--target-dir=D:\a\b|", "{}", result.stderr);
+        }
+    }
+
+    #[test]
+    fn this_process_is_alive_and_a_finished_child_is_not() {
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0));
+        let mut child = if cfg!(windows) { Proc::new("cmd").args(["/C", "exit"]).spawn().unwrap() } else { Proc::new("true").spawn().unwrap() };
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!pid_alive(pid), "pid {pid} still reads alive after it exited");
     }
 
     #[test]

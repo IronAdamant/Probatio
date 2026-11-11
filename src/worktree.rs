@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn resume_removes_a_leftover_probatio_worktree() {
-        let root = std::env::temp_dir().join(format!("probatio-wt-root-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("wt-root");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         git_ok(&root, &["init"]);

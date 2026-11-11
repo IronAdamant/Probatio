@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn build_records_a_clean_revert_and_a_red_file_is_not_rewritten() {
-        let root = std::env::temp_dir().join(format!("probatio-ledger-build-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("ledger-build");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         let git = |args: &[&str]| {

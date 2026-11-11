@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_gap_names_its_file_and_line_and_an_unnamed_kill_is_counted() {
-        let out = std::env::temp_dir().join(format!("probatio-tally-{}", std::process::id()));
+        let out = crate::testdir::TempDir::new("tally");
         let _ = fs::remove_dir_all(&out);
         fs::create_dir_all(out.join("results")).unwrap();
         fs::write(out.join("results/m1.json"), r#"{"id":"m1","file":"src/cli.rs","line":161,"outcome":"survived","tests":[]}"#).unwrap();
@@ -361,7 +361,7 @@ mod progress_tests {
 
     #[test]
     fn a_tally_during_a_run_counts_what_is_still_waiting() {
-        let out = std::env::temp_dir().join(format!("probatio-tally-live-{}", std::process::id()));
+        let out = crate::testdir::TempDir::new("tally-live");
         let _ = fs::remove_dir_all(&out);
         fs::create_dir_all(out.join("patches")).unwrap();
         fs::write(

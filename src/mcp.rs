@@ -7,16 +7,17 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::jobs;
 use crate::json::{self, Value};
 
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 const LINE_MAP_BODY: &str = "{\"lines\":[1]}\n";
 
-const INSTRUCTIONS: &str = "Probatio scores a test suite: it makes one small code change (a mutant) at a time in a git worktree or temp copy, runs the project's own tests, and records whether a test failed. The package is never edited. After editing code, call mutate_diff: it scores only the changed lines and names the untested ones. For a whole package, call mutate_generate, then mutate_run with patches set to the generate out, then mutate_tally. Read summary and next in each reply; ok false means stop and show them.";
+const INSTRUCTIONS: &str = "Probatio finds changed lines no test checks, which grep and coverage cannot: it makes one small code change (a mutant) at a time in a separate tree, runs the project's own tests, and records whether a test failed. The package is never edited. After editing code, call mutate_diff: it scores only the changed lines (test code skipped) and names the untested ones. For a whole package: mutate_generate, then mutate_run, then mutate_tally. Calls that run tests are jobs: a reply within waitSeconds (default 20) is the result; otherwise it carries job_id, and job_status (waitSeconds up to 600) returns the result when the run ends. cancel_job stops one. Read summary and next in each reply; ok false means stop and show them.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -55,50 +56,57 @@ struct ToolSpec {
 const CORE: &str = "core";
 const GROUPS: &[&str] = &["core", "diagnostics", "cli"];
 
+const WAIT_HELP: &str = "Seconds to wait for the result (0-600, default 20). Past that the reply has job_id; the run goes on.";
+
 const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "mutate_diff",
         group: CORE,
-        description: "Start here after editing code. Mutates only the lines changed since `since` (default HEAD: uncommitted edits), runs the project's tests on each mutant in a worktree, and returns survivors: changed lines no test checks, with the change that went unnoticed. The package is not edited. Call again after adding a test.",
+        description: "Use after editing code: names changed lines no test checks, which grep and coverage cannot. Mutates only lines changed since `since` (test code skipped), runs the tests per mutant in a separate tree, returns survivors (file:line, the unnoticed change). Package not edited. Reply within waitSeconds is the result, else job_id for job_status. Call again after adding a test.",
         props: &[
-            Prop { key: "package", kind: Kind::Str, help: "Project directory (inside a git checkout)." },
-            Prop { key: "since", kind: Kind::Str, help: "Git ref to diff against. Default HEAD; main scores a whole branch." },
+            Prop { key: "package", kind: Kind::Str, help: "Project directory you edited, in a git checkout; a workspace member is fine." },
+            Prop { key: "since", kind: Kind::Str, help: "HEAD (default): uncommitted edits. main: this branch's changes, from its merge-base. Or A..HEAD, A...HEAD." },
             Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root." },
             Prop { key: "timeoutMs", kind: Kind::Int, help: "Clock for the baseline and each mutant. Default 120000." },
             Prop { key: "maxMutants", kind: Kind::Int, help: "Most mutants scored. Default 30." },
             Prop { key: "confirm", kind: Kind::Bool, help: "Rerun the killing test twice before counting a kill. Default true." },
+            Prop { key: "includeTests", kind: Kind::Bool, help: "Also mutate test code (tests/, benches/, test files, #[cfg(test)]). Default false." },
+            Prop { key: "out", kind: Kind::Str, help: "Output directory. Default <project root>/.probatio/diff/<package path>." },
+            Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
         required: &["package"],
     },
     ToolSpec {
         name: "mutate_generate",
         group: CORE,
-        description: "Write mutants (one small code change each) for a package to <out>/mutants.json. Runs no tests. Next: mutate_run with patches set to this out.",
+        description: "Write mutants (one small code change each) for a whole package to <out>/mutants.json, skipping test code. Runs no tests. Next: mutate_run with patches set to this out.",
         props: &[
             Prop { key: "package", kind: Kind::Str, help: "Project directory." },
-            Prop { key: "out", kind: Kind::Str, help: "Output directory, usually <package>/.probatio/generate." },
+            Prop { key: "out", kind: Kind::Str, help: "Output directory, usually <project root>/.probatio/generate." },
             Prop { key: "src", kind: Kind::Str, help: "Subdirectory of package to mutate. Default src." },
             Prop { key: "maxMutants", kind: Kind::Int, help: "Stop after this many mutants." },
+            Prop { key: "includeTests", kind: Kind::Bool, help: "Also mutate test code. Default false." },
         ],
         required: &["package", "out"],
     },
     ToolSpec {
         name: "mutate_run",
         group: CORE,
-        description: "Run the suite once as a baseline, then once per mutant in a worktree or temp copy, and record killed (a test failed), survived (a gap), or no coverage. The package is not edited. A red baseline, a missing tool, or over 30 mutants with no line map stops with no score; serial=true allows a large batch. The same call resumes an interrupted run.",
+        description: "Score mutate_generate's mutants: a baseline run, then one per mutant in a separate tree; records killed, survived (a gap), did not build, or no coverage. Package not edited. A red baseline, a missing tool, or over 30 mutants with no line map stops with no score; serial=true allows a large batch. Reply within waitSeconds is the result, else job_id for job_status. The same call resumes.",
         props: &[
             Prop { key: "package", kind: Kind::Str, help: "Project directory." },
             Prop { key: "patches", kind: Kind::Str, help: "The mutate_generate out directory." },
-            Prop { key: "out", kind: Kind::Str, help: "Results directory, usually <package>/.probatio/run. Reuse it to resume." },
+            Prop { key: "out", kind: Kind::Str, help: "Results directory, usually <project root>/.probatio/run. Reuse it to resume." },
             Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root (cargo test, go test ./..., npm test, python3 -m pytest, ...)." },
             Prop { key: "timeoutMs", kind: Kind::Int, help: "Clock for the baseline and each mutant. Default 120000." },
-            Prop { key: "workers", kind: Kind::Int, help: "Mutants scored at once, each in its own worktree. Default 1." },
+            Prop { key: "workers", kind: Kind::Int, help: "Mutants scored at once, each in its own tree. Default 1." },
             Prop { key: "confirm", kind: Kind::Bool, help: "Rerun the killing test twice before counting a kill. Default true. false is faster." },
             Prop { key: "serial", kind: Kind::Bool, help: "Allow more than 30 mutants without a line map." },
             Prop { key: "lineMap", kind: Kind::Str, help: "Line map file. A files object names the tests for each line." },
             Prop { key: "tests", kind: Kind::Str, help: "File of test names, one per line, for {tests} in suiteCommand." },
             Prop { key: "maxSelected", kind: Kind::Int, help: "Most test names recorded per mutant. Default 30." },
             Prop { key: "confirmCount", kind: Kind::Int, help: "Run only if this equals the number of mutants still waiting." },
+            Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
         required: &["package", "patches", "out"],
     },
@@ -110,6 +118,23 @@ const TOOLS: &[ToolSpec] = &[
         required: &["out"],
     },
     ToolSpec {
+        name: "job_status",
+        group: CORE,
+        description: "Result of a job_id from mutate_diff, mutate_run, or probatio: waits up to waitSeconds and returns the result as soon as the run ends, else status running with progress (done of total, killed, survived). Works after the job ended and after a server restart.",
+        props: &[
+            Prop { key: "job_id", kind: Kind::Str, help: "The job_id a call replied with." },
+            Prop { key: "waitSeconds", kind: Kind::Int, help: "Seconds to wait for the end (0-600, default 60). 0 reads progress at once." },
+        ],
+        required: &["job_id"],
+    },
+    ToolSpec {
+        name: "cancel_job",
+        group: CORE,
+        description: "Stop a job and every process it started, and remove its mutant trees. Results written so far stay.",
+        props: &[Prop { key: "job_id", kind: Kind::Str, help: "The job_id to stop." }],
+        required: &["job_id"],
+    },
+    ToolSpec {
         name: "schema",
         group: "diagnostics",
         description: "List the CLI commands, or give one command's flags and output fields.",
@@ -119,8 +144,11 @@ const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "probatio",
         group: "cli",
-        description: "Run any CLI command by argv, for commands with no tool of their own: ledger, golden, matrix, queue, check-kill, verify-change, mutate sealed, gap, guard, findings, status, seal.",
-        props: &[Prop { key: "argv", kind: Kind::StrArray, help: "CLI words and flags, e.g. [\"matrix\",\"report\",\"--out\",\"dir\"]." }],
+        description: "Run any CLI command by argv, for commands with no tool of their own: ledger, golden, matrix, queue, check-kill, verify-change, mutate sealed, gap, guard, findings, status, seal. A job, like mutate_run.",
+        props: &[
+            Prop { key: "argv", kind: Kind::StrArray, help: "CLI words and flags, e.g. [\"matrix\",\"report\",\"--out\",\"dir\"]." },
+            Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
+        ],
         required: &["argv"],
     },
 ];
@@ -436,7 +464,10 @@ pub fn serve() -> i32 {
             return 2;
         }
     };
-    let running: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
+    crate::jobs::prune_records();
+    let jobs: Arc<jobs::Table> = Arc::new(jobs::Table::default());
+    // Request id to job id, while that call is still waiting for its job.
+    let waiting: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let write_lock = Arc::new(Mutex::new(()));
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -448,7 +479,7 @@ pub fn serve() -> i32 {
         let method = message.get("method").and_then(Value::as_str).unwrap_or("").to_string();
         if method == "notifications/cancelled" {
             if let Some(id) = message.get("params").and_then(|params| params.get("requestId")) {
-                cancel_job(&running, id);
+                cancel_waiting(&jobs, &waiting, id);
             }
             continue;
         }
@@ -462,11 +493,12 @@ pub fn serve() -> i32 {
         if method == "tools/call" {
             let id = message.get("id").cloned().unwrap_or(Value::Null);
             let params = message.get("params").cloned();
-            let running = running.clone();
+            let jobs = jobs.clone();
+            let waiting = waiting.clone();
             let write_lock = write_lock.clone();
             let surface = watcher.surface().clone();
             thread::spawn(move || {
-                let response = tools_call_live(&id, params.as_ref(), &running, &surface);
+                let response = tools_call_live(&id, params.as_ref(), &jobs, &waiting, &surface);
                 if !response.is_empty() {
                     write_line(&write_lock, &response);
                 }
@@ -477,18 +509,10 @@ pub fn serve() -> i32 {
             write_line(&write_lock, &response);
         }
     }
-    stop_running(&running);
+    // The client closed stdin, which is how MCP shuts a server down. A job still running would
+    // otherwise outlive the server and hold its mutant tree: each is stopped and its trees removed.
+    jobs.stop_all();
     0
-}
-
-/// The client closed stdin, which is how MCP shuts a server down. A call still running would
-/// otherwise outlive the server and hold its worktree. Its source edits live only in that
-/// worktree or temp copy, and the next run with the same out removes the leftover.
-fn stop_running(running: &Mutex<HashMap<String, u32>>) {
-    let pids: Vec<u32> = running.lock().unwrap_or_else(|poison| poison.into_inner()).drain().map(|(_, pid)| pid).collect();
-    for pid in pids {
-        kill_group(pid);
-    }
 }
 
 fn write_line(lock: &Mutex<()>, line: &str) {
@@ -498,17 +522,128 @@ fn write_line(lock: &Mutex<()>, line: &str) {
     let _ = stdout.flush();
 }
 
-fn cancel_job(running: &Mutex<HashMap<String, u32>>, id: &Value) {
+/// The client gave up on a call that is still waiting for its job: the job stops too, with every
+/// process under it, and its mutant trees are removed. A job whose call already answered with its
+/// `job_id` is stopped with `cancel_job` instead.
+fn cancel_waiting(jobs: &jobs::Table, waiting: &Mutex<HashMap<String, String>>, id: &Value) {
     let Some(key) = id_key(id) else { return };
-    let pid = running.lock().unwrap_or_else(|poison| poison.into_inner()).remove(&key);
-    if let Some(pid) = pid {
-        kill_group(pid);
+    let job = waiting.lock().unwrap_or_else(|poison| poison.into_inner()).remove(&key);
+    if let Some(job) = job.and_then(|job| jobs.get(&job)) {
+        job.cancel();
     }
 }
 
-/// A cancelled call stops with every process under it, including the suite's own process group.
-fn kill_group(pid: u32) {
-    crate::process::kill_descendants(pid);
+fn tools_call_live(
+    id: &Value,
+    params: Option<&Value>,
+    jobs: &Arc<jobs::Table>,
+    waiting: &Mutex<HashMap<String, String>>,
+    surface: &Surface,
+) -> String {
+    let name = params.and_then(|params| params.get("name")).and_then(Value::as_str).unwrap_or("");
+    if name == "job_status" || name == "cancel_job" {
+        return match job_call(name, params, jobs, surface) {
+            Ok(result) => result_line(id, result),
+            Err(message) => tool_error(id, &message),
+        };
+    }
+    let (argv, note) = match argv_of_call(params, surface) {
+        Ok(found) => found,
+        Err(message) => return tool_error(id, &message),
+    };
+    let wait = jobs::clamp_wait(wait_of(params), jobs::DEFAULT_CALL_WAIT);
+    let exe = std::env::current_exe().unwrap_or_else(|_| Path::new("probatio").to_path_buf());
+    let mut command = Command::new(exe);
+    command.args(&argv);
+    // The child stops its suites and exits if this server dies (Unix; Windows uses the job object).
+    command.env(crate::process::PARENT_ENV, std::process::id().to_string());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let job = match jobs.start(name, command, watch_of(&argv), note) {
+        Ok(job) => job,
+        Err(message) => return error_line(Some(id.clone()), -32000, &message),
+    };
+    let key = id_key(id);
+    if let Some(key) = &key {
+        waiting.lock().unwrap_or_else(|poison| poison.into_inner()).insert(key.clone(), job.id.clone());
+    }
+    job.wait(wait);
+    if let Some(key) = &key {
+        if waiting.lock().unwrap_or_else(|poison| poison.into_inner()).remove(key).is_none() {
+            // The client cancelled this request: it expects no answer.
+            return String::new();
+        }
+    }
+    result_line(id, job.reply())
+}
+
+/// `job_status` and `cancel_job`.
+fn job_call(name: &str, params: Option<&Value>, jobs: &jobs::Table, surface: &Surface) -> Result<Value, String> {
+    let tool = spec(name).ok_or_else(|| format!("unknown tool \"{name}\""))?;
+    if !surface.is_enabled(name) {
+        return Err(surface.disabled_message(tool));
+    }
+    let args = match params.and_then(|params| params.get("arguments")) {
+        None | Some(Value::Null) => Value::object(vec![]),
+        Some(value @ Value::Object(_)) => value.clone(),
+        Some(_) => return Err(format!("{name}: arguments must be an object")),
+    };
+    let checked = check_args(tool, &args)?;
+    let job_id = checked
+        .iter()
+        .find_map(|(key, arg)| match (key, arg) {
+            (&"job_id", Arg::Str(text)) => Some(text.trim().to_string()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let wait = checked.iter().find_map(|(key, arg)| match (key, arg) {
+        (&"waitSeconds", Arg::Int(value)) => Some(*value),
+        _ => None,
+    });
+    let Some(job) = jobs.get(&job_id) else {
+        if let Some(result) = jobs::from_record(&job_id) {
+            return Ok(result);
+        }
+        let known = jobs.known();
+        let known = if known.is_empty() { "none".to_string() } else { known.join(", ") };
+        return Err(format!("{name}: unknown job_id \"{job_id}\"; jobs this server ran: {known}. A job_id comes from a mutate_diff, mutate_run, or probatio reply."));
+    };
+    if name == "cancel_job" {
+        // A job that already ended is left as it is; the reply says how it ended.
+        job.cancel();
+        return Ok(job.reply());
+    }
+    job.wait(jobs::clamp_wait(wait, jobs::DEFAULT_STATUS_WAIT));
+    Ok(job.reply())
+}
+
+fn wait_of(params: Option<&Value>) -> Option<i64> {
+    params.and_then(|params| params.get("arguments")).and_then(|args| args.get("waitSeconds")).and_then(|value| match value {
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        other => other.as_int(),
+    })
+}
+
+/// Where a job's progress is read: `--patches` and `--out` of a run, or a diff's out directory.
+fn watch_of(argv: &[String]) -> jobs::Watch {
+    let flag = |name: &str| argv.iter().position(|word| word == name).and_then(|at| argv.get(at + 1)).map(std::path::PathBuf::from);
+    let package = flag("--package");
+    let source = package.as_ref().map(|package| crate::worktree::toplevel(package).unwrap_or_else(|| package.clone()));
+    let diff = argv.first().map(String::as_str) == Some("mutate") && argv.get(1).map(String::as_str) == Some("diff");
+    let run = argv.first().map(String::as_str) == Some("mutate") && matches!(argv.get(1).map(String::as_str), Some("run" | "sealed"));
+    if diff {
+        let out = flag("--out");
+        // Results of the call before are still there until the command clears them.
+        let since = Some(std::time::SystemTime::now());
+        return jobs::Watch { patches: out.as_ref().map(|out| out.join("generate").join("mutants")), out: out.map(|out| out.join("run")), source, since };
+    }
+    if run {
+        return jobs::Watch { patches: flag("--patches"), out: flag("--out"), source, since: None };
+    }
+    jobs::Watch { patches: None, out: None, source, since: None }
 }
 
 /// Every method except `tools/call`, which `serve` runs on its own thread.
@@ -579,63 +714,6 @@ fn tool_value(tool: &ToolSpec) -> Value {
             ]),
         ),
     ])
-}
-
-fn tools_call_live(id: &Value, params: Option<&Value>, running: &Mutex<HashMap<String, u32>>, surface: &Surface) -> String {
-    let (argv, note) = match argv_of_call(params, surface) {
-        Ok(found) => found,
-        Err(message) => return tool_error(id, &message),
-    };
-    let key = id_key(id);
-    let exe = std::env::current_exe().unwrap_or_else(|_| Path::new("probatio").to_path_buf());
-    let mut command = Command::new(exe);
-    command.args(&argv).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    // The child stops its suites and exits if this server dies (Unix; Windows uses the job).
-    command.env(crate::process::PARENT_ENV, std::process::id().to_string());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => return error_line(Some(id.clone()), -32000, &format!("the command did not start: {error}")),
-    };
-    if let Some(key) = key.clone() {
-        running.lock().unwrap_or_else(|poison| poison.into_inner()).insert(key, child.id());
-    }
-    let output = child.wait_with_output();
-    if let Some(key) = key {
-        if running.lock().unwrap_or_else(|poison| poison.into_inner()).remove(&key).is_none() {
-            return String::new();
-        }
-    }
-    let Ok(output) = output else {
-        return error_line(Some(id.clone()), -32000, "the command did not return one JSON object");
-    };
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    wrap_child_envelope(id, &text, note)
-}
-
-/// The envelope is sent once as compact text and once as `structuredContent`.
-/// Compact text is about a third smaller than the CLI's indented form.
-fn wrap_child_envelope(id: &Value, text: &str, note: Option<String>) -> String {
-    let Some(envelope) = json::parse(text.trim()).ok() else {
-        return error_line(Some(id.clone()), -32000, "the command did not return one JSON object");
-    };
-    let ok = envelope.get("ok").and_then(Value::as_bool) == Some(true);
-    let mut content = vec![text_block(&json::stringify_compact(&envelope))];
-    if let Some(note) = note {
-        content.push(text_block(&note));
-    }
-    result_line(
-        id,
-        Value::object(vec![
-            ("content", Value::Array(content)),
-            ("structuredContent", envelope),
-            ("isError", Value::Bool(!ok)),
-        ]),
-    )
 }
 
 fn text_block(text: &str) -> Value {
@@ -753,10 +831,15 @@ fn build_argv(tool: &ToolSpec, args: &[(&'static str, Arg)]) -> Result<(Vec<Stri
     let mut note = None;
     for (key, arg) in args {
         match (*key, arg) {
-            ("serial" | "lineMap", _) => {}
+            ("serial" | "lineMap" | "waitSeconds", _) => {}
             ("confirm", Arg::Bool(flag)) => {
                 if !flag {
                     argv.push("--no-confirm".into());
+                }
+            }
+            ("includeTests", Arg::Bool(flag)) => {
+                if *flag {
+                    argv.push("--include-tests".into());
                 }
             }
             (key, Arg::Str(value)) => {
@@ -768,6 +851,13 @@ fn build_argv(tool: &ToolSpec, args: &[(&'static str, Arg)]) -> Result<(Vec<Stri
                 argv.push(value.to_string());
             }
             _ => {}
+        }
+    }
+    if tool.name == "mutate_diff" && get("out").is_none() {
+        // Named here, not left to the command, so a job's progress can be read from it.
+        if let Some(package) = text("package") {
+            argv.push("--out".into());
+            argv.push(crate::diffscope::default_diff_out(Path::new(&package)).display().to_string());
         }
     }
     if tool.name == "mutate_run" {
@@ -872,7 +962,7 @@ mod tests {
             assert_eq!(surface, Surface::all());
             assert_eq!(json::stringify_compact(&Value::Array(tools(&surface))), all);
         }
-        assert_eq!(names(&Surface::all()), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema", "probatio"]);
+        assert_eq!(names(&Surface::all()), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema", "probatio"]);
         let init = initialize(None, &Surface::all());
         let instructions = init.get("instructions").and_then(Value::as_str).unwrap();
         assert!(instructions.ends_with("\nTool groups on: core, diagnostics, cli. Off: none. Change them with a \"probatio: disable <groups>\" line in an agent-tools block in AGENTS.md."), "{instructions}");
@@ -885,14 +975,14 @@ mod tests {
     #[test]
     fn agents_md_chooses_groups_and_env_wins_per_key() {
         let surface = Surface::resolve(None, None, Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         assert!(surface.warnings.is_empty(), "{:?}", surface.warnings);
         let error = argv_of_call(Some(&call("probatio", r#"{"argv":["schema"]}"#)), &surface).unwrap_err();
         assert_eq!(error, "tool \"probatio\" is disabled (group \"cli\") by the probatio: disable line in AGENTS.md agent-tools; remove \"cli\" from it to enable");
         let env_disable = Surface::resolve(None, Some("diagnostics"), Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&env_disable), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
+        assert_eq!(names(&env_disable), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
         let env_tools = Surface::resolve(Some("core"), None, Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&env_tools), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally"]);
+        assert_eq!(names(&env_tools), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job"]);
         assert_eq!(Surface::resolve(None, None, Some("no block here")).unwrap(), Surface::all());
     }
 
@@ -911,7 +1001,7 @@ mod tests {
     fn a_bad_agents_md_line_is_a_warning_not_a_stop() {
         let text = "```agent-tools\nprobatio: disable lokcs\nprobatio: tools diagnostics\n```\n";
         let surface = Surface::resolve(None, None, Some(text)).unwrap();
-        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         assert_eq!(surface.warnings, ["AGENTS.md agent-tools: unknown group \"lokcs\" for probatio; groups: core, diagnostics, cli"]);
         let core = Surface::resolve(None, None, Some("```agent-tools\nprobatio: disable core\n```\n")).unwrap();
         assert_eq!(names(&core), names(&Surface::all()));
@@ -922,7 +1012,7 @@ mod tests {
 
     #[test]
     fn an_edited_agents_md_changes_the_list_once() {
-        let dir = std::env::temp_dir().join(format!("probatio-watch-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("watch");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("AGENTS.md");
@@ -940,15 +1030,15 @@ mod tests {
     #[test]
     fn tools_and_disable_filter_by_group_and_by_tool() {
         let only_core = Surface::from_values(Some("core"), None).unwrap();
-        assert_eq!(names(&only_core), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally"]);
+        assert_eq!(names(&only_core), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job"]);
         let with_cli = Surface::from_values(Some(" CLI "), None).unwrap();
-        assert_eq!(names(&with_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
+        assert_eq!(names(&with_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
         let by_tool = Surface::from_values(Some("schema"), None).unwrap();
-        assert_eq!(names(&by_tool), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&by_tool), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         let everything = Surface::from_values(Some("all"), Some("diagnostics")).unwrap();
-        assert_eq!(names(&everything), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "probatio"]);
+        assert_eq!(names(&everything), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
         let no_cli = Surface::from_values(None, Some("probatio")).unwrap();
-        assert_eq!(names(&no_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "schema"]);
+        assert_eq!(names(&no_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         assert!(no_cli.groups_line().starts_with("Tool groups on: core, diagnostics. Off: cli."));
         let init = initialize(None, &no_cli);
         assert!(init.get("instructions").and_then(Value::as_str).unwrap().contains("\nTool groups on: core, diagnostics. Off: cli."));
@@ -982,7 +1072,7 @@ mod tests {
         let typo = argv_of_call(Some(&call("mutate_run", r#"{"package":"p","patches":"g","out":"o","suite_command":"x"}"#)), &all).unwrap_err();
         assert!(typo.starts_with("mutate_run: unknown argument \"suite_command\"; arguments: package, patches, out, suiteCommand"), "{typo}");
         let missing = argv_of_call(Some(&call("mutate_generate", r#"{"package":"p"}"#)), &all).unwrap_err();
-        assert_eq!(missing, "mutate_generate: missing required argument \"out\" (Output directory, usually <package>/.probatio/generate.)");
+        assert_eq!(missing, "mutate_generate: missing required argument \"out\" (Output directory, usually <project root>/.probatio/generate.)");
         let wrong = argv_of_call(Some(&call("mutate_run", r#"{"package":"p","patches":"g","out":"o","timeoutMs":"soon"}"#)), &all).unwrap_err();
         assert_eq!(wrong, "mutate_run: \"timeoutMs\" must be a non-negative integer, got \"soon\"");
         let (argv, _) = argv_of_call(
@@ -1004,7 +1094,7 @@ mod tests {
             let flags: Vec<&str> = crate::args::command_flags(&command).unwrap().iter().map(|(name, _)| *name).collect();
             for prop in tool.props {
                 let flag = match prop.key {
-                    "serial" => continue,
+                    "serial" | "waitSeconds" => continue,
                     "lineMap" => "line-map".to_string(),
                     other => kebab(other),
                 };

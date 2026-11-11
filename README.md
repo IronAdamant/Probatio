@@ -40,6 +40,21 @@ mutate_diff {"package": "/work/relatum"}
      survivors: [{"file": "src/grammar.rs", "line": 46, "column": 50, "original": "==", "replacement": "!="}]
 ```
 
+`since` is `HEAD` by default (uncommitted edits). `since: "main"` scores this branch's own changes: it diffs from the merge-base of `main` and HEAD, so lines that only changed on `main` are left out, even after `main` was merged into the branch. A range works too: `main..HEAD` starts at `main` itself, `main...HEAD` at the merge-base. Test code is not mutated: `tests/`, `benches/`, test files (`*_test.go`, `test_*.py`, `*.test.ts`, `FooTest.java`, ...), and Rust `#[cfg(test)]` and `#[test]` items. `testLinesSkipped` counts the changed lines left out, and `includeTests: true` mutates them too. A mutant that does not build is listed under `unbuildable`, never as a survivor.
+
+Calls that run tests are jobs, so none is cut off by a client's idle timeout (Claude Code's is 30 minutes). The call waits `waitSeconds` (default 20, at most 600). If the run ends by then, the reply is its result. If not, the reply has a `job_id` and the progress so far, and the run goes on:
+
+```text
+mutate_diff {"package": "/work/game/crates/audio", "since": "main", "waitSeconds": 0}
+  -> {"status": "running", "job_id": "job-18a...", "progress": {"phase": "baseline", "total": 12, ...}}
+job_status  {"job_id": "job-18a...", "waitSeconds": 600}
+  -> the mutate_diff result, as soon as the run ends ("status": "completed")
+cancel_job  {"job_id": "job-18a..."}
+  -> stops the run and every process under it, and removes its mutant tree
+```
+
+`job_status` also answers after the job ended, and from a new server after a restart (each job has a record in the cache folder). Output goes to `.probatio/` at the project root (the top of the git checkout), never inside a workspace member, and that folder ignores itself, so it is not committed by accident. `PROBATIO_DIR` moves it.
+
 For a whole package, three calls. The package is never edited: each mutant is applied in a git worktree, or a temp copy when the package is not a git checkout.
 
 ```text
@@ -64,8 +79,9 @@ Each reply has `ok`, `summary`, `next`, and `nextCall` (the argv to run next, or
 
 ## How it works
 
-1. **Generate** walks `src/` (or `src` you name) and writes `mutants.json`: text operators on conditions, comparisons, and booleans, never inside strings or comments. It runs no tests.
+1. **Generate** walks `src/` (or `src` you name) and writes `mutants.json`: text operators on conditions, comparisons, and booleans, never inside strings or comments, and not in test code unless `includeTests`. It runs no tests.
 2. **Run** finds the test command (your `suiteCommand`, then `.probatio.json`, then a marker such as `Cargo.toml`, `package.json`, `go.mod`, `pom.xml`, or `pytest.ini`) and runs it once on the unchanged code. A red baseline, a missing tool, or a suite that ran no tests stops here, with the last lines it printed. Then each mutant is applied in a worktree and the suite runs again.
+   The mutant tree is a git worktree of the whole checkout (a workspace member builds with its workspace), made once per run in Probatio's cache folder (`PROBATIO_CACHE_DIR`, else `%LOCALAPPDATA%\probatio`, `~/Library/Caches/probatio`, or `~/.cache/probatio`). It holds your tracked and untracked files with their mtimes, not ignored ones. After each mutant, the files it or the suite changed are copied back and what the suite added is removed. Each tree has a Cargo target directory that is kept between runs, so mutants after the first, and later runs, build only what changed; a file a mutant edited is always rebuilt from its clean text. Your own target directory is never used, even when `CARGO_TARGET_DIR` or `--target-dir` names it. Before the first mutant the suite runs once in each tree with no mutant, which builds it, and a test that fails there stops the run (a test that needs a file git ignores can get it with `"copy": ["path"]` in `.probatio.json`). The tree is removed when the run ends, is cancelled, or, after a crash, on the next start, which also sweeps trees and target folders older versions left in the temp folder.
 3. Each mutant is **killed** (a test failed), **survived** (a gap), **no coverage** (no test ran that line), **unviable** (did not build), **timeout**, or **error**. Kills are confirmed by rerunning the killing test twice unless you pass `confirm: false`.
 4. **Tally** lists the tests that killed something and the gaps with `file:line`. It works while a run is still going, so a second agent can read progress. It never deletes a test.
 
@@ -75,11 +91,11 @@ More than 30 mutants with no line map stop before the first mutant: pass `serial
 
 | Group | Tools | Overlaps with |
 | --- | --- | --- |
-| `core` (always on) | `mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally` | none |
+| `core` (always on) | `mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally`, `job_status`, `cancel_job` | none |
 | `diagnostics` | `schema` | none |
 | `cli` | `probatio` (any CLI command by argv: ledger, golden, matrix, queue, check-kill, verify-change, ...) | none |
 
-No group overlaps another tool in the suite, so the shared names (`locks`, `notes`, `tasks`, `messages`, `history`) are not used. `tools/list` is 4633 bytes with every group on, 4188 with `cli` off, 4340 with `diagnostics` off, and 3895 with only `core`.
+No group overlaps another tool in the suite, so the shared names (`locks`, `notes`, `tasks`, `messages`, `history`) are not used. `tools/list` is 6538 bytes with every group on, 5919 with `cli` off, 6245 with `diagnostics` off, and 5626 with only `core` (0.7.1: 4633 with every group on; the two job tools and the when-to-use text are the difference).
 
 An operator sets `PROBATIO_TOOLS` (an allowlist; `core` is always added) or `PROBATIO_DISABLE` in the client's `env` block. Names are groups or tool names, commas or spaces, any case. An unknown name, or `core`, stops the server with one line on stderr and exit code 2.
 

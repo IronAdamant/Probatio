@@ -14,6 +14,7 @@ pub mod diffscope;
 pub mod envelope;
 pub mod generate;
 pub mod golden;
+pub mod jobs;
 pub mod json;
 pub mod ledger;
 pub mod matrix_cmd;
@@ -24,7 +25,11 @@ pub mod report;
 pub mod run_options;
 pub mod runner;
 pub mod sealed;
+pub mod slots;
 pub mod tally;
+pub mod testcode;
+#[cfg(test)]
+pub mod testdir;
 pub mod verify;
 pub mod worktree;
 

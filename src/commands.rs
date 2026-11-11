@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn tally_leaves_deleted_tests_at_zero_and_names_a_gap() {
-        let out = std::env::temp_dir().join(format!("probatio-tally-{}", std::process::id()));
+        let out = crate::testdir::TempDir::new("tally");
         let _ = fs::remove_dir_all(&out);
         fs::create_dir_all(out.join("results")).unwrap();
         fs::write(out.join("SomeTest.java"), "class SomeTest {}\n").unwrap();
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn ledger_check_does_not_rerecord_a_red_entry() {
-        let dir = std::env::temp_dir().join(format!("probatio-ledger-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("ledger");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let ledger = dir.join("ledger.json");
@@ -789,7 +789,7 @@ mod tests {
 
     #[test]
     fn gap_revert_does_not_delete_a_test() {
-        let dir = std::env::temp_dir().join(format!("probatio-gap-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("gap");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let test = dir.join("SomeTest.java");

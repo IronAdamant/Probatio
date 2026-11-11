@@ -15,6 +15,7 @@ if (!cargoVersion) {
 }
 const launcherPath = path.join(repo, "npm", "bin", "probatio.js");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "probatio-win32-"));
+process.on("exit", () => fs.rmSync(tmp, { recursive: true, force: true }));
 const scopeDir = path.join(tmp, "node_modules", "@iron_adamant", "probatio-win32-x64");
 const binDir = path.join(scopeDir, "bin");
 fs.mkdirSync(binDir, { recursive: true });

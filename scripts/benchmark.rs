@@ -435,4 +435,14 @@ fn main() {
     let text = lines.join("\n");
     fs::write(&setup.out, &text).unwrap_or_else(|error| panic!("{}: {error}", setup.out.display()));
     println!("{}", text.split("## What").next().unwrap_or(""));
+    // The samples and every out dir are this run's own; the report keeps what they printed.
+    let _ = fs::remove_dir_all(&js);
+    let _ = fs::remove_dir_all(&py);
+    if let Ok(entries) = fs::read_dir(&setup.tmp) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("pb-") {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
 }

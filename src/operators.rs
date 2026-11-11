@@ -85,7 +85,7 @@ pub fn mutants_in(file: &str, text: &str) -> Vec<Mutant> {
 pub fn scan(file: &str, text: &str, wide: bool) -> Vec<Mutant> {
     let kind = language(file);
     let dialect = asm_dialect(file, text);
-    let code = mask(text, kind);
+    let code = mask(text, kind, is_rust(file));
     let mut found = Vec::new();
     let mut index = 0;
     while index < text.len() {
@@ -560,10 +560,26 @@ fn blocked(text: &str, index: usize, original: &str) -> bool {
         "<=" => prev == '<' || next == '>' || next == '=',
         ">=" => prev == '>' || next == '=',
         "==" | "!=" | "===" | "!==" => next == '=',
-        "&&" => next == '&' || prev == '&',
-        "||" => next == '|' || prev == '|',
+        "&&" => next == '&' || prev == '&' || !has_left_operand(text, index),
+        "||" => next == '|' || prev == '|' || !has_left_operand(text, index),
         _ => false,
     }
+}
+
+/// A binary `&&` or `||` has an operand on its left. Without one it is something else: a Rust
+/// closure with no arguments (`move || x`, `from_fn(|| next())`) or a double reference
+/// (`x: &&str`, `= &&y`). Swapping it would only give a mutant that does not build.
+fn has_left_operand(text: &str, index: usize) -> bool {
+    let before = text[..index].trim_end();
+    let Some(last) = before.chars().next_back() else { return false };
+    if "(,={;[:!|&<>+-*/%^~".contains(last) {
+        return false;
+    }
+    if last.is_ascii_alphanumeric() || last == '_' {
+        let start = before.rfind(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')).map(|at| at + 1).unwrap_or(0);
+        return !matches!(&before[start..], "move" | "return" | "async" | "yield" | "in" | "else" | "break" | "match" | "if" | "while");
+    }
+    true
 }
 
 fn word_edge(text: &str, start: usize, end: usize) -> bool {
@@ -573,7 +589,62 @@ fn word_edge(text: &str, start: usize, end: usize) -> bool {
     !before.is_some_and(ident) && !after.is_some_and(ident)
 }
 
-fn mask(text: &str, kind: Kind) -> Vec<bool> {
+/// Which bytes of `file` are code: not a comment, not a string or char literal.
+pub fn code_mask(file: &str, text: &str) -> Vec<bool> {
+    mask(text, language(file), is_rust(file))
+}
+
+fn is_rust(file: &str) -> bool {
+    file.to_ascii_lowercase().ends_with(".rs")
+}
+
+/// Rust: a raw string `r"..."`, `r#"..."#`, or `br##"..."##` at `index`. Returns its end.
+fn rust_raw_string(bytes: &[u8], index: usize) -> Option<usize> {
+    if index > 0 && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_') {
+        return None;
+    }
+    let mut at = index;
+    if bytes.get(at) == Some(&b'b') {
+        at += 1;
+    }
+    if bytes.get(at) != Some(&b'r') {
+        return None;
+    }
+    at += 1;
+    let mut hashes = 0;
+    while bytes.get(at) == Some(&b'#') {
+        hashes += 1;
+        at += 1;
+    }
+    if bytes.get(at) != Some(&b'"') {
+        return None;
+    }
+    at += 1;
+    while at < bytes.len() {
+        if bytes[at] == b'"' && (0..hashes).all(|step| bytes.get(at + 1 + step) == Some(&b'#')) {
+            return Some(at + 1 + hashes);
+        }
+        at += 1;
+    }
+    Some(bytes.len())
+}
+
+/// Rust: `'a'`, `'\n'`, and `'\u{1F600}'` are char literals; `'a` and `'static` are lifetimes or
+/// labels, which are code. Returns the end of a char literal that starts at `index`.
+fn rust_char_literal(text: &str, index: usize) -> Option<usize> {
+    let rest = &text[index + 1..];
+    let mut chars = rest.char_indices();
+    let (_, first) = chars.next()?;
+    if first == '\\' {
+        // The escaped character can itself be a quote: `'\''`.
+        let close = rest.get(2..)?.find('\'')?;
+        return Some(index + 1 + 2 + close + 1);
+    }
+    let (at, second) = chars.next()?;
+    (second == '\'').then_some(index + 1 + at + 1)
+}
+
+fn mask(text: &str, kind: Kind, rust: bool) -> Vec<bool> {
     if kind == Kind::Cobol {
         return mask_cobol(text);
     }
@@ -601,6 +672,22 @@ fn mask(text: &str, kind: Kind) -> Vec<bool> {
                 index += 1;
             }
             index = (index + 2).min(bytes.len());
+            continue;
+        }
+        if rust && (bytes[index] == b'r' || bytes[index] == b'b') {
+            if let Some(end) = rust_raw_string(bytes, index) {
+                index = end;
+                continue;
+            }
+        }
+        if rust && bytes[index] == b'\'' {
+            match rust_char_literal(text, index) {
+                Some(end) => index = end,
+                None => {
+                    code[index] = true;
+                    index += 1;
+                }
+            }
             continue;
         }
         if bytes[index] == b'"' || bytes[index] == b'\'' {
@@ -808,5 +895,25 @@ mod tests {
         assert_eq!(arm[0].replacement, "b.ne");
         let riscv = mutants_in("a.S", "  beq a0, a1, label\n  ecall\n");
         assert!(riscv.iter().any(|item| item.original == "beq" && item.replacement == "bne"));
+    }
+
+    /// Specula M5 (renderfollow: 5 of 15 mutants did not build). A Rust closure with no arguments
+    /// and a double reference are not boolean operators, so no mutant swaps them.
+    #[test]
+    fn a_rust_closure_or_double_reference_is_not_a_boolean_operator() {
+        let text = "fn f(x: &&str, a: bool, b: bool) -> bool {\n    let g = || a;\n    let h = move || b;\n    let n: Vec<u32> = std::iter::from_fn(|| None).collect();\n    let r = &&x;\n    a && b || g()\n}\n";
+        let found = mutants_in("src/lib.rs", text);
+        let ops: Vec<(u32, &str)> = found.iter().map(|item| (item.line, item.original.as_str())).collect();
+        assert_eq!(ops, vec![(6, "&&"), (6, "||")], "{found:?}");
+        assert!(mutants_in("a.js", "const f = () => a || b;\n").iter().any(|item| item.original == "||"));
+    }
+
+    /// A lifetime is not the start of a char literal, and a raw string is a string.
+    #[test]
+    fn rust_lifetimes_and_raw_strings_are_masked_right() {
+        let text = "fn f<'a>(x: &'a str) -> bool { x == \"a > b\" }\nconst Q: char = '\\'';\nfn g(s: &str) -> bool { s == r#\"x \"|| y\"#  }\nfn h(n: u8) -> bool { n > 2 && b'x' != 0 }\n";
+        let found = mutants_in("src/lib.rs", text);
+        let ops: Vec<(u32, &str)> = found.iter().map(|item| (item.line, item.original.as_str())).collect();
+        assert_eq!(ops, vec![(1, "=="), (3, "=="), (4, ">"), (4, "&&"), (4, "!=")], "{found:?}");
     }
 }

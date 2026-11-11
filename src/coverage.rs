@@ -435,7 +435,7 @@ mod tests {
         assert!(matches!(map.line_hit("src/a.rs", 1), crate::decide::LineHit::Dark));
         assert!(matches!(map.line_hit("src/a.rs", 2), crate::decide::LineHit::Listed(names) if names.is_empty()));
 
-        let root = std::env::temp_dir().join(format!("probatio-jacoco-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("jacoco");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src/main/java/org/example")).unwrap();
         fs::write(root.join("src/main/java/org/example/A.java"), "class A {}\n").unwrap();

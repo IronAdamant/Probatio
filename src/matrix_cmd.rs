@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn a_direct_table_names_the_weakest_holdout_and_writes_matrix_json() {
-        let dir = std::env::temp_dir().join(format!("probatio-matrix-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("matrix");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("patches")).unwrap();
         fs::write(dir.join("patches/m1.patch"), "--- a/src/a.py\n+++ b/src/a.py\n@@ -3,1 +3,1 @@\n-a and b\n+a or b\n").unwrap();
