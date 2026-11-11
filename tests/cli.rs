@@ -901,7 +901,7 @@ fn shipped_run_uses_node_bin_from_scripts_test() {
     assert!(baseline.contains("\"green\""), "{baseline}");
     assert!(baseline.contains("probatio-local-ok"), "{baseline}");
     let lines = marker_lines(&marker);
-    assert!(lines.iter().any(|line| line.contains("probatio-cli-nodebin-")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cli-nodebin-")), "{lines:?}");
     // A mutant ran in its slot's tree in the mutant cache.
     assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/tree")), "{lines:?}");
     assert_survived_mutants(&out);
@@ -974,7 +974,7 @@ fn shipped_run_uses_node_bin_from_a_git_worktree() {
     assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(true), "{value:?}");
     assert_named_suite(&value, "probatio-local-ok");
     let lines = marker_lines(&marker);
-    assert!(lines.iter().any(|line| line.contains("probatio-cli-nodegit-")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cli-nodegit-")), "{lines:?}");
     // A mutant ran in the slot's worktree in the mutant cache.
     assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/0/tree")), "{lines:?}");
     assert_survived_mutants(&out);
