@@ -1239,7 +1239,7 @@ fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec
                     break;
                 }
             };
-            if let Err(error) = write_result(&job.path, &job.mutant, &scored, &job.selection, max_selected, Some(&job.rendered)) {
+            if let Err(error) = write_result(&job.path, &job.mutant, &scored, &job.selection, max_selected, Some(&ran_command(job, slot))) {
                 outcome = Err(error);
                 break;
             }
@@ -1267,7 +1267,7 @@ fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec
                     };
                     let job = &jobs[index];
                     let written = score_in_slot(job, slot, place).and_then(|scored| {
-                        write_result(&job.path, &job.mutant, &scored, &job.selection, max_selected, Some(&job.rendered)).map(|_| scored.kind)
+                        write_result(&job.path, &job.mutant, &scored, &job.selection, max_selected, Some(&ran_command(job, slot))).map(|_| scored.kind)
                     });
                     match written {
                         Ok(kind) => found.lock().unwrap_or_else(|poison| poison.into_inner()).push(kind),
@@ -1333,6 +1333,15 @@ fn slot_root(slot: &crate::slots::Slot, place: &Place) -> PathBuf {
     }
 }
 
+/// The command a mutant ran, as its result records it: `--target-dir` pointed at the slot.
+fn ran_command(job: &ScoreJob, slot: &crate::slots::Slot) -> String {
+    with_target_dir(&job.rendered, &slot_target(job, slot))
+}
+
+fn slot_target(job: &ScoreJob, slot: &crate::slots::Slot) -> PathBuf {
+    if job.commit.is_some() { pinned_target(slot) } else { slot.target.clone() }
+}
+
 fn pinned_target(slot: &crate::slots::Slot) -> PathBuf {
     slot.dir.join("target-pinned")
 }
@@ -1357,8 +1366,7 @@ fn tree_rel(file: &str, place: &Place) -> String {
 /// `--target-dir` in the suite command. A mutant built into your target directory would leave
 /// mutated artifacts there, which cargo could later reuse for your own tree.
 fn score_in_slot(job: &ScoreJob, slot: &mut crate::slots::Slot, place: &Place) -> Result<Scored, String> {
-    let pinned = job.commit.is_some();
-    let target = if pinned { pinned_target(slot) } else { slot.target.clone() };
+    let target = slot_target(job, slot);
     let mut job = job.clone();
     job.project_env.retain(|(key, _)| key != "CARGO_TARGET_DIR");
     job.unset.retain(|key| key != "CARGO_TARGET_DIR");
@@ -3399,6 +3407,9 @@ mod tests {
         assert!(env_dir.starts_with(&slot) && env_dir.ends_with("target"), "{mutant} {slot}");
         assert_eq!(flag, format!("--target-dir={env_dir}"), "{mutant}");
         assert!(!text.lines().skip(1).any(|line| line.contains("/user/")), "{text}");
+        let recorded = one_result(&out);
+        let command = recorded.get("command").and_then(Value::as_str).unwrap_or("");
+        assert!(!command.contains("/user/x") && command.contains("--target-dir="), "the result records the command as run: {command}");
         let _ = fs::remove_dir_all(&package);
     }
 
