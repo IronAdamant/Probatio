@@ -1,6 +1,6 @@
 [package]
 name = "probatio"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 description = "Mutation runner. Scores a test suite by the bugs it catches."
 license = "MIT"

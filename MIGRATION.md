@@ -5,7 +5,7 @@ This list is the difference between the last TypeScript program and the Rust bin
 | | |
 | --- | --- |
 | TypeScript | Commit `c5cd175` (full hash `c5cd1755146082282332a2f6098981917c5bc03a`). npm package `probatio` 0.3.0. Branch `typescript-legacy` points at that commit. |
-| Rust | Crate 0.8.0 on `main`. The MCP server reports that version. |
+| Rust | Crate 0.8.1 on `main`. The MCP server reports that version. |
 
 Evidence used: `src/` and `schemas/` at `c5cd175`, the same paths in this tree, pull requests 2, 3, and 5, `CHANGELOG.md`, and the benchmark notes in `README.md`. Pull request 2 is the parity pass. A row there marked fixed is listed here only when this tree still differs from `c5cd175`. Pull request 1 fixed a Rust baseline check for dash (`: not found`). The TypeScript runner already treated that phrase as a missing tool, so it is not a difference.
 
@@ -20,7 +20,7 @@ No row is marked **bug fixed from TypeScript**. Fixes recorded in the changelog 
 
 ## Install and platforms
 
-| Item | Mark | TypeScript 0.3.0 | Rust 0.8.0 |
+| Item | Mark | TypeScript 0.3.0 | Rust 0.8.1 |
 | --- | --- | --- | --- |
 | npm package contents | intentional change | `dist/` (compiled TypeScript) and `schemas/`. Dependency `typescript`. `engines.node` is `>=22.6`. | `bin/probatio.js` and `README.md`. No `typescript` dependency. `engines.node` is `>=18`, and that bound is only for the launcher. |
 | What `probatio` runs | intentional change | `node dist/cli.js`. | The launcher spawns the binary from the matching platform package. `cargo build` writes the same binary. |

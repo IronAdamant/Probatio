@@ -1,6 +1,6 @@
 {
   "name": "@iron_adamant/probatio-win32-x64",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Probatio binary for Windows x64.",
   "license": "MIT",
   "repository": {
