@@ -533,6 +533,29 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Specula M5 (renderfollow: 5 of 15 mutants did not build): a mutant the compiler rejects is
+    /// listed under `unbuildable`, never as a survivor, and `next` says so.
+    #[test]
+    fn a_mutant_that_does_not_build_is_listed_apart_from_survivors() {
+        let dir = repo("unbuildable");
+        fs::write(dir.join("src/A.java"), "class A {\n  boolean g(int n) { return n == 0; }\n}\n").unwrap();
+        git_ok(&dir, &["add", "."]);
+        git_ok(&dir, &["commit", "-q", "-m", "base"]);
+        fs::write(dir.join("src/A.java"), "class A {\n  boolean g(int n) { return n > 0 && n < 9; }\n}\n").unwrap();
+        let suite = "if grep -q '>=' src/A.java; then echo 'src/A.java:2: error: incompatible types' >&2; exit 1; else echo ok; fi";
+        let out = dir.join("out").display().to_string();
+        let argv: Vec<String> = ["--package", &dir.display().to_string(), "--out", &out, "--suite-command", suite, "--no-confirm"].iter().map(|item| item.to_string()).collect();
+        let envelope = diff(&Flags::parse(&argv));
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        let value = envelope.to_value("");
+        let unbuildable = json::stringify_compact(value.get("unbuildable").unwrap());
+        assert_eq!(unbuildable, r#"[{"file":"src/A.java","line":2,"original":">","replacement":">="}]"#);
+        let survivors = json::stringify_compact(value.get("survivors").unwrap());
+        assert!(!survivors.contains("\">\""), "{survivors}");
+        assert!(envelope.next.contains("1 mutant did not build: not survivors and not scored"), "{}", envelope.next);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// Specula M5: `.probatio/` was written inside the package (a workspace member) and committed
     /// by mistake twice. It is at the project root now, and it ignores itself.
     #[test]
