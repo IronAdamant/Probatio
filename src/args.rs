@@ -152,6 +152,7 @@ pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
             ("confirm", false),
             ("max-mutants", false),
             ("operators", false),
+            ("include-tests", false),
         ]),
         "mutate.generate" => Some(&[
             ("package", true),
@@ -167,6 +168,7 @@ pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
             ("working-tree", false),
             ("operators", false),
             ("tests-dir", false),
+            ("include-tests", false),
         ]),
         "mutate.run" => Some(&[
             ("hide", false),

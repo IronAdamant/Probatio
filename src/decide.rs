@@ -160,6 +160,11 @@ fn shell_reports_missing_command(code: Option<i32>, text: &str) -> bool {
 
 fn looks_unviable(stderr: &str) -> bool {
     let lower = stderr.to_lowercase();
+    // Cargo stopped before any test ran. The source lines rustc quotes in its error can say
+    // `panic!` or `assert!`, which is not a test failing.
+    if lower.contains("could not compile") && !lower.contains("test result:") {
+        return true;
+    }
     if lower.contains("assertion") || lower.contains("panic") {
         return false;
     }
@@ -563,5 +568,15 @@ mod tests {
         let exact = cap_tests(&tests[..30], 30);
         assert!(!exact.capped);
         assert_eq!(deleted_tests(), 0);
+    }
+
+    /// Specula M5 (renderfollow: 5 of 15 mutants did not build): a compile error that quotes a
+    /// line with `panic!` in it was read as a test failing, so it counted as a kill.
+    #[test]
+    fn a_cargo_compile_error_quoting_panic_is_unviable_not_a_kill() {
+        let text = "error[E0308]: mismatched types\n --> src/lib.rs:4:9\n  |\n4 |     if x || panic!(\"no\") {\n  |\nerror: could not compile `gate` (lib) due to 1 previous error\n";
+        assert_eq!(classify(false, Some(101), text), Verdict::Unviable);
+        let ran = "test tests::a ... FAILED\nthread 'tests::a' panicked at src/lib.rs:9:5\ntest result: FAILED. 0 passed; 1 failed\n";
+        assert_eq!(classify(false, Some(101), ran), Verdict::Killed);
     }
 }

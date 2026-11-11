@@ -78,6 +78,8 @@ pub fn generate(flags: &Flags) -> Envelope {
     let mut budget_hit = walked.stopped || over(max_minutes);
     let mut source = if working_tree { "working-tree" } else { "commit" };
     let mut reader = Reader::new(&package, commit, working_tree);
+    let include_tests = flags.bool("include-tests", false);
+    let mut test_lines_skipped = 0usize;
     for file in &files {
         if limit.is_some_and(|limit| chosen.len() >= limit) {
             break;
@@ -106,7 +108,14 @@ pub fn generate(flags: &Flags) -> Envelope {
             }
         };
         source = loaded.source;
+        if !include_tests && crate::testcode::is_test_path(&rel) {
+            test_lines_skipped += loaded.text.lines().count();
+            continue;
+        }
+        let ranges = if include_tests { Vec::new() } else { crate::testcode::test_ranges(&rel, &loaded.text) };
+        test_lines_skipped += crate::testcode::line_count(&ranges);
         let mut points = operators::scan(&rel, &loaded.text, wide);
+        points.retain(|point| !crate::testcode::in_ranges(&ranges, point.line));
         points = shuffle(points, &mut rng);
         let slice: Vec<Mutant> = if let Some(per_file) = per_file {
             points.into_iter().skip(skip).take(per_file).collect()
@@ -122,6 +131,11 @@ pub fn generate(flags: &Flags) -> Envelope {
         return Envelope::new(false, command, message, "The out directory could not be written.");
     }
     let bounded = limit.is_some_and(|limit| capped.len() >= limit);
+    let skipped_note = if test_lines_skipped > 0 {
+        format!(" {test_lines_skipped} test lines skipped (pass --include-tests to mutate them).")
+    } else {
+        String::new()
+    };
     let summary = if budget_hit {
         format!("Stopped by the time budget after {files_visited} files. {} mutants written.", capped.len())
     } else if bounded {
@@ -133,6 +147,7 @@ pub fn generate(flags: &Flags) -> Envelope {
     } else {
         format!("{} mutants in {files_visited} files. No string-literal mutant.", capped.len())
     };
+    let summary = format!("{summary}{skipped_note}");
     let suite = discover_label(&package, flags.get("tests-dir").unwrap_or("tests"));
     let mut next = if capped.is_empty() {
         "Nothing to run.".to_string()
@@ -157,6 +172,7 @@ pub fn generate(flags: &Flags) -> Envelope {
         .with_extra("stringLiteralMutants", Value::Int(0))
         .with_extra("filesVisited", Value::Int(files_visited as i64))
         .with_extra("budgetHit", Value::Bool(budget_hit))
+        .with_extra("testLinesSkipped", Value::Int(test_lines_skipped as i64))
         .with_extra("mutants", Value::Array(shown))
         .with_extra("rest", Value::Int(capped.len().saturating_sub(10) as i64))
         .with_extra("full", Value::String(out.join("mutants").join("mutants.json").display().to_string()))
@@ -360,6 +376,7 @@ pub fn write_mutants(out: &Path, mutants: &[(Mutant, String)], operators: &str) 
 }
 
 fn write_batch(out: &Path, mutants: &[(Mutant, String)], seed: u64, operators: &str) -> Result<(), String> {
+    crate::diffscope::ignore_own_output(out);
     let dir = out.join("mutants");
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;

@@ -2,13 +2,13 @@
 
 Probatio is the program in this repository. Agents run it. A person who is not going to run commands can stop after the top of `README.md`.
 
-The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.7.1, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
+The shipped program is the Rust binary. `cargo build` writes it, and `cargo test` runs its suite. The TypeScript CLI was replaced by that rewrite, and the rewrite is complete. Changelog entries through 0.3.0, and the notes in `docs/` other than `docs/releasing.md`, describe the TypeScript program. Do not follow those notes as the current contract. The crate version is 0.8.0, and the MCP server reports it. Read a command from `schemas/` or `probatio schema <command>`. A changed `schemaVersion` means a field you read may have moved.
 
 Probatio scores a test suite. It does not replace the suite, write the missing test, fetch a toolchain, or prove a change is safe. A kill is an assertion the suite already had.
 
 ## How to run it
 
-Prefer the `probatio` MCP server when it is connected. The tools are `mutate_diff`, `mutate_generate`, `mutate_run`, and `mutate_tally` (group `core`), `schema` (group `diagnostics`), and `probatio`, which runs any CLI command by argv (group `cli`). Argument names are camelCase. An unknown argument, a missing required one, or a wrong type is refused in one line that names the argument and what is expected; fix the call rather than retrying it. The server is `probatio mcp` on stdin. `src/main.rs` handles that before dispatch. A normal command named `mcp` is a refusal, because the server is the process that reads stdin.
+Prefer the `probatio` MCP server when it is connected. The tools are `mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally`, `job_status`, and `cancel_job` (group `core`), `schema` (group `diagnostics`), and `probatio`, which runs any CLI command by argv (group `cli`). Argument names are camelCase. An unknown argument, a missing required one, or a wrong type is refused in one line that names the argument and what is expected; fix the call rather than retrying it. The server is `probatio mcp` on stdin. `src/main.rs` handles that before dispatch. A normal command named `mcp` is a refusal, because the server is the process that reads stdin.
 
 This checkout launches it from `.grok/config.toml` through `.grok/probatio-mcp.sh` (`cargo run --quiet --offline -- mcp`). A session that is already open does not see a server that was just added.
 
@@ -25,15 +25,27 @@ Extra fields do not change `schemaVersion`. On `mutate run`, `suiteCommand` is t
 
 ## After an edit
 
-Call `mutate_diff` with `package` when you have changed code and want to know whether the changed lines are tested. It diffs the working tree against `since` (default `HEAD`: uncommitted edits; untracked source files count whole; pass `main` to score a branch), mutates only those lines, runs the suite on each mutant, and returns `survivors` with `file`, `line`, `column`, `original`, and `replacement`. Each survivor is a changed line no test checks: add a test that fails on that change and passes on your code, then call `mutate_diff` again. Each call starts from a fresh `<package>/.probatio/diff`, so the new test counts. More than `maxMutants` (default 30) mutants are reported as `notRun`. The refusals below (red baseline, missing tool) apply the same way.
+Call `mutate_diff` with `package` when you have changed code and want to know whether the changed lines are tested. Grep and coverage cannot tell you that: a line can run under a test that never checks it. It diffs the working tree against `since`, mutates only those lines, runs the suite on each mutant, and returns `survivors` with `file`, `line`, `column`, `original`, and `replacement`. Each survivor is a changed line no test checks: add a test that fails on that change and passes on your code, then call `mutate_diff` again. Each call starts from a fresh `<project root>/.probatio/diff/<package path>`, so the new test counts. More than `maxMutants` (default 30) mutants are reported as `notRun`. The refusals below (red baseline, missing tool) apply the same way.
+
+`since`:
+
+- `HEAD` (default): uncommitted edits. Untracked source files count whole.
+- One ref, such as `main`: the lines this branch changed, diffed from the merge-base of that ref and HEAD. Lines that only changed on `main` are not scored, even after you merged `main` into the branch. Use this to score a branch.
+- `A..B` starts at `A` itself (git's two dots); `A...B` starts at the merge-base of `A` and `B`. `B` must be HEAD (empty means HEAD), because mutants run on the working tree. Uncommitted edits count in every form.
+
+Test code is not mutated: files under `tests/`, `test/`, `benches/`, `__tests__/`, test file names (`*_test.go`, `test_*.py`, `*.test.ts`, `FooTest.java`, Rust `tests.rs`, ...), and Rust items under `#[cfg(test)]`, `#[test]`, or another test attribute. `testLinesSkipped` counts the changed lines left out. Pass `includeTests: true` only when the user wants test code mutated. A mutant that did not build is in `unbuildable`, not in `survivors`: it is not a gap and not a score.
+
+## Long runs are jobs
+
+Every MCP call that runs tests (`mutate_diff`, `mutate_run`, `probatio`) is a job, so it is never cut off by the client's idle timeout. The call waits `waitSeconds` (default 20, at most 600). If the run ends by then, the reply is the result, with `status: "completed"`. If not, the reply has `status: "running"`, a `job_id`, and `progress` (`phase`, `done` of `total`, `killed`, `survived`), and the run goes on. Then call `job_status` with that `job_id` and `waitSeconds: 600`: it returns the result as soon as the run ends, or `running` with progress after ten minutes; call it again. `job_status` with `waitSeconds: 0` reads progress at once. It also answers after the run ended and after the server restarted (`status: "lost"` when the server that ran it stopped first; the results it wrote are kept). `cancel_job` stops a run and every process under it and removes its mutant tree. Do not start the same run twice to see whether the first is still going: ask `job_status`.
 
 ## A campaign
 
 The package is the directory the user named. It can be this repo or another checkout. Do not edit that checkout's source, tests, or environment to make a suite pass. Do not install a tool the binary refused to fetch.
 
-1. Call `mutate_generate` with `package` and `out`. Use `<package>/.probatio/generate` unless the user named a directory. Pass `src` when they named one directory. Pass `maxMutants` only when they asked for a slice. Generate does not run the suite. The summary states the count, and the bound when the walk stopped early.
+1. Call `mutate_generate` with `package` and `out`. Use `<project root>/.probatio/generate` unless the user named a directory. The project root is the top of the git checkout; `.probatio/` ignores itself, so it is never committed. Pass `src` when they named one directory. Pass `maxMutants` only when they asked for a slice. Generate does not run the suite. The summary states the count, and the bound when the walk stopped early.
 2. Tell the user the mutant count and the suite command you will use. If the count is above 100 and they did not ask for the whole repository or a serial campaign, stop and wait.
-3. Call `mutate_run` with `package`, `patches` set to the generate directory, and `out` set to `<package>/.probatio/run` unless they named one. Set `timeoutMs` to one full suite run with room to spare. The default is 120000. A Maven suite needs 600000 or more.
+3. Call `mutate_run` with `package`, `patches` set to the generate directory, and `out` set to `<project root>/.probatio/run` unless they named one. Set `timeoutMs` to one full suite run with room to spare. The default is 120000. A Maven suite needs 600000 or more.
 4. For 30 mutants or fewer, omit `lineMap` and `serial`. For more than 30, pass a real line map, or set `serial` to true. See "Line map" below. With a line map, one call scores every mutant that has no result yet. Without one, more than 30 mutants stop before the first mutant. `confirmCount`, when you pass it, must equal the waiting count. `workers` (`--workers`) runs that many worktrees at once. A kill is confirmed by rerunning the killing test twice unless you pass `confirm: false` (`--no-confirm`).
 5. Read the envelope. `ok` false is a stop. Show `summary` and `next`. A red baseline, a missing report, a timeout, a missing tool, or "No line map" means nothing was mutated. Do not read a kill count from that run.
 6. When `ok` is true, call `mutate_tally` on the same `out`. `deletedTests` is 0. `noKillsYet` is not a deletion list. Do not delete a test.
@@ -42,7 +54,7 @@ The package is the directory the user named. It can be this repo or another chec
 
 A `nextCall` from `mutate run` continues the same out dir. It keeps `--suite-command` as the template, and it omits `--confirm-count`. A finished run sets `nextCall` to null. Reusing an out dir keeps the result files already there and scores the mutants that do not have one. A new campaign uses a new out dir.
 
-A long `mutate_run` holds that tool call until it returns. Other calls are answered meanwhile, and another agent may call `mutate_tally` on the same `out`: it counts the mutants that have a result and the ones still waiting. If the tool call is cut off, run the same call again. Closing the server, or cancelling the call, stops the suite it started. The package is never edited, so nothing needs restoring. A green `baseline.json` is kept when its `command` is the same template. A mutant that already has `results/<id>.json` is not run again.
+A long `mutate_run` is a job (above). Other calls are answered meanwhile, and another agent may call `mutate_tally` on the same `out`: it counts the mutants that have a result and the ones still waiting. If a run was stopped, run the same call again. Closing the server, cancelling a call that is still waiting, or `cancel_job`, stops the suite it started and removes its mutant tree. The package is never edited, so nothing needs restoring. A green `baseline.json` is kept when its `command` is the same template. A mutant that already has `results/<id>.json` is not run again.
 
 ## Suite command
 
@@ -78,7 +90,7 @@ Pytest is `pytest`, a path whose last component is `pytest` (including `.venv/bi
 
 There is no `--only-test` flag. A keep id is a test name the suite can collect. To score names, put `{tests}` or `{tests,}` in the suite command and supply the names from a `files` map or a `--tests` file. Do not invent a flag.
 
-When the package has `node_modules/.bin`, that directory is on the suite process PATH for the baseline and for a mutant worktree or copy. The command string is not rewritten. The worktree (git) and the copy (no git) skip `.git`, `target`, `node_modules`, `dist`, and `.probatio`. Each gets a symlink to the package `node_modules` when the destination does not already have one. Removing the worktree or the copy does not delete the package `node_modules`. A shell exit 127 whose stderr contains `command not found` or `: not found` is a missing tool on the baseline (`judgement` `missing-tool`) and outcome `error` on a mutant. Bash prints the first phrase. Dash, the usual `/bin/sh` on Ubuntu, prints the second. An exit 1 whose text happens to contain those words can still be a kill. The binary does not fetch a toolchain.
+When the package has `node_modules/.bin`, that directory is on the suite process PATH for the baseline and for a mutant worktree or copy. The command string is not rewritten. The worktree (git) holds your tracked files and the untracked files git does not ignore, never `.probatio`. The copy (no git) skips `.git`, `target`, `node_modules`, `dist`, and `.probatio`. Each gets a symlink to the package `node_modules` when the destination does not already have one. Removing the worktree or the copy does not delete the package `node_modules`. A shell exit 127 whose stderr contains `command not found` or `: not found` is a missing tool on the baseline (`judgement` `missing-tool`) and outcome `error` on a mutant. Bash prints the first phrase. Dash, the usual `/bin/sh` on Ubuntu, prints the second. An exit 1 whose text happens to contain those words can still be a kill. The binary does not fetch a toolchain.
 
 A command with `{tests}` or `{tests,}`, an empty name list, and a line map that does not choose tests, refuses before the baseline.
 
@@ -126,7 +138,7 @@ Read no coverage first, then survivors. Neither is a pass.
 - `timeout`: the baseline clock ran out.
 - `error`: the process failed in a way that is not an assertion. Exit 127 with `command not found` or `: not found` is this.
 
-A timeout, an unviable mutant, and an error are not kills and not gaps. A build failure that does not name the mutated file is an `error` (the tree did not build), and when most mutants in a call error, the run refuses with the first error: nothing was scored, which is never a pass. The mutant worktree is the whole git checkout, so a workspace member builds with its workspace; pass the member folder as `package`. Mutant builds always get their own `CARGO_TARGET_DIR`, never yours. For a ledger fix, write a hand-made mutant that keeps the API and restores the old behaviour.
+A timeout, an unviable mutant, and an error are not kills and not gaps. A build failure that does not name the mutated file is an `error` (the tree did not build), and when most mutants in a call error, the run refuses with the first error: nothing was scored, which is never a pass. The mutant worktree is the whole git checkout, so a workspace member builds with its workspace; pass the member folder as `package`. It holds your tracked and untracked files, not ignored ones, and lives in Probatio's cache folder (`PROBATIO_CACHE_DIR`), one per worker, reused by every mutant of a run and removed when the run ends. Mutant builds always get their own `CARGO_TARGET_DIR`, kept between runs so a second run builds only what changed, never yours: a `--target-dir` in the suite command is pointed there for mutant runs too. For a ledger fix, write a hand-made mutant that keeps the API and restores the old behaviour.
 
 A result file that already says `flaky` is counted as flaky. The scorer does not assign that outcome itself.
 
@@ -134,12 +146,12 @@ Baseline judgements, and the run stops before any mutant: `green`, `red` ("alrea
 
 ## Commands
 
-MCP, in preference: `mutate_diff` after an edit; `mutate_generate`, `mutate_run`, `mutate_tally` for a whole package; then `schema` and `probatio`.
+MCP, in preference: `mutate_diff` after an edit; `mutate_generate`, `mutate_run`, `mutate_tally` for a whole package; `job_status` and `cancel_job` for a run that answered with a `job_id`; then `schema` and `probatio`.
 
 CLI. Flags for each one live in `schemas/<name>.schema.json`. Ask with `probatio schema mutate.generate` (dots, not spaces). Do not invent a flag the schema does not list.
 
-- `mutate diff`: mutate the lines changed since `--since` (default `HEAD`), score them, and name the survivors. Needs `--package`. Optional `--since`, `--out`, `--src`, `--suite-command`, `--timeout-ms`, `--max-mutants` (default 30), `--workers`, `--no-confirm`.
-- `mutate generate`: write `mutants.json`. Does not run the suite. Needs `--package` and `--out`. Optional `--src`, `--max-mutants`.
+- `mutate diff`: mutate the lines changed since `--since` (default `HEAD`), score them, and name the survivors. Needs `--package`. Optional `--since`, `--out`, `--src`, `--suite-command`, `--timeout-ms`, `--max-mutants` (default 30), `--workers`, `--no-confirm`, `--include-tests`.
+- `mutate generate`: write `mutants.json`. Does not run the suite. Needs `--package` and `--out`. Optional `--src`, `--max-mutants`, `--include-tests`.
 - `mutate run`: baseline, then one chunk. Needs `--package`, `--patches`, `--out`. Optional `--suite-command`, `--line-map`, `--timeout-ms` (default 120000), `--tests`, `--max-selected` (default 30), `--confirm-count`.
 - `mutate tally`: read `results/*.json`. `deletedTests` is 0. Needs the out dir.
 - `mutate sealed`: writes `sealed.json` with the hidden test still hidden and no catch recorded. It does not restore a test. If a sealed run misses, record the miss.
@@ -165,7 +177,7 @@ Do not publish around the release checks. A release needs a reason in the CHANGE
 
 ## Choosing groups
 
-The MCP tools come in groups. `core` (`mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally`) is always on. Choose the rest for the project you are in, by adding one line to a fenced block whose info string is `agent-tools` in the `AGENTS.md` at the directory the server starts in:
+The MCP tools come in groups. `core` (`mutate_diff`, `mutate_generate`, `mutate_run`, `mutate_tally`, `job_status`, `cancel_job`) is always on. Choose the rest for the project you are in, by adding one line to a fenced block whose info string is `agent-tools` in the `AGENTS.md` at the directory the server starts in:
 
 - `diagnostics` (`schema`): a command's flags and output fields. Turn it off once you know the flags; each tool's own schema already covers the MCP calls.
 - `cli` (`probatio`): every CLI command by argv, for ledger, golden, matrix, queue, check-kill, verify-change, sealed, gap, guard, findings, status, and seal. Turn it off when the work here is mutation campaigns only.

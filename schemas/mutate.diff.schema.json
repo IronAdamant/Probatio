@@ -41,10 +41,14 @@
     {
       "name": "operators",
       "required": false
+    },
+    {
+      "name": "include-tests",
+      "required": false
     }
   ],
   "title": "probatio mutate.diff",
-  "description": "Mutates only the lines changed since --since (default HEAD: uncommitted edits and untracked files), runs the suite on each mutant in a worktree, and names the survivors on those lines. Each call starts from a fresh <out>/run, so a test added since the last call counts. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "description": "Mutates only the lines changed since --since and names the survivors on those lines. --since is HEAD by default (uncommitted edits and untracked files); one ref such as main is read from its merge-base with HEAD, so only this branch's changes are scored; A..B starts at A and A...B at the merge-base of A and B, and B must be HEAD. Test code (tests/, benches/, test files, #[cfg(test)] and #[test] items) is skipped unless --include-tests, and testLinesSkipped counts it. Mutants that do not build are listed under unbuildable, never as survivors. Output goes to <project root>/.probatio/diff/<package path> unless --out or PROBATIO_DIR says otherwise. Each call starts from a fresh <out>/run, so a test added since the last call counts. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -95,6 +99,10 @@
       "type": "integer",
       "minimum": 0
     },
+    "testLinesSkipped": {
+      "type": "integer",
+      "minimum": 0
+    },
     "mutantCount": {
       "type": "integer",
       "minimum": 0
@@ -104,6 +112,33 @@
       "minimum": 0
     },
     "survivors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "original": {
+            "type": "string"
+          },
+          "replacement": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "line",
+          "original",
+          "replacement"
+        ]
+      }
+    },
+    "unbuildable": {
       "type": "array",
       "items": {
         "type": "object",

@@ -53,10 +53,14 @@
     {
       "name": "tests-dir",
       "required": false
+    },
+    {
+      "name": "include-tests",
+      "required": false
     }
   ],
   "title": "probatio mutate.generate",
-  "description": "Writes operator mutants as forward patches. Strings and comments are never mutated. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "description": "Writes operator mutants as forward patches. Strings and comments are never mutated. Test code (tests/, benches/, test files, #[cfg(test)] and #[test] items) is skipped unless --include-tests, and testLinesSkipped counts it. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -157,6 +161,10 @@
     },
     "full": {
       "type": "string"
+    },
+    "testLinesSkipped": {
+      "type": "integer",
+      "minimum": 0
     }
   },
   "if": {
