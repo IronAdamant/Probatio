@@ -37,6 +37,7 @@ Fixed:
 - Rust: `&'static str` and other lifetimes were read as the start of a char literal, so the code after one was treated as a string and not mutated (Specula: the new lines of the audio repro got no mutant). Lifetimes, labels, raw strings (`r#"..."#`), and byte chars are masked correctly.
 - Rust: a closure with no arguments (`move || x`, `from_fn(|| next())`) and a double reference (`&&str`) were mutated as boolean operators, which never builds (Specula: renderfollow, 5 of 15 mutants did not build). A `||` or `&&` with no left operand is not mutated.
 - A cargo `could not compile` that quoted a source line with `panic!` or `assert!` was read as a test failing and counted as a kill. It is unviable when no test ran.
+- The test suite, the benchmark, and the npm and `server.json` scripts left their folders in the temp folder (about 50 `probatio-*` folders on one machine). A test folder is now `probatio-test-<name>-<pid>-<n>`, removed with its mutant cache when the test passes (a failing test keeps it); the scripts remove theirs. The start-of-run sweep matches only 0.7's exact leftover names, never a test folder.
 
 ## 0.7.1 - 2026-11-05
 
