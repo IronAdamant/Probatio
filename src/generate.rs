@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn generate_writes_a_java_mutant_and_skips_a_comment() {
-        let root = std::env::temp_dir().join(format!("probatio-gen-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("gen");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("test")).unwrap();
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn generate_returns_an_envelope_when_nbsp_precedes_and() {
-        let root = std::env::temp_dir().join(format!("probatio-gen-nbsp-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("gen-nbsp");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn generate_states_when_max_mutants_stops_the_walk() {
-        let root = std::env::temp_dir().join(format!("probatio-gen-bound-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("gen-bound");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         let mut body = String::from("class A {\n");
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn generate_reads_the_commit_and_refuses_an_untracked_file() {
-        let root = std::env::temp_dir().join(format!("probatio-gen-git-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("gen-git");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         let _ = Command::new("git").arg("-C").arg(&root).args(["init"]).output();

@@ -1012,7 +1012,7 @@ mod tests {
 
     #[test]
     fn an_edited_agents_md_changes_the_list_once() {
-        let dir = std::env::temp_dir().join(format!("probatio-watch-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("watch");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("AGENTS.md");

@@ -28,6 +28,8 @@ pub mod sealed;
 pub mod slots;
 pub mod tally;
 pub mod testcode;
+#[cfg(test)]
+pub mod testdir;
 pub mod verify;
 pub mod worktree;
 

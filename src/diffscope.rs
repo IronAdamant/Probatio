@@ -419,7 +419,7 @@ mod tests {
     /// An uncommitted edit is scored, the unchanged line beside it is not, and the survivor is named.
     #[test]
     fn only_the_edited_lines_are_mutated_and_a_survivor_is_named() {
-        let dir = std::env::temp_dir().join(format!("probatio-diff-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("diff");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         git_ok(&dir, &["init", "-q"]);
@@ -450,8 +450,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    fn repo(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("probatio-{name}-{}", std::process::id()));
+    fn repo(name: &str) -> crate::testdir::TempDir {
+        let dir = crate::testdir::TempDir::new(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         git_ok(&dir, &["init", "-q", "-b", "main"]);

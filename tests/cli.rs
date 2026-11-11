@@ -1,5 +1,7 @@
 //! Launch the shipped binary. The parser is the library the binary uses.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -178,7 +180,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
 
-    let root = std::env::temp_dir().join(format!("probatio-mcp-{}", std::process::id()));
+    let root = common::TempDir::new("mcp");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     let mut source = String::from("class A {\n");
@@ -259,8 +261,8 @@ fn result_count(out: &std::path::Path) -> usize {
     std::fs::read_dir(out.join("results")).map(|entries| entries.count()).unwrap_or(0)
 }
 
-fn java_package(name: &str, ands: usize) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("probatio-cli-{name}-{}", std::process::id()));
+fn java_package(name: &str, ands: usize) -> common::TempDir {
+    let root = common::TempDir::new(&format!("cli-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     let mut body = String::from("class A {\n  boolean f(boolean a, boolean b) {\n");
@@ -1281,7 +1283,7 @@ fn mcp_exits_2_on_an_unknown_or_core_group_in_the_env() {
 
 #[test]
 fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
-    let dir = std::env::temp_dir().join(format!("probatio-mcp-agents-{}", std::process::id()));
+    let dir = common::TempDir::new("mcp-agents");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut child = probatio_command()
@@ -1322,7 +1324,7 @@ fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
 /// cannot keep scoring in a worktree after the session is gone.
 #[test]
 fn mcp_stops_a_running_call_when_the_client_leaves() {
-    let root = std::env::temp_dir().join(format!("probatio-mcp-leave-{}", std::process::id()));
+    let root = common::TempDir::new("mcp-leave");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/A.java"), "class A { boolean f(boolean a, boolean b) { return a && b; } }\n").unwrap();
@@ -1364,7 +1366,7 @@ fn mcp_stops_a_running_call_when_the_client_leaves() {
 /// a job object on Windows, a parent check in the child on Unix.
 #[test]
 fn mcp_stops_a_running_call_when_only_the_server_is_killed() {
-    let root = std::env::temp_dir().join(format!("probatio-mcp-killed-{}", std::process::id()));
+    let root = common::TempDir::new("mcp-killed");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/A.java"), "class A { boolean f(boolean a, boolean b) { return a && b; } }\n").unwrap();

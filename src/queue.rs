@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn claim_is_exclusive_and_reap_returns_an_expired_lease() {
-        let root = std::env::temp_dir().join(format!("probatio-queue-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("queue");
         let _ = fs::remove_dir_all(&root);
         let seeded = seed(&root, &["b".into(), "a".into(), "../no".into()]).unwrap();
         assert_eq!(seeded, ["a", "b"]);

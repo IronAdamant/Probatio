@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn a_label_without_the_three_fields_is_not_a_success() {
-        let dir = std::env::temp_dir().join(format!("probatio-sealed-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("sealed");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("label.txt"), "bug_id=only\n").unwrap();
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn check_kill_without_a_patch_is_not_done() {
-        let dir = std::env::temp_dir().join(format!("probatio-ck-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("ck");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("patches")).unwrap();
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_fix_that_edited_the_killing_test_is_a_miss() {
-        let root = std::env::temp_dir().join(format!("probatio-fix-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("fix");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("tests")).unwrap();
         let git = |args: &[&str]| {

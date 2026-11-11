@@ -532,7 +532,7 @@ mod tests {
     /// A result file being written (not yet whole) is not counted, and every whole one is.
     #[test]
     fn progress_counts_whole_results_while_more_are_written() {
-        let dir = std::env::temp_dir().join(format!("probatio-progress-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("progress");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("out/results")).unwrap();
         fs::create_dir_all(dir.join("patches")).unwrap();

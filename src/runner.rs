@@ -2561,11 +2561,8 @@ mod tests {
     use crate::generate;
     use std::process::Command;
 
-    fn temp(name: &str) -> PathBuf {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("probatio-{name}-{}-{id}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
+    fn temp(name: &str) -> crate::testdir::TempDir {
+        let path = crate::testdir::TempDir::new(name);
         fs::create_dir_all(path.join("src")).unwrap();
         path
     }
@@ -3318,7 +3315,7 @@ mod tests {
         assert!(parse_python("python3 -m unittest tests.test_gate").is_none());
     }
 
-    fn py_package(name: &str, gate: &str, methods: &str) -> PathBuf {
+    fn py_package(name: &str, gate: &str, methods: &str) -> crate::testdir::TempDir {
         let package = temp(name);
         fs::write(package.join("src/gate.py"), gate).unwrap();
         fs::create_dir_all(package.join("tests")).unwrap();

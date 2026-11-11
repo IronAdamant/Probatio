@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn wording_can_be_rerecorded_and_a_contract_change_needs_a_trailer() {
-        let dir = std::env::temp_dir().join(format!("probatio-golden-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("golden");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("recorded.json"), "{\n  \"rows\": {\n    \"a\": {\"ok\": true, \"reason\": \"kept\", \"next\": \"old\"}\n  }\n}\n").unwrap();
@@ -628,9 +628,7 @@ mod tests {
 
     #[test]
     fn record_writes_rows_from_a_passing_node_test() {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("probatio-grec-{}-{id}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("grec");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("test")).unwrap();

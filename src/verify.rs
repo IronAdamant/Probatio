@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn an_uncommitted_edit_is_not_scored() {
-        let root = std::env::temp_dir().join(format!("probatio-verify-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("verify");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         let git = |args: &[&str]| { let _ = Command::new("git").arg("-C").arg(&root).args(args).status(); };

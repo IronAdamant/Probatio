@@ -3,6 +3,8 @@
 //! removes its mutant tree. Specula M5: `mutate_diff` and `mutate_run` died at the client's
 //! 30-minute idle timeout on large crates, and a cancelled run left its worktree behind.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -72,8 +74,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A git repo with one committed Java file and an uncommitted edit that has one mutant.
-fn edited_repo(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("probatio-jobs-{name}-{}", std::process::id()));
+fn edited_repo(name: &str) -> common::TempDir {
+    let dir = common::TempDir::new(&format!("jobs-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     git(&dir, &["init", "-q"]);
@@ -105,7 +107,7 @@ fn trees_in(cache: &Path) -> Vec<PathBuf> {
 #[test]
 fn a_slow_diff_answers_with_a_job_and_status_returns_the_summary_after_it_ends() {
     let repo = edited_repo("status");
-    let cache = repo.with_extension("cache");
+    let cache = common::TempDir::new("jobs-cache");
     let _ = std::fs::remove_dir_all(&cache);
     let mut server = Server::start(&repo, &cache);
     let args = format!(
@@ -147,7 +149,7 @@ fn a_slow_diff_answers_with_a_job_and_status_returns_the_summary_after_it_ends()
 #[test]
 fn a_fast_diff_answers_with_its_result_in_the_same_call() {
     let repo = edited_repo("fast");
-    let cache = repo.with_extension("cache");
+    let cache = common::TempDir::new("jobs-cache");
     let mut server = Server::start(&repo, &cache);
     let args = format!(r#"{{"package":{},"suiteCommand":"echo ok","confirm":false}}"#, json::stringify_compact(&Value::String(repo.display().to_string())));
     let reply = server.call("mutate_diff", &args);
@@ -161,7 +163,7 @@ fn a_fast_diff_answers_with_its_result_in_the_same_call() {
 #[test]
 fn cancel_job_stops_the_run_and_removes_its_mutant_tree() {
     let repo = edited_repo("cancel");
-    let cache = repo.with_extension("cache");
+    let cache = common::TempDir::new("jobs-cache");
     let _ = std::fs::remove_dir_all(&cache);
     let marker = repo.with_extension("finished");
     let _ = std::fs::remove_file(&marker);

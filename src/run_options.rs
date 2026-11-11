@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn affected_tests_name_the_importer_only() {
-        let root = std::env::temp_dir().join(format!("probatio-affected-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("affected");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("tests")).unwrap();
         fs::write(root.join("tests/test_calc.py"), "import calc\n").unwrap();
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn history_reuses_only_an_unchanged_mutant_and_test() {
-        let root = std::env::temp_dir().join(format!("probatio-hist-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("hist");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("t.py"), "assert True\n").unwrap();

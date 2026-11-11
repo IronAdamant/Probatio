@@ -608,7 +608,8 @@ mod tests {
         assert_eq!(legacy_kind("probatio-aeb1b487cedf6ca1-0"), Some(Legacy::Worktree));
         assert_eq!(legacy_kind("probatio-cargo-9b4927f54689f310-0"), Some(Legacy::Target));
         assert_eq!(legacy_kind("probatio-copy-9b4927f54689f310-m0123456789ab"), Some(Legacy::Copy));
-        for name in ["probatio-cli-tokens-10104", "probatio-diff-19824", "probatio-grec-42768-0", "probatio-bench-js", "probatio-cache"] {
+        // A test's own folder is never taken for a run's leftover, whatever its age.
+        for name in ["probatio-test-cli-tokens-10104-3", "probatio-test-timeout-2976-43", "probatio-cli-tokens-10104", "probatio-diff-19824", "probatio-grec-42768-0", "probatio-bench-js", "probatio-cache"] {
             assert_eq!(legacy_kind(name), None, "{name}");
         }
     }
@@ -617,7 +618,7 @@ mod tests {
     /// happens when a run ends or is killed.
     #[test]
     fn a_held_slot_is_skipped_and_a_released_one_is_taken() {
-        let dir = std::env::temp_dir().join(format!("probatio-lock-test-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("lock-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let held = take_lock(&dir).expect("a free slot");
@@ -629,7 +630,7 @@ mod tests {
 
     #[test]
     fn a_read_only_tree_is_removed() {
-        let dir = std::env::temp_dir().join(format!("probatio-ro-test-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("ro-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("a/b")).unwrap();
         let file = dir.join("a/b/locked.txt");
@@ -656,7 +657,7 @@ mod tests {
     /// suite adds is removed, and the tree goes with the slot.
     #[test]
     fn a_tree_keeps_mtimes_restores_mutated_files_and_goes_with_its_slot() {
-        let repo = std::env::temp_dir().join(format!("probatio-slot-repo-{}", std::process::id()));
+        let repo = crate::testdir::TempDir::new("slot-repo");
         let _ = fs::remove_dir_all(&repo);
         fs::create_dir_all(repo.join("src")).unwrap();
         fs::create_dir_all(repo.join("big")).unwrap();

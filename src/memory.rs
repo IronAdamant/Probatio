@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn a_gap_fix_requires_a_real_guard_line_and_status_hides_a_seal() {
-        let root = std::env::temp_dir().join(format!("probatio-mem-{}", std::process::id()));
+        let root = crate::testdir::TempDir::new("mem");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/guard.txt"), "line one\nkeep this\n").unwrap();

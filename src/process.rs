@@ -698,7 +698,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn deadline_kills_a_grandchild_that_ignores_sigterm() {
-        let dir = std::env::temp_dir().join(format!("probatio-kill-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("kill");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let pid_path = dir.join("grand.pid");
@@ -736,7 +736,7 @@ mod tests {
     /// Windows runs this too: a `:`-joined `PATH` there split `C:\...` and lost every entry.
     #[test]
     fn a_local_node_bin_is_on_the_suite_path() {
-        let dir = std::env::temp_dir().join(format!("probatio-bin-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("bin");
         let _ = fs::remove_dir_all(&dir);
         let bin = dir.join("node_modules/.bin");
         fs::create_dir_all(&bin).unwrap();
@@ -757,7 +757,7 @@ mod tests {
         assert!(result.spawned, "{}", result.stderr);
         assert_eq!(result.status, Some(0), "{}", result.stderr);
         assert!(result.stdout.contains("from-local-bin"), "{}", result.stdout);
-        let work = std::env::temp_dir().join(format!("probatio-binwork-{}", std::process::id()));
+        let work = crate::testdir::TempDir::new("binwork");
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(&work).unwrap();
         let from_package = run_shell_with_bin_root("probatio-local-ok", Some(&work), Some(&dir), Duration::from_secs(5));

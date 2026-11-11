@@ -113,6 +113,7 @@ async function schemaFor(server) {
 
 function compileValidator(schema) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "probatio-server-schema-"));
+  process.on("exit", () => fs.rmSync(tmp, { recursive: true, force: true }));
   // npm is npm.cmd on Windows, and Node starts a .cmd shim only through a shell.
   const windows = process.platform === "win32";
   const prefix = windows ? '"' + tmp + '"' : tmp;
