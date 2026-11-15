@@ -6,6 +6,36 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## 0.9.0 - 2026-11-15
+
+Fixes from a week of Probatio 0.8.1 on Specula's large Rust workspace. Every run there found untested behaviour, but it was never run on the big crate: nothing said what a run would cost, it competed with the gate for one machine, a capped run could not be continued, and the agent made more than twenty "undo this fix, the named test must fail" checks by hand. `schemaVersion` stays 2: fields were added, none renamed or removed. MIGRATION.md has a row for each behaviour change.
+
+Added:
+
+- `mutate patch` (MCP `mutate_patch`, group `core`): one change given as a unified diff, scored like a mutant. `patch` is the diff text or a path to one (paths from the checkout top or from the package); `reverse` applies it in reverse, so a fix's own diff undoes the fix; `tests` names the tests to run (at `{tests}` in the suite command, after `--` for `cargo test`, at the end for pytest; none runs the whole suite). It applies the diff with `git apply` in a mutant tree, runs the tests there once without it (they must pass) and once with it, and replies `outcome` `killed` (a test failed with the diff), `survived` (none noticed), `flaky`, or, with `ok` false, `unviable`, `timeout`, or `error`, plus `killedBy` and `files`. Your tree is never written.
+- `mutate diff --continue` (MCP `continue: true`): keeps the last call's results when it scored the same mutants (same changed lines, same text) and scores the next `maxMutants` that have none. A capped reply's `nextCall` is that call. A changed tree starts over and says so.
+- `mutate diff --estimate` (MCP `estimate: true`): scores nothing and returns the mutant count and `estimate` (`basis`, `perMutantMs`, `baselineMs`, `treeCheckMs`, `thisCallMs`, `allMs`, `calls`, `workers`). The time comes from `<out>/cost.json`, which each call writes, when it used the same suite command; otherwise from two timed suite runs in a mutant tree with no mutant (the first builds what the kept build folder lacks and is reported as `setupMs`).
+- A time budget on `mutate diff`: `--budget-ms` or `--max-minutes` (MCP `maxMinutes`). No mutant starts once that much time has passed since the call began, the baseline included; one is always scored. The reply says the budget ended the call, and `nextCall` continues.
+- `etaSeconds` in a running job's `progress` once the baseline is known: the mutants still waiting, at the mean time of those scored so far (else the baseline time), over the workers. `job_status` shows it as "about N left".
+- `--low-priority` on `mutate diff`, `mutate run`, and `mutate patch` (MCP `lowPriority`): the suites, builds, and git processes Probatio starts run below normal priority (the below-normal priority class on Windows, niceness 10 on Unix, both inherited by what they start). It does not limit build jobs; put `-j` in the suite command for that.
+- `mutate diff`: `mutantsTotal`, `scoredThisCall`, `continued`, `survivorsLeftOut`, `unbuildableLeftOut`, `fullList` (`<out>/survivors.json`, every survivor and did-not-build row, when the reply lists only 10 of either), `equivalent`, and `id` on each survivor.
+- `treePath`, `treePathLength`, and `longestTreePathLength` on `mutate run`, `mutate diff`, and `mutate patch`.
+- `workers` on MCP `mutate_diff` (the CLI flag was already there).
+- A survivor that matches a `findings add --status equivalent` record (in `<project root>/.probatio`, by mutant id, or by file, line, and that line's text) carries `equivalent` with the recorded reason in `mutate diff` and `mutate tally`, and `next` points at the first open one. `mutate diff`'s `next` gives the exact `findings add` call that records one.
+
+Changed:
+
+- A capped `mutate diff` spreads its budget across the changed files: round-robin by file, and inside a file one mutant per changed line before a second on any line. 0.8 sorted by file and line and cut the list, so the alphabetically first files took the whole budget (one lane ran 24 of 293 mutants, all from the first files).
+- The mutant cache layout is shorter, for Windows' 260-character limit (a Rust 1.100 link fails when its argument file's path reaches it, with a misleading message): `<cache>/<8 hex>/<slot>/t` for the tree and `.../b` for the build folder, 11 characters less than 0.8's `<16 hex>/<slot>/tree` and `target`. 0.8's folders, build caches included, are removed by the next sweep once no run holds them, so the first 0.9 run on a checkout builds its cache again.
+- Windows: a mutant tree whose longest file path would reach 260 characters is refused before it is made, naming `PROBATIO_CACHE_DIR`, and a build folder deep enough that Cargo's own folders may reach the limit is named in `next`.
+- The mutant trees are restored from a snapshot of each mutated file taken when the run starts, not from your tree. An edit during a job no longer changes what is scored or fails the next mutant with "patch does not apply". Line numbers are your working-tree lines at call time.
+- Tool descriptions, the `initialize` instructions, and a running job's `next` recommend `waitSeconds` about 100 and say a longer wait may be cut by the client (Claude Code cut a 600 s wait at 120 s and turned it into a background task). The cap stays 600.
+
+Fixed:
+
+- `--budget-ms` and `--max-minutes` on `mutate run` were checked only while the mutants were listed, before any ran, so a budget that passed during scoring stopped nothing. The check is now made before each mutant starts.
+- AGENTS.md said the scorer never assigns `flaky`. It does: a kill that does not repeat on both confirmation reruns is `flaky`.
+
 ## 0.8.1 - 2026-11-12
 
 0.8.0's code, released. The `v0.8.0` tag has no GitHub release and nothing was published from it: the release workflow's macOS builds were cancelled with "The configuration 'macos-14-arm64-us-default' is not supported", so the release and publish jobs did not run.
