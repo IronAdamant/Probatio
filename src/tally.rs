@@ -93,6 +93,26 @@ pub fn tally(out: &Path) -> Envelope {
         file.then(left.get("line").and_then(Value::as_int).unwrap_or(0).cmp(&right.get("line").and_then(Value::as_int).unwrap_or(0)))
             .then(left.get("id").and_then(Value::as_str).unwrap_or("").cmp(right.get("id").and_then(Value::as_str).unwrap_or("")))
     });
+    // A gap someone recorded as equivalent (findings add) is labelled, so it is not read again.
+    let package = fs::read_to_string(out.join("run.json"))
+        .ok()
+        .and_then(|text| json::parse(&text).ok())
+        .and_then(|value| value.get("package").and_then(Value::as_str).map(PathBuf::from));
+    let mut equivalent = 0usize;
+    if let Some(package) = &package {
+        let recorded = crate::equivalent::load(package);
+        if !recorded.is_empty() {
+            for gap in &mut gaps {
+                let id = gap.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                let file = gap.get("file").and_then(Value::as_str).unwrap_or("").to_string();
+                let line = gap.get("line").and_then(Value::as_int).unwrap_or(0);
+                if let (Some(record), Value::Object(entries)) = (crate::equivalent::find(&recorded, package, &id, &file, line), &mut *gap) {
+                    entries.push(("equivalent".into(), Value::String(record.reason.clone())));
+                    equivalent += 1;
+                }
+            }
+        }
+    }
     let killed = results.iter().filter(|item| item.outcome == "killed").count();
     let unnamed = results.iter().filter(|item| item.outcome == "killed" && item.killed_by.iter().all(|name| !is_test_name(name))).count();
     let mut summary = format!(
@@ -109,7 +129,10 @@ pub fn tally(out: &Path) -> Envelope {
     if no_coverage > 0 {
         notes.push(format!("{no_coverage} no coverage. That line was not seen. It is not a pass and not a gap."));
     }
-    if let Some(first) = gaps.first() {
+    if equivalent > 0 {
+        summary.push_str(&format!(" {equivalent} of the gaps are recorded as equivalent."));
+    }
+    if let Some(first) = gaps.iter().find(|gap| gap.get("equivalent").is_none()) {
         let id = first.get("id").and_then(Value::as_str).unwrap_or("");
         let file = first.get("file").and_then(Value::as_str).unwrap_or("");
         let line = first.get("line").and_then(Value::as_int).unwrap_or(0);
@@ -358,6 +381,30 @@ mod tests {
 #[cfg(test)]
 mod progress_tests {
     use super::*;
+
+    /// Specula M5: an equivalent survivor recorded with `findings add` was read again on every
+    /// tally. The gap now carries the recorded reason, and the first gap named is an open one.
+    #[test]
+    fn a_gap_recorded_as_equivalent_is_labelled() {
+        let dir = crate::testdir::TempDir::new("tally-equivalent");
+        let _ = fs::remove_dir_all(&dir);
+        let out = dir.join("out");
+        fs::create_dir_all(out.join("results")).unwrap();
+        fs::write(out.join("results/m1.json"), r#"{"id":"m1","file":"src/a.rs","line":2,"outcome":"survived","tests":[]}"#).unwrap();
+        fs::write(out.join("results/m2.json"), r#"{"id":"m2","file":"src/a.rs","line":3,"outcome":"survived","tests":[]}"#).unwrap();
+        let package = json::stringify_compact(&Value::String(dir.display().to_string()));
+        fs::write(out.join("run.json"), format!(r#"{{"package":{package},"patches":[]}}"#)).unwrap();
+        let finding = crate::memory::Finding { id: "m1".into(), status: "equivalent".into(), reason: "a spin bound".into(), file: None, line: None, hash: None, agent: None };
+        crate::memory::append_finding(&crate::diffscope::probatio_dir(&dir), &finding).unwrap();
+        let envelope = tally(&out);
+        let value = envelope.to_value("");
+        let gaps = json::stringify_compact(value.get("gaps").unwrap());
+        assert!(gaps.contains(r#""id":"m1","file":"src/a.rs","line":2,"outcome":"survived","equivalent":"a spin bound""#), "{gaps}");
+        assert!(!gaps.contains(r#""id":"m2","file":"src/a.rs","line":3,"outcome":"survived","equivalent""#), "{gaps}");
+        assert!(envelope.summary.contains("1 of the gaps are recorded as equivalent"), "{}", envelope.summary);
+        assert!(envelope.next.contains("First gap is m2 at src/a.rs:3."), "{}", envelope.next);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_tally_during_a_run_counts_what_is_still_waiting() {

@@ -175,7 +175,7 @@ fn mcp_lists_tools_and_a_serial_run_starts() {
         json::Value::Array(items) => Some(items.iter().filter_map(|item| item.get("name").and_then(json::Value::as_str)).collect::<Vec<_>>()),
         _ => None,
     }).unwrap();
-    assert_eq!(names, ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema", "probatio"]);
+    assert_eq!(names, ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema", "probatio"]);
 
     let missing = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#);
     assert_eq!(missing.get("error").and_then(|value| value.get("code")).and_then(json::Value::as_int), Some(-32601));
@@ -1304,14 +1304,14 @@ fn mcp_sends_list_changed_when_agents_md_changes_the_groups() {
         other => panic!("{other:?}"),
     };
     let first = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
-    assert_eq!(count(&first), 8);
+    assert_eq!(count(&first), 9);
     std::fs::write(dir.join("AGENTS.md"), "```agent-tools\nprobatio: disable cli, diagnostics\n```\n").unwrap();
     let notice = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
     assert_eq!(notice.get("method").and_then(json::Value::as_str), Some("notifications/tools/list_changed"), "{notice:?}");
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let second = json::parse(line.trim()).unwrap();
-    assert_eq!(count(&second), 6);
+    assert_eq!(count(&second), 7);
     let refused = mcp_call(&mut stdin, &mut stdout, r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{}}}"#);
     let text = json::stringify_compact(&refused);
     assert!(text.contains("is disabled (group \\\"diagnostics\\\") by the probatio: disable line in AGENTS.md"), "{text}");
@@ -1400,6 +1400,136 @@ fn mcp_stops_a_running_call_when_only_the_server_is_killed() {
     assert!(!marker.exists(), "the suite kept running after the server was killed");
     drop(stdin);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// A checkout with one commit and `src/A.java` added after it, uncommitted: every line of it is
+/// a changed line.
+fn repo_with_new_file(name: &str, java: &str) -> common::TempDir {
+    let root = common::TempDir::new(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    git_in(&root, &["init", "-q"]);
+    git_in(&root, &["config", "user.email", "a@b.c"]);
+    git_in(&root, &["config", "user.name", "a"]);
+    git_in(&root, &["config", "core.autocrlf", "false"]);
+    std::fs::write(root.join("README.md"), "base\n").unwrap();
+    git_in(&root, &["add", "."]);
+    git_in(&root, &["commit", "-q", "-m", "base"]);
+    std::fs::write(root.join("src/A.java"), java).unwrap();
+    root
+}
+
+/// The priority each suite run reports, one line per run.
+fn priority_lines(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| line.trim().to_string()).filter(|line| !line.is_empty()).collect()
+}
+
+/// Specula M5: a run competed with the gate for one machine, so it was never started on the big
+/// crate. `--low-priority` (MCP `lowPriority`) runs every suite and build below normal
+/// priority: Windows' below-normal class, Unix niceness 10, both inherited by what they start.
+#[test]
+fn low_priority_runs_every_suite_below_normal_priority() {
+    let root = repo_with_new_file("low-priority", "class A { boolean f(int n) { return n > 0; } }\n");
+    let log = |name: &str| root.join(name).display().to_string().replace('\\', "/");
+    let probe = |path: &str| {
+        if cfg!(windows) {
+            format!("powershell -NoProfile -Command \"[System.Diagnostics.Process]::GetCurrentProcess().PriorityClass\" >> '{path}'; echo ok")
+        } else {
+            // `ps` reads the shell's own niceness on Linux and macOS alike (macOS `nice` with no
+            // command prints its usage).
+            format!("ps -o nice= -p $$ >> '{path}'; echo ok")
+        }
+    };
+    let low = |line: &str| if cfg!(windows) { line == "BelowNormal" } else { line.parse::<i32>().is_ok_and(|nice| nice >= 10) };
+    let package = root.display().to_string();
+    let (code, stdout) = launch(&["mutate", "diff", "--package", &package, "--suite-command", &probe(&log("low.txt")), "--no-confirm", "--low-priority"]);
+    assert_eq!(code, 0, "{stdout}");
+    let lines = priority_lines(&root.join("low.txt"));
+    // The baseline, the unmutated run in the tree, and each mutant.
+    assert!(lines.len() >= 3, "{lines:?} {stdout}");
+    assert!(lines.iter().all(|line| low(line)), "{lines:?}");
+    let (code, stdout) = launch(&["mutate", "diff", "--package", &package, "--suite-command", &probe(&log("normal.txt")), "--no-confirm"]);
+    assert_eq!(code, 0, "{stdout}");
+    let normal = priority_lines(&root.join("normal.txt"));
+    assert!(!normal.is_empty() && normal.iter().all(|line| !low(line)), "without the flag the suite runs at the caller's priority: {normal:?}");
+}
+
+/// Specula M5 reported `&gt;` and `&amp;&amp;` in `original` and `replacement`. The server
+/// writes the raw characters (the escaping was the client's); this pins them in the reply line
+/// itself. The same session scores a diff with `mutate_patch`, whose text starts with `---`.
+#[test]
+fn mcp_replies_carry_raw_operator_characters_and_score_a_patch() {
+    let root = repo_with_new_file("mcp-raw", "class A {\n  boolean f(boolean a, boolean b) { return a && b; }\n  boolean g(int n) { return n > 0; }\n}\n");
+    let mut child = probatio_command()
+        .arg("mcp")
+        .current_dir(&root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mcp");
+    let _deadline = Deadline::arm(child.id(), Duration::from_secs(120));
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"mutate_diff","arguments":{{"package":{},"suiteCommand":"echo ok","confirm":false,"waitSeconds":100}}}}}}"#,
+        json_string(&root.display().to_string())
+    );
+    writeln!(stdin, "{call}").unwrap();
+    stdin.flush().unwrap();
+    let mut raw = String::new();
+    stdout.read_line(&mut raw).unwrap();
+    assert!(raw.contains(r#""status":"completed""#), "{raw}");
+    assert!(raw.contains(r#""original":"&&","replacement":"||""#), "{raw}");
+    assert!(raw.contains(r#""original":">","replacement":">=""#), "{raw}");
+    assert!(!raw.contains("&amp;") && !raw.contains("&gt;") && !raw.contains("\\u003e") && !raw.contains("\\u0026"), "{raw}");
+
+    let undo = "--- a/src/A.java\n+++ b/src/A.java\n@@ -2,2 +2,2 @@\n   boolean f(boolean a, boolean b) { return a && b; }\n-  boolean g(int n) { return n > 0; }\n+  boolean g(int n) { return n >= 0; }\n";
+    let arguments = format!(
+        r#"{{"package":{},"patch":{},"tests":["g"],"suiteCommand":"echo {{tests}}; grep -q 'n > 0' src/A.java","confirm":false,"waitSeconds":100}}"#,
+        json_string(&root.display().to_string()),
+        json_string(undo)
+    );
+    let patched = tool_envelope(&mut stdin, &mut stdout, 2, "mutate_patch", &arguments);
+    assert_eq!(patched.get("ok").and_then(json::Value::as_bool), Some(true), "{patched:?}");
+    assert_eq!(patched.get("outcome").and_then(json::Value::as_str), Some("killed"), "{patched:?}");
+    assert_eq!(patched.get("suiteCommand").and_then(json::Value::as_str), Some("echo 'g'; grep -q 'n > 0' src/A.java"));
+    assert!(std::fs::read_to_string(root.join("src/A.java")).unwrap().contains("n > 0"), "the package was edited");
+    drop(stdin);
+    let _ = child.wait();
+}
+
+/// Specula M5: a build in a kept copy failed to link once its path reached 260 characters, and
+/// said something about a plugin. A tree that deep is refused before it is made, naming the
+/// variable that moves it, and every run reports its tree's path length.
+#[cfg(windows)]
+#[test]
+fn a_cache_folder_too_deep_for_windows_is_refused_by_name() {
+    let root = repo_with_new_file("deep-cache", "class A { boolean f(int n) { return n > 0; } }\n");
+    let cache = common::TempDir::new("deep");
+    let deep = ["d", "e", "f", "g"].iter().fold(cache.to_path_buf(), |path, part| path.join(part.repeat(50)));
+    let output = output_with_deadline(
+        probatio_command()
+            .env("PROBATIO_CACHE_DIR", &deep)
+            .args(["mutate", "diff", "--package", &root.display().to_string(), "--suite-command", "echo ok", "--no-confirm"]),
+        Duration::from_secs(90),
+        &["mutate", "diff", "deep cache"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let value = one_envelope(&stdout);
+    assert_eq!(value.get("ok").and_then(json::Value::as_bool), Some(false), "{stdout}");
+    let summary = value.get("summary").and_then(json::Value::as_str).unwrap_or("");
+    assert!(summary.contains("Windows tools fail at 260") && summary.contains("PROBATIO_CACHE_DIR"), "{summary}");
+    let (code, normal) = launch(&["mutate", "diff", "--package", &root.display().to_string(), "--suite-command", "echo ok", "--no-confirm"]);
+    assert_eq!(code, 0, "{normal}");
+    let value = one_envelope(&normal);
+    let length = value.get("longestTreePathLength").and_then(json::Value::as_int).unwrap_or(0);
+    assert!(length > 0 && length < 260, "{normal}");
 }
 
 /// The binary, with its mutant cache in the temp folder instead of the user's cache folder.

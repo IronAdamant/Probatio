@@ -25,6 +25,9 @@ pub const DEFAULT_CALL_WAIT: u64 = 20;
 pub const DEFAULT_STATUS_WAIT: u64 = 60;
 /// No server-side wait is longer than this.
 pub const MAX_WAIT: u64 = 600;
+/// The wait the replies recommend. Some clients cut a call off well before 600 s (Claude Code
+/// at 120 s, turning it into a background task), so a wait under that answers in time.
+pub const SUGGESTED_WAIT: u64 = 100;
 /// Records older than this are removed when the server starts.
 const RECORD_DAYS: u64 = 7;
 
@@ -246,14 +249,14 @@ impl Job {
                 true,
                 format!("{} is running ({}): {line}.", self.tool, minutes(elapsed)),
                 format!(
-                    "Call job_status with job_id \"{}\" to wait for the result (waitSeconds up to 600; the result comes back as soon as the run ends), or cancel_job to stop it.",
+                    "Call job_status with job_id \"{}\" and waitSeconds {SUGGESTED_WAIT} to wait for the result (it comes back as soon as the run ends; up to 600 is allowed, but a client may cut a longer wait off), or cancel_job to stop it.",
                     self.id
                 ),
             ),
             Status::Cancelled => (
                 true,
                 format!("{} was cancelled after {}: {line}. {} removed.", self.tool, minutes(elapsed), count(state.cleaned.len(), "mutant tree")),
-                "Results written before the cancel are kept in the out directory. The same mutate_run call scores the mutants that have none; a mutate_diff call starts again.".into(),
+                "Results written before the cancel are kept in the out directory. The same mutate_run call scores the mutants that have none; the same mutate_diff call with continue: true does too (without it, it starts again).".into(),
             ),
             Status::Error(message) => (false, format!("{} failed: {message}.", self.tool), "Run the same call again. If it fails the same way, run the CLI command to see its output.".into()),
             Status::Completed => (false, format!("{} finished with no envelope.", self.tool), "Run the same call again.".into()),
@@ -355,7 +358,7 @@ pub fn from_record(id: &str) -> Option<Value> {
         ("next", Value::String(if elsewhere {
             "Ask through the session that started it: only its server can wait for it or cancel it. Its results appear in its out directory as they are written.".into()
         } else {
-            "Results it wrote are kept in its out directory. Make the same mutate_run call to score the rest, or call mutate_diff again.".into()
+            "Results it wrote are kept in its out directory. Make the same mutate_run call to score the rest, or the same mutate_diff call with continue: true.".into()
         })),
         ("nextCall", Value::Null),
         ("job_id", Value::String(id.into())),
@@ -393,6 +396,10 @@ pub fn progress(watch: &Watch) -> Value {
     let total = watch.patches.as_deref().filter(|patches| watch.since.is_none() || fresh_dir(patches, watch.since)).and_then(mutant_count);
     let mut outcomes: Vec<(String, i64)> = Vec::new();
     let mut done = 0i64;
+    // Results an earlier call wrote (`mutate diff --continue` keeps them): in the batch, but
+    // not this job's work.
+    let mut earlier = 0usize;
+    let mut durations: Vec<i64> = Vec::new();
     if let Some(out) = &watch.out {
         if let Ok(entries) = fs::read_dir(out.join("results")) {
             for entry in entries.flatten() {
@@ -402,6 +409,7 @@ pub fn progress(watch: &Watch) -> Value {
                 }
                 if let Some(since) = watch.since {
                     if entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|when| when < since) {
+                        earlier += 1;
                         continue;
                     }
                 }
@@ -409,6 +417,11 @@ pub fn progress(watch: &Watch) -> Value {
                 let Ok(value) = json::parse(&text) else { continue };
                 let Some(outcome) = value.get("outcome").and_then(Value::as_str) else { continue };
                 done += 1;
+                if outcome != "no coverage" {
+                    if let Some(ms) = value.get("durationMs").and_then(Value::as_int).filter(|ms| *ms > 0) {
+                        durations.push(ms);
+                    }
+                }
                 let key = match outcome {
                     "no coverage" => "noCoverage",
                     "unviable" => "unbuildable",
@@ -433,6 +446,7 @@ pub fn progress(watch: &Watch) -> Value {
         Some(_) => "mutants",
         None => "running",
     };
+    let total = total.map(|n| n.saturating_sub(earlier));
     let get = |name: &str| outcomes.iter().find(|(key, _)| key == name).map(|(_, n)| *n).unwrap_or(0);
     let mut entries = vec![
         ("phase", Value::String(phase.into())),
@@ -447,7 +461,32 @@ pub fn progress(watch: &Watch) -> Value {
             entries.push((name, Value::Int(n)));
         }
     }
+    if let (Some(out), Some(total), "mutants") = (&watch.out, total, phase) {
+        if let Some(seconds) = time_left(out, total as i64 - done, &durations, &fresh) {
+            entries.push(("etaSeconds", Value::Int(seconds)));
+        }
+    }
     Value::object(entries)
+}
+
+/// Seconds the mutants still waiting should take: the mean time of the ones scored so far
+/// (each rebuilds what it changed and runs the suite), else the baseline time, over the run's
+/// workers. `None` until the baseline is known.
+fn time_left(out: &Path, waiting: i64, durations: &[i64], fresh: &dyn Fn(&Path) -> bool) -> Option<i64> {
+    if waiting <= 0 {
+        return None;
+    }
+    let read = |name: &str, key: &str| {
+        let path = out.join(name);
+        if !fresh(&path) {
+            return None;
+        }
+        json::parse(&fs::read_to_string(&path).ok()?).ok()?.get(key).and_then(Value::as_int)
+    };
+    let per = if durations.is_empty() { read("baseline.json", "durationMs")? } else { durations.iter().sum::<i64>() / durations.len() as i64 };
+    let workers = read("run.json", "workers").unwrap_or(1).clamp(1, waiting);
+    let total_ms = (waiting * per.max(0)) as u64;
+    Some(total_ms.div_ceil(workers as u64).div_ceil(1000) as i64)
 }
 
 fn fresh_dir(patches: &Path, since: Option<SystemTime>) -> bool {
@@ -494,6 +533,9 @@ fn progress_line(progress: &Value) -> String {
         if int(key) > 0 {
             line.push_str(&format!(", {} {words}", int(key)));
         }
+    }
+    if let Some(seconds) = progress.get("etaSeconds").and_then(Value::as_int) {
+        line.push_str(&format!(", about {} left", minutes(seconds.max(0) as u64)));
     }
     line
 }
@@ -547,6 +589,38 @@ mod tests {
         assert_eq!(json::stringify_compact(&now), r#"{"phase":"mutants","done":2,"total":4,"killed":1,"survived":0,"unbuildable":1}"#);
         assert_eq!(pct(&now), 50);
         assert_eq!(progress_line(&now), "2 of 4 mutants scored, 1 killed, 0 survived, 1 did not build");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Specula M5: nothing said what a run would cost. Once the baseline is known, progress says
+    /// how long the mutants still waiting should take (the mean so far, else the baseline time,
+    /// over the workers), and a continued diff's earlier results count neither as done nor as
+    /// waiting.
+    #[test]
+    fn progress_estimates_the_time_left_once_the_baseline_is_known() {
+        let dir = crate::testdir::TempDir::new("eta");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("out/results")).unwrap();
+        fs::create_dir_all(dir.join("patches")).unwrap();
+        fs::write(dir.join("out/results/m0.json"), r#"{"outcome":"survived","durationMs":1}"#).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let since = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        let ids: Vec<String> = (0..7).map(|n| format!(r#"{{"id":"m{n}"}}"#)).collect();
+        fs::write(dir.join("patches/mutants.json"), format!("[{}]", ids.join(","))).unwrap();
+        let watch = Watch { patches: Some(dir.join("patches")), out: Some(dir.join("out")), source: None, since: Some(since) };
+        assert!(progress(&watch).get("etaSeconds").is_none(), "no estimate before the baseline");
+        fs::write(dir.join("out/baseline.json"), r#"{"judgement":"green","durationMs":30000}"#).unwrap();
+        fs::write(dir.join("out/run.json"), r#"{"workers":2}"#).unwrap();
+        let start = progress(&watch);
+        assert_eq!(start.get("total").and_then(Value::as_int), Some(6), "{}", json::stringify_compact(&start));
+        assert_eq!(start.get("etaSeconds").and_then(Value::as_int), Some(90), "6 waiting at 30 s on 2 workers");
+        fs::write(dir.join("out/results/m1.json"), r#"{"outcome":"killed","durationMs":60000}"#).unwrap();
+        fs::write(dir.join("out/results/m2.json"), r#"{"outcome":"survived","durationMs":40000}"#).unwrap();
+        let later = progress(&watch);
+        assert_eq!(later.get("done").and_then(Value::as_int), Some(2));
+        assert_eq!(later.get("etaSeconds").and_then(Value::as_int), Some(100), "4 waiting at 50 s on 2 workers");
+        assert!(progress_line(&later).ends_with(", about 1m40s left"), "{}", progress_line(&later));
         let _ = fs::remove_dir_all(&dir);
     }
 }

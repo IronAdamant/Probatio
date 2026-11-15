@@ -1,22 +1,25 @@
 //! Mutant trees and their build cache.
 //!
 //! A run takes one slot per worker. A slot is a directory in Probatio's cache, keyed by the git
-//! checkout (or the package, with no git):
+//! checkout (or the package, with no git): `<cache>/<8 hex>/<n>/`. The names are short on
+//! purpose: many Windows tools fail on a path of 260 characters or more, and every path of your
+//! checkout sits inside the slot (0.8 used `<16 hex>/<n>/tree` and `target`, 11 characters more).
 //!
-//! - `tree/`: a git worktree of the checkout (or a plain copy), made once per run, used by every
+//! - `t/`: a git worktree of the checkout (or a plain copy), made once per run, used by every
 //!   mutant of that worker, and removed when the run ends, is cancelled, or on the next start
 //!   after a crash. A mutant edits one file in it; after the suite, every file that changed is
-//!   copied back from your tree and every file the suite added is removed, so the next mutant
-//!   starts from your tree again.
-//! - `target/`: `CARGO_TARGET_DIR` for every mutant suite in this slot. It is kept between runs,
-//!   so a second run builds only what changed.
-//! - `lock`: the pid that holds the slot. A slot whose pid is gone is stale and is swept.
-//! - `dirty.txt`: files a mutant has edited while builds went to `target/`.
+//!   restored (a mutated file from the snapshot the run took when it started, anything else from
+//!   your tree) and every file the suite added is removed, so the next mutant starts from the
+//!   text the mutant spans were read from, even if you edit your tree meanwhile.
+//! - `b/`: `CARGO_TARGET_DIR` for every mutant suite in this slot. It is kept between runs, so a
+//!   second run builds only what changed.
+//! - `lock`: held open by the run that owns the slot. A slot whose lock can be taken is free.
+//! - `dirty.txt`: files a mutant has edited while builds went to `b/`.
 //!
 //! Cargo decides what to rebuild from file mtimes. The tree keeps your files' mtimes, so an
-//! unchanged crate is fresh in `target/` from the last run. A file in `dirty.txt` may have been
-//! compiled mutated into `target/`; it is given the current time whenever a tree is made, so
-//! cargo rebuilds it from the clean text and a mutated artifact is never reused.
+//! unchanged crate is fresh in `b/` from the last run. A file in `dirty.txt` may have been
+//! compiled mutated into `b/`; it is given the current time whenever a tree is made, so cargo
+//! rebuilds it from the clean text and a mutated artifact is never reused.
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,6 +35,13 @@ const MAX_DIRTY: usize = 500;
 const STALE_CACHE: Duration = Duration::from_secs(14 * 24 * 3600);
 /// A 0.7 temp worktree or copy older than this, with no owner, is removed by the next sweep.
 const STALE_LEGACY: Duration = Duration::from_secs(3600);
+/// Windows: a path of this many characters or more fails in many tools (`MAX_PATH` is 260 with
+/// its terminating zero). Since Rust 1.100 a link fails when its argument file reaches it.
+pub const WINDOWS_PATH_LIMIT: usize = 260;
+/// Room a slot's `b/` needs for Cargo's own folders (`debug/build/<crate>-<hash>/out/...`,
+/// `debug/incremental/<crate>-<hash>/s-<...>/...`). Less than this before the limit is named in
+/// the reply as a risk.
+pub const TARGET_HEADROOM: usize = 120;
 
 /// `PROBATIO_CACHE_DIR`, else the platform's cache folder, else the temp folder.
 pub fn cache_root() -> PathBuf {
@@ -55,7 +65,7 @@ pub fn cache_root() -> PathBuf {
     }
 }
 
-/// 16 hex digits naming a checkout. The same folder always gets the same key.
+/// 8 hex digits naming a checkout. The same folder always gets the same key.
 pub fn key_for(root: &Path) -> String {
     let path = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut text = path.display().to_string().replace('\\', "/");
@@ -67,7 +77,26 @@ pub fn key_for(root: &Path) -> String {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("{hash:016x}")
+    format!("{:08x}", (hash >> 32) ^ (hash & 0xffff_ffff))
+}
+
+/// A path's length in characters, as Windows counts it: without a `\\?\` prefix.
+pub fn path_chars(path: &Path) -> usize {
+    let text = path.display().to_string();
+    text.strip_prefix(r"\\?\").unwrap_or(&text).chars().count()
+}
+
+/// The refusal for a tree whose longest file path would reach the Windows limit, or `None`.
+/// `tree` is the tree's root and `longest` the longest file path inside it, from that root.
+pub fn path_limit_refusal(tree: &Path, longest: &str, windows: bool) -> Option<String> {
+    let total = path_chars(tree) + 1 + longest.chars().count();
+    if !windows || longest.is_empty() || total < WINDOWS_PATH_LIMIT {
+        return None;
+    }
+    Some(format!(
+        "The mutant tree would hold a path of {total} characters ({}/{longest}); Windows tools fail at {WINDOWS_PATH_LIMIT}. Nothing was mutated. Set PROBATIO_CACHE_DIR to a shorter folder, such as C:\\pb, in the environment Probatio runs in (for the MCP server, the client's env for it), then make the same call.",
+        tree.display()
+    ))
 }
 
 /// One worker's tree and target directory. Dropping it removes the tree and frees the slot.
@@ -78,6 +107,12 @@ pub struct Slot {
     source: PathBuf,
     git: bool,
     manifest: HashMap<String, (u64, SystemTime)>,
+    /// Files (from the top of the tree) as they were when the run started. The mutant spans were
+    /// read from this text, so a mutated file is restored from it, not from your tree, which
+    /// you may have edited since.
+    pub snapshot: HashMap<String, Vec<u8>>,
+    /// The longest file path in the tree, from its root, once the tree is made.
+    pub longest: String,
     /// Held open for the slot's life: the lock.
     _lock: fs::File,
 }
@@ -98,12 +133,14 @@ pub fn acquire(source: &Path, git: bool, count: usize) -> Result<Vec<Slot>, Stri
         let Some(lock) = take_lock(&dir) else { continue };
         let _ = fs::write(dir.join("used"), "");
         slots.push(Slot {
-            tree: dir.join("tree"),
-            target: dir.join("target"),
+            tree: dir.join("t"),
+            target: dir.join("b"),
             dir,
             source: source.to_path_buf(),
             git,
             manifest: HashMap::new(),
+            snapshot: HashMap::new(),
+            longest: String::new(),
             _lock: lock,
         });
     }
@@ -136,22 +173,13 @@ impl Slot {
         if fs::symlink_metadata(&self.tree).is_ok() {
             // A process the last suite left behind still holds the old tree. Build beside it; the
             // sweep removes it once nothing holds it. Only the first build here is a full one.
-            let free = (1..8).map(|n| self.dir.join(format!("tree-{n}"))).find(|other| remove_tree(&self.source, other, self.git));
+            let free = (1..8).map(|n| self.dir.join(format!("t{n}"))).find(|other| remove_tree(&self.source, other, self.git));
             match free {
                 Some(other) => self.tree = other,
                 None => return Err(format!("{} is held by another process; end it, or set PROBATIO_CACHE_DIR to another folder", self.tree.display())),
             }
         }
-        let mut files = if self.git {
-            git(&self.source, &["worktree", "add", "--detach", "--no-checkout", &self.tree.display().to_string(), "HEAD"])
-                .map_err(|error| format!("git worktree add failed: {error}"))?;
-            // Fill the index from HEAD without touching files, so git in the tree sees your edits.
-            let _ = git(&self.tree, &["reset", "-q"]);
-            git_files(&self.source)?
-        } else {
-            fs::create_dir_all(&self.tree).map_err(|error| error.to_string())?;
-            walk_files(&self.source)
-        };
+        let mut files = if self.git { git_files(&self.source)? } else { walk_files(&self.source) };
         for rel in extra {
             let path = self.source.join(rel);
             if path.is_dir() {
@@ -162,6 +190,18 @@ impl Slot {
         }
         files.sort();
         files.dedup();
+        self.longest = files.iter().max_by_key(|rel| rel.chars().count()).cloned().unwrap_or_default();
+        if let Some(refusal) = path_limit_refusal(&self.tree, &self.longest, cfg!(windows)) {
+            return Err(refusal);
+        }
+        if self.git {
+            git(&self.source, &["worktree", "add", "--detach", "--no-checkout", &self.tree.display().to_string(), "HEAD"])
+                .map_err(|error| format!("git worktree add failed: {error}"))?;
+            // Fill the index from HEAD without touching files, so git in the tree sees your edits.
+            let _ = git(&self.tree, &["reset", "-q"]);
+        } else {
+            fs::create_dir_all(&self.tree).map_err(|error| error.to_string())?;
+        }
         let mut wiped = false;
         let dirty = self.dirty();
         if dirty.len() > MAX_DIRTY {
@@ -171,6 +211,15 @@ impl Slot {
         }
         for rel in &files {
             self.copy_in(rel, true)?;
+        }
+        // A file edited after the run read its mutants: the tree gets the text they were read
+        // from, marked dirty so a build of the other text is not reused.
+        let pinned: Vec<String> = self.snapshot.keys().cloned().collect();
+        for rel in pinned {
+            if fs::read(self.tree.join(&rel)).ok().as_ref() != self.snapshot.get(&rel) {
+                self.mark_dirty(&rel);
+                self.restore(&rel)?;
+            }
         }
         if !wiped {
             let now = SystemTime::now();
@@ -227,7 +276,11 @@ impl Slot {
             .collect();
         for rel in changed {
             self.mark_dirty(&rel);
-            self.copy_in(&rel, false)?;
+            if self.snapshot.contains_key(&rel) {
+                self.restore(&rel)?;
+            } else {
+                self.copy_in(&rel, false)?;
+            }
         }
         let tree = self.tree.clone();
         self.remove_extras(&tree, "");
@@ -263,6 +316,20 @@ impl Slot {
         clear_readonly(&to);
         let when = if keep_mtime { meta.modified().unwrap_or_else(|_| SystemTime::now()) } else { SystemTime::now() };
         set_mtime(&to, when);
+        self.record(rel);
+        Ok(())
+    }
+
+    /// Write a snapshot file into the tree with the current time.
+    fn restore(&mut self, rel: &str) -> Result<(), String> {
+        let Some(bytes) = self.snapshot.get(rel) else { return Ok(()) };
+        let to = self.tree.join(rel);
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("{} could not be created: {error}", parent.display()))?;
+        }
+        clear_readonly(&to);
+        fs::write(&to, bytes).map_err(|error| format!("{rel} could not be restored in the mutant tree: {error}"))?;
+        set_mtime(&to, SystemTime::now());
         self.record(rel);
         Ok(())
     }
@@ -473,10 +540,12 @@ pub fn sweep(source: &Path) -> Vec<String> {
         for key in keys.flatten() {
             let key_dir = key.path();
             let name = key.file_name().to_string_lossy().into_owned();
-            // Only checkout keys (16 hex digits); `jobs/` and anything else is left alone.
-            if !key_dir.is_dir() || name.len() != 16 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            // Only checkout keys (8 hex digits, or 16 in the 0.8 layout); `jobs/` and anything else
+            // is left alone.
+            if !key_dir.is_dir() || !(name.len() == 8 || name.len() == 16) || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 continue;
             }
+            let old_layout = name.len() == 16;
             let mine = key.file_name().to_string_lossy() == own;
             let recorded = fs::read_to_string(key_dir.join("source.txt")).ok().map(PathBuf::from);
             let repo = if mine { Some(source.to_path_buf()) } else { recorded.clone() };
@@ -498,7 +567,7 @@ pub fn sweep(source: &Path) -> Vec<String> {
                     newest = newest.max(used);
                 }
                 let trees = fs::read_dir(&dir)
-                    .map(|entries| entries.flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("tree")).map(|entry| entry.path()).collect::<Vec<_>>())
+                    .map(|entries| entries.flatten().filter(|entry| is_tree_name(&entry.file_name().to_string_lossy())).map(|entry| entry.path()).collect::<Vec<_>>())
                     .unwrap_or_default();
                 for tree in trees {
                     let git_tree = tree.join(".git").exists();
@@ -513,13 +582,20 @@ pub fn sweep(source: &Path) -> Vec<String> {
             }
             let source_gone = recorded.as_ref().is_some_and(|path| !path.exists());
             let old = SystemTime::now().duration_since(newest).unwrap_or_default() > STALE_CACHE;
-            if !mine && !live && (source_gone || old) && remove_dir_robust(&key_dir) {
+            // A 0.8 folder (its build cache too) goes as soon as no run holds it: 0.9 builds in
+            // the new layout and would never use it again.
+            if !mine && !live && (source_gone || old || old_layout) && remove_dir_robust(&key_dir) {
                 removed.push(key_dir.display().to_string());
             }
         }
     }
     removed.extend(sweep_legacy(&std::env::temp_dir()));
     removed
+}
+
+/// A slot's tree: `t`, `t1` to `t7`, or 0.8's `tree` and `tree-<n>`.
+fn is_tree_name(name: &str) -> bool {
+    name.starts_with("tree") || name.strip_prefix('t').is_some_and(|rest| rest.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// 0.7 left `probatio-<16 hex>-<n>` worktrees, `probatio-copy-<16 hex>-m<12 hex>` copies, and
@@ -612,6 +688,27 @@ mod tests {
         for name in ["probatio-test-cli-tokens-10104-3", "probatio-test-timeout-2976-43", "probatio-cli-tokens-10104", "probatio-diff-19824", "probatio-grec-42768-0", "probatio-bench-js", "probatio-cache"] {
             assert_eq!(legacy_kind(name), None, "{name}");
         }
+    }
+
+    /// Specula M5: a Rust 1.100 link failed when an argument file's path reached 260 characters,
+    /// with a message about a plugin. The default layout is short, and a tree whose longest path
+    /// would reach the limit is refused on Windows, naming the variable that moves it.
+    #[test]
+    fn a_tree_path_past_the_windows_limit_is_refused_with_the_fix() {
+        let key = key_for(Path::new("/some/checkout"));
+        assert_eq!(key.len(), 8);
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let tree = PathBuf::from("C:\\Users\\someone\\AppData\\Local\\probatio").join(&key).join("0").join("t");
+        assert_eq!(path_chars(&tree), 52);
+        assert_eq!(path_chars(Path::new(r"\\?\C:\a")), 4);
+        let near = "a/".repeat(102) + "b.rs";
+        assert_eq!(52 + 1 + near.len(), 261);
+        let refusal = path_limit_refusal(&tree, &near, true).expect("261 characters is past the limit");
+        assert!(refusal.contains("261 characters") && refusal.contains("PROBATIO_CACHE_DIR"), "{refusal}");
+        assert!(path_limit_refusal(&tree, &near[1..], true).is_some(), "260 characters is the limit");
+        assert!(path_limit_refusal(&tree, &near[2..], true).is_none(), "259 characters fit");
+        assert!(path_limit_refusal(&tree, &near, false).is_none(), "the limit is Windows only");
+        assert!(is_tree_name("t") && is_tree_name("t3") && is_tree_name("tree-2") && !is_tree_name("b") && !is_tree_name("target"));
     }
 
     /// A slot's lock is held while its file is open and free once it is closed, which is what

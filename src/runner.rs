@@ -2,8 +2,9 @@
 //! never become a kill count. A large batch with no line map stops before the first mutant.
 
 use std::fs;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::args::Flags;
 use crate::decide::{self, Baseline, Counts, Selection, Verdict};
@@ -80,6 +81,11 @@ struct BaselineRun {
 
 pub fn run(flags: &Flags) -> Envelope {
     let command = "mutate.run";
+    // The time budget counts from here, the baseline included: it is the wall clock a caller waits.
+    let call_started = Instant::now();
+    if flags.bool("low-priority", false) {
+        process::lower_priority();
+    }
     let package = match flags.need("package") {
         Ok(value) => PathBuf::from(value),
         Err(message) => return missing(command, &message),
@@ -151,6 +157,9 @@ pub fn run(flags: &Flags) -> Envelope {
             &suite,
         );
     }
+    // The text each mutated file has now: the mutant spans were read from it, so the mutant
+    // trees are made and restored from this, not from a file edited while the run goes on.
+    let snapshot = snapshot_files(&package, &mutants);
     crate::diffscope::ignore_own_output(&out);
     if let Err(error) = fs::create_dir_all(&out) {
         return attach_suite(
@@ -446,10 +455,10 @@ pub fn run(flags: &Flags) -> Envelope {
     let mut started_this_call = 0usize;
     let mut scored_from_exit = false;
     let mut jobs = Vec::new();
-    let score_started = std::time::Instant::now();
     let budget_ms = flags.parse_int("budget-ms").unwrap_or(None).or_else(|| {
         flags.parse_int("max-minutes").ok().flatten().map(|minutes| minutes.saturating_mul(60_000))
     });
+    let deadline = budget_ms.map(|limit| call_started + Duration::from_millis(limit));
     let score_timeout = Duration::from_millis(if explicit_timeout.is_some() {
         timeout_ms
     } else {
@@ -468,7 +477,7 @@ pub fn run(flags: &Flags) -> Envelope {
         if started_this_call >= budget {
             continue;
         }
-        if budget_ms.is_some_and(|limit| score_started.elapsed() >= std::time::Duration::from_millis(limit) && started_this_call > 0) {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline && started_this_call > 0) {
             continue;
         }
         let mutant_hash = crate::run_options::patch_hash(
@@ -612,13 +621,23 @@ pub fn run(flags: &Flags) -> Envelope {
     let workers_n = flags.int("workers", 1).unwrap_or(1).max(1) as usize;
     // Written before the first mutant, so a second agent's tally can count what is still waiting.
     let _ = write_run_json(&out, flags, &suite, false);
-    let place = Place { git, repo: &repo, package: &package, timeout: score_timeout };
-    if let Err(error) = run_jobs(&jobs, workers_n, &place, &mut verdicts, max_selected) {
-        return attach_suite(
-            Envelope::new(false, command, error, "Results written so far are kept. Fix the cause, then make the same call: it scores the mutants that have no result."),
-            &suite,
-        );
+    let place = Place { git, repo: &repo, package: &package, timeout: score_timeout, deadline };
+    let pinned_files: HashMap<String, Vec<u8>> = snapshot.into_iter().map(|(file, bytes)| (tree_rel(&file, &place), bytes)).collect();
+    let tree = match run_jobs(&jobs, workers_n, &place, &mut verdicts, max_selected, &pinned_files) {
+        Ok(tree) => tree,
+        Err(error) => {
+            return attach_suite(
+                Envelope::new(false, command, error, "Results written so far are kept. Fix the cause, then make the same call: it scores the mutants that have no result."),
+                &suite,
+            );
+        }
+    };
+    if let Some(tree) = &tree {
+        let _ = fs::write(out.join("tree.json"), json::stringify(&tree.value()));
     }
+    // A job the budget stopped before it started has no result: it was not started this call.
+    started_this_call -= jobs.iter().filter(|job| !job.path.exists()).count();
+    let budget_hit = deadline.is_some_and(|deadline| Instant::now() >= deadline) && mutants.iter().any(|mutant| !result_path(&out, &mutant.id).exists());
 
     let still: Vec<&str> = mutants.iter().filter(|mutant| !result_path(&out, &mutant.id).exists()).map(|mutant| mutant.id.as_str()).collect();
     let waiting_path = out.join("not-started.txt");
@@ -638,7 +657,9 @@ pub fn run(flags: &Flags) -> Envelope {
     } else {
         format!("{} are still waiting", still.len())
     };
-    let mut next = if !still.is_empty() {
+    let mut next = if !still.is_empty() && budget_hit {
+        format!("The time budget ended this call after {started_this_call} mutants. {waiting}; nextCall continues them.")
+    } else if !still.is_empty() {
         format!("{started_this_call} started this call. {waiting}.")
     } else if any_capped {
         decide::cap_note(max_selected)
@@ -674,7 +695,18 @@ pub fn run(flags: &Flags) -> Envelope {
         .with_extra("timeouts", Value::Int(counts.timeouts as i64))
         .with_extra("errors", Value::Int(counts.errors as i64))
         .with_extra("noCoverage", Value::Int(counts.no_coverage as i64))
-        .with_extra("unviable", Value::Int(counts.unviable as i64));
+        .with_extra("unviable", Value::Int(counts.unviable as i64))
+        .with_extra("budgetHit", Value::Bool(budget_hit));
+    if let Some(tree) = &tree {
+        envelope = envelope
+            .with_extra("treePath", Value::String(tree.path.display().to_string()))
+            .with_extra("treePathLength", Value::Int(tree.length as i64))
+            .with_extra("longestTreePathLength", Value::Int(tree.longest as i64));
+        if let Some(note) = tree.risk_note() {
+            envelope.next.push(' ');
+            envelope.next.push_str(&note);
+        }
+    }
     if !still.is_empty() {
         let auto = if auto_map { Some(out.join("lines.json")) } else { None };
         envelope.next_call = Some(resume_argv(flags, &suite, duration_ms(score_timeout), auto.as_deref()));
@@ -834,6 +866,9 @@ pub(crate) fn forward_run_flags(argv: &mut Vec<String>, flags: &Flags) {
     }
     if flags.bool("affected", false) {
         argv.push("--affected".into());
+    }
+    if flags.bool("low-priority", false) {
+        argv.push("--low-priority".into());
     }
     if !flags.bool("confirm", true) {
         argv.push("--no-confirm".into());
@@ -1200,23 +1235,94 @@ struct Place<'a> {
     repo: &'a Path,
     package: &'a Path,
     timeout: Duration,
+    /// No mutant starts after this, once one has been scored (`--budget-ms`, `--max-minutes`).
+    deadline: Option<Instant>,
 }
 
-fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec<Verdict>, max_selected: usize) -> Result<(), String> {
+impl Place<'_> {
+    fn past_deadline(&self) -> bool {
+        self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
+    }
+}
+
+/// The first worker's tree: where it is, and how long its paths are.
+pub(crate) struct TreeInfo {
+    pub path: PathBuf,
+    pub length: usize,
+    pub longest: usize,
+    /// How long the unmutated suite run in the tree took (it builds what the kept cache lacks).
+    pub check_ms: Option<u64>,
+    pub target: PathBuf,
+}
+
+impl TreeInfo {
+    fn of(slot: &crate::slots::Slot) -> TreeInfo {
+        let length = crate::slots::path_chars(&slot.tree);
+        let longest = if slot.longest.is_empty() { length } else { length + 1 + slot.longest.chars().count() };
+        TreeInfo { path: slot.tree.clone(), length, longest, check_ms: None, target: slot.target.clone() }
+    }
+
+    pub fn value(&self) -> Value {
+        let mut entries = vec![
+            ("path", Value::String(self.path.display().to_string())),
+            ("length", Value::Int(self.length as i64)),
+            ("longest", Value::Int(self.longest as i64)),
+        ];
+        if let Some(ms) = self.check_ms {
+            entries.push(("checkMs", Value::Int(ms as i64)));
+        }
+        Value::object(entries)
+    }
+
+    /// Windows: a build folder so deep that Cargo's own folders inside it may reach the limit.
+    pub fn risk_note(&self) -> Option<String> {
+        let target = crate::slots::path_chars(&self.target);
+        if !cfg!(windows) || target + crate::slots::TARGET_HEADROOM < crate::slots::WINDOWS_PATH_LIMIT {
+            return None;
+        }
+        Some(format!(
+            "The mutant build folder {} is {target} characters long; Cargo's folders inside it may reach Windows' {} limit. If a build fails to link, set PROBATIO_CACHE_DIR to a shorter folder.",
+            self.target.display(),
+            crate::slots::WINDOWS_PATH_LIMIT
+        ))
+    }
+}
+
+/// The bytes of every file a mutant edits, read once, keyed by the mutant's `file`.
+fn snapshot_files(package: &Path, mutants: &[LoadedMutant]) -> Vec<(String, Vec<u8>)> {
+    let mut seen: Vec<(String, Vec<u8>)> = Vec::new();
+    for mutant in mutants {
+        if seen.iter().any(|(file, _)| *file == mutant.file) {
+            continue;
+        }
+        if let Ok(path) = safe_join(package, &mutant.file) {
+            if let Ok(bytes) = fs::read(path) {
+                seen.push((mutant.file.clone(), bytes));
+            }
+        }
+    }
+    seen
+}
+
+fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec<Verdict>, max_selected: usize, snapshot: &HashMap<String, Vec<u8>>) -> Result<Option<TreeInfo>, String> {
     if jobs.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let count = workers.max(1).min(jobs.len());
     let source = if place.git { place.repo } else { place.package };
     let mut slots = crate::slots::acquire(source, place.git, count)?;
     let pinned = jobs.iter().any(|job| job.commit.is_some());
+    let mut tree = None;
     if !pinned {
         let extra: Vec<String> = project_copy(place.package).iter().map(|rel| tree_rel(rel, place)).collect();
         for slot in &mut slots {
+            slot.snapshot = snapshot.clone();
             slot.prepare(&extra).map_err(|error| format!("The mutant tree could not be made: {error}"))?;
             let root = slot_root(slot, place);
             link_node_modules(place.package, &root)?;
         }
+        let mut info = TreeInfo::of(&slots[0]);
+        let check_started = Instant::now();
         // One unmutated run in each tree, at once: it builds what the kept target directory does not
         // have yet (a first run, or files a mutant edited last time), so no mutant's clock is spent
         // on that, and it shows the suite passes in the tree as it does in your package.
@@ -1227,11 +1333,16 @@ fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec
         if let Some(Err(message)) = checks.into_iter().find(Result::is_err) {
             return Err(message);
         }
+        info.check_ms = Some(duration_ms(check_started.elapsed()));
+        tree = Some(info);
     }
     let result = if count <= 1 {
         let slot = &mut slots[0];
         let mut outcome = Ok(());
-        for job in jobs {
+        for (index, job) in jobs.iter().enumerate() {
+            if index > 0 && place.past_deadline() {
+                break;
+            }
             let scored = match score_in_slot(job, slot, place) {
                 Ok(scored) => scored,
                 Err(error) => {
@@ -1259,6 +1370,9 @@ fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec
                     let index = {
                         let mut cursor = next.lock().unwrap_or_else(|poison| poison.into_inner());
                         if *cursor >= jobs.len() || error.lock().unwrap_or_else(|poison| poison.into_inner()).is_some() {
+                            return;
+                        }
+                        if *cursor > 0 && place.past_deadline() {
                             return;
                         }
                         let index = *cursor;
@@ -1293,9 +1407,9 @@ fn run_jobs(jobs: &[ScoreJob], workers: usize, place: &Place, verdicts: &mut Vec
             let _ = crate::slots::remove_dir_robust(&pinned_target(slot));
         }
     }
-    // Dropping the slots removes each tree and frees its lock. `target/` stays for the next run.
+    // Dropping the slots removes each tree and frees its lock. `b/` stays for the next run.
     drop(slots);
-    result
+    result.map(|()| tree)
 }
 
 /// The suite once in a fresh tree, with no mutant, and a long clock: the first build into a cold
@@ -1324,6 +1438,212 @@ fn check_tree(job: &ScoreJob, slot: &mut crate::slots::Slot, place: &Place) -> R
     }
 }
 
+/// A job that edits nothing: the suite as written, in a slot tree, with `file` (from the
+/// package) rewritten unchanged so its crate is rebuilt the way a mutant's would be.
+fn plain_job(package: &Path, suite: &str, file: &str) -> Result<ScoreJob, String> {
+    let rendered = decide::render_suite(suite, &[]).map(|(rendered, _)| rendered).map_err(|name| format!("The test name {name} cannot be placed in the suite command."))?;
+    Ok(ScoreJob {
+        mutant: LoadedMutant {
+            id: "unmutated".into(),
+            file: file.to_string(),
+            start: 0,
+            end: 0,
+            original: String::new(),
+            replacement: String::new(),
+            tests: Vec::new(),
+            line: None,
+        },
+        rendered,
+        launch: None,
+        path: PathBuf::new(),
+        selection: Selection { tests: Vec::new(), selected_count: 0, capped: false },
+        confirm: true,
+        hide: Vec::new(),
+        direction: crate::run_options::Direction::Forward,
+        unset: Vec::new(),
+        build: None,
+        agent: String::new(),
+        commit: None,
+        mutant_hash: String::new(),
+        project_env: project_env(package),
+    })
+}
+
+/// The checkout a package's trees are made from, and whether it is a git checkout.
+fn tree_source(package: &Path) -> (PathBuf, bool) {
+    let repo = worktree::toplevel(package).unwrap_or_else(|| package.to_path_buf());
+    let git = worktree::is_git_repo(&repo);
+    (repo, git)
+}
+
+/// One slot with its tree made from your tree, `snapshot` files pinned, and node_modules linked.
+fn ready_slot(place: &Place, snapshot: HashMap<String, Vec<u8>>) -> Result<Vec<crate::slots::Slot>, String> {
+    let source = if place.git { place.repo } else { place.package };
+    let mut slots = crate::slots::acquire(source, place.git, 1)?;
+    let extra: Vec<String> = project_copy(place.package).iter().map(|rel| tree_rel(rel, place)).collect();
+    let slot = &mut slots[0];
+    slot.snapshot = snapshot;
+    slot.prepare(&extra).map_err(|error| format!("The mutant tree could not be made: {error}"))?;
+    link_node_modules(place.package, &slot_root(slot, place))?;
+    Ok(slots)
+}
+
+/// What `mutate diff --estimate` measured in a mutant tree.
+pub(crate) struct TreeTiming {
+    /// The first unmutated run: it builds what the kept build folder lacks.
+    pub setup_ms: u64,
+    /// The second, after `file` was rewritten: the rebuild and suite run one mutant costs.
+    pub per_mutant_ms: u64,
+    /// The build folder was empty before the first run.
+    pub cold: bool,
+    pub tree: TreeInfo,
+}
+
+/// Time the suite twice in a mutant tree with no mutant. Nothing is scored and nothing is
+/// written to the package; the kept build folder is warmer after it.
+pub(crate) fn time_tree(package: &Path, suite: &str, timeout: Duration, file: &str) -> Result<TreeTiming, String> {
+    let job = plain_job(package, suite, file)?;
+    let (repo, git) = tree_source(package);
+    let place = Place { git, repo: &repo, package, timeout, deadline: None };
+    let snapshot = snapshot_files(package, std::slice::from_ref(&job.mutant)).into_iter().map(|(file, bytes)| (tree_rel(&file, &place), bytes)).collect();
+    let mut slots = ready_slot(&place, snapshot)?;
+    let slot = &mut slots[0];
+    let cold = fs::read_dir(&slot.target).map(|mut entries| entries.next().is_none()).unwrap_or(true);
+    let tree = TreeInfo::of(slot);
+    let first = Instant::now();
+    check_tree(&job, slot, &place)?;
+    let setup_ms = duration_ms(first.elapsed());
+    let second = Instant::now();
+    check_tree(&job, slot, &place)?;
+    let per_mutant_ms = duration_ms(second.elapsed());
+    drop(slots);
+    Ok(TreeTiming { setup_ms, per_mutant_ms, cold, tree })
+}
+
+/// `mutate patch`: one change given as a unified diff, scored like a mutant.
+pub(crate) struct PatchCall<'a> {
+    pub package: &'a Path,
+    /// The suite command with the test names already in it.
+    pub suite: String,
+    pub timeout: Duration,
+    /// The diff file, outside the tree.
+    pub patch: &'a Path,
+    pub reverse: bool,
+    pub confirm: bool,
+}
+
+pub(crate) struct PatchScore {
+    pub verdict: Verdict,
+    pub killed_by: Vec<String>,
+    pub duration_ms: u64,
+    /// The last lines of a run that errored or did not build.
+    pub output: String,
+    /// Files the patch changed, from the top of the tree.
+    pub files: Vec<String>,
+    pub tree: TreeInfo,
+}
+
+/// Make a tree, run the suite once with no change (it must pass), apply the diff there with
+/// `git apply`, run the suite again, and restore the tree. Your tree is never written.
+pub(crate) fn score_patch(call: &PatchCall) -> Result<PatchScore, String> {
+    let (repo, git) = tree_source(call.package);
+    let place = Place { git, repo: &repo, package: call.package, timeout: call.timeout, deadline: None };
+    let package_rel = tree_rel("", &place).trim_end_matches('/').to_string();
+    // The diff's paths are from the top of the checkout (`git diff`), or from the package
+    // (`git diff --relative` there): whichever applies.
+    let mut prefixes = vec![String::new()];
+    if !package_rel.is_empty() {
+        prefixes.push(package_rel.clone());
+    }
+    let source = if git { repo.clone() } else { call.package.to_path_buf() };
+    let mut chosen = None;
+    let mut errors: Vec<String> = Vec::new();
+    'search: for prefix in &prefixes {
+        for loose in [false, true] {
+            match patch_files(&source, call.patch, call.reverse, prefix, loose) {
+                Ok(files) if !files.is_empty() => {
+                    chosen = Some((prefix.clone(), loose, files));
+                    break 'search;
+                }
+                Ok(_) => errors.push("the diff changes no file".into()),
+                Err(error) => errors.push(error),
+            }
+        }
+    }
+    let Some((prefix, loose, files)) = chosen else {
+        errors.dedup();
+        return Err(format!("The diff does not apply to your tree ({}). Nothing was run. Make it with git diff against the files as they are now, from the top of the checkout or from the package.", errors.join("; ")));
+    };
+    let inside: Vec<String> = files
+        .iter()
+        .filter_map(|file| if package_rel.is_empty() { Some(file.clone()) } else { file.strip_prefix(&format!("{package_rel}/")).map(str::to_string) })
+        .filter(|file| call.package.join(file).is_file())
+        .collect();
+    let Some(first) = inside.first() else {
+        return Err("The diff changes no existing file inside the package. Pass the package whose tests should notice it (a workspace root holds its members).".into());
+    };
+    let mut job = plain_job(call.package, &call.suite, first)?;
+    job.confirm = call.confirm;
+    let snapshot: HashMap<String, Vec<u8>> = files.iter().filter_map(|rel| fs::read(source.join(rel)).ok().map(|bytes| (rel.clone(), bytes))).collect();
+    let mut slots = ready_slot(&place, snapshot)?;
+    let slot = &mut slots[0];
+    let tree = TreeInfo::of(slot);
+    check_tree(&job, slot, &place).map_err(|message| message.replace("no mutant applied, so no mutant can be scored", "the diff not applied yet, so the diff cannot be scored"))?;
+    for rel in &files {
+        slot.mark_dirty(rel);
+    }
+    let mut apply = vec!["apply".to_string(), "--whitespace=nowarn".into()];
+    apply.extend(patch_options(call.reverse, &prefix, loose));
+    apply.push(call.patch.display().to_string());
+    let words: Vec<&str> = apply.iter().map(String::as_str).collect();
+    let applied = std::process::Command::new("git").arg("-C").arg(&slot.tree).args(&words).stdin(std::process::Stdio::null()).output().map_err(|error| format!("git did not start: {error}"))?;
+    if !applied.status.success() {
+        let text = String::from_utf8_lossy(&applied.stderr).lines().next().unwrap_or("").trim().to_string();
+        let _ = slot.refresh();
+        return Err(format!("git apply failed in the mutant tree: {text}. Nothing was scored."));
+    }
+    let scored = score_in_slot(&job, slot, &place)?;
+    let mut verdict = scored.kind;
+    if verdict == Verdict::Error && scored.cause == "build" && files.iter().any(|file| names_the_file_text(&scored.output, file)) {
+        verdict = Verdict::Unviable;
+    }
+    drop(slots);
+    Ok(PatchScore { verdict, killed_by: scored.killed_by, duration_ms: scored.duration_ms, output: scored.output, files, tree })
+}
+
+fn patch_options(reverse: bool, prefix: &str, loose: bool) -> Vec<String> {
+    let mut options = Vec::new();
+    if reverse {
+        options.push("-R".to_string());
+    }
+    if !prefix.is_empty() {
+        options.push(format!("--directory={prefix}"));
+    }
+    // Second try: a diff written by hand may have no context lines, or other line ends.
+    if loose {
+        options.push("--ignore-whitespace".into());
+        options.push("--unidiff-zero".into());
+    }
+    options
+}
+
+/// The files the diff changes, from the top of `source`, when it applies there cleanly.
+fn patch_files(source: &Path, patch: &Path, reverse: bool, prefix: &str, loose: bool) -> Result<Vec<String>, String> {
+    let mut args = vec!["apply".to_string(), "--check".into(), "--numstat".into()];
+    args.extend(patch_options(reverse, prefix, loose));
+    args.push(patch.display().to_string());
+    let output = std::process::Command::new("git").arg("-C").arg(source).args(&args).stdin(std::process::Stdio::null()).output().map_err(|error| format!("git did not start: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("").trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.split('\t').nth(2)).map(|path| path.trim().to_string()).filter(|path| !path.is_empty()).collect())
+}
+
+fn names_the_file_text(output: &str, file: &str) -> bool {
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    !name.is_empty() && output.contains(name)
+}
+
 /// Where the suite runs inside a slot: the package's folder inside the tree.
 fn slot_root(slot: &crate::slots::Slot, place: &Place) -> PathBuf {
     if place.git {
@@ -1343,7 +1663,7 @@ fn slot_target(job: &ScoreJob, slot: &crate::slots::Slot) -> PathBuf {
 }
 
 fn pinned_target(slot: &crate::slots::Slot) -> PathBuf {
-    slot.dir.join("target-pinned")
+    slot.dir.join("p")
 }
 
 /// The mutated file's path from the top of the slot tree.
@@ -3401,7 +3721,7 @@ mod tests {
         let (env_dir, flag) = mutant.split_once('|').unwrap_or_default();
         let slot = crate::slots::cache_root().join(crate::slots::key_for(&package));
         let slot = slot.display().to_string().replace('\\', "/");
-        assert!(env_dir.starts_with(&slot) && env_dir.ends_with("target"), "{mutant} {slot}");
+        assert!(env_dir.starts_with(&slot) && env_dir.ends_with("/b"), "{mutant} {slot}");
         assert_eq!(flag, format!("--target-dir={env_dir}"), "{mutant}");
         assert!(!text.lines().skip(1).any(|line| line.contains("/user/")), "{text}");
         let recorded = one_result(&out);
