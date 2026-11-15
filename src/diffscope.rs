@@ -301,7 +301,7 @@ pub fn diff(flags: &Flags) -> Envelope {
             .with_extra("mutantsTotal", Value::Int(points.len() as i64))
             .with_extra("continued", Value::Bool(continuing));
     }
-    record_cost(&out, &run_out, &batch, scored_before, &envelope);
+    record_cost(&out, &run_out, &batch, &done_ids, &envelope);
     let recorded = crate::equivalent::load(&package);
     let mut survivors = survivors(&run_out, &batch, &package, &recorded);
     survivors.sort_by_key(position);
@@ -483,9 +483,9 @@ fn continue_argv(flags: &Flags, package: &Path, out: &Path) -> Vec<String> {
 
 /// After a call that scored mutants: what one cost, for the next `--estimate`. Kept in
 /// `<out>/cost.json`, outside the folders a fresh call clears.
-fn record_cost(out: &Path, run_out: &Path, batch: &[(Mutant, String)], scored_before: usize, envelope: &Envelope) {
+fn record_cost(out: &Path, run_out: &Path, batch: &[(Mutant, String)], earlier: &std::collections::HashSet<String>, envelope: &Envelope) {
     let mut durations: Vec<u64> = Vec::new();
-    for (mutant, _) in batch.iter().skip(scored_before) {
+    for (mutant, _) in batch.iter().filter(|(mutant, _)| !earlier.contains(&mutant.id)) {
         let Ok(text) = fs::read_to_string(run_out.join("results").join(format!("{}.json", mutant.id))) else { continue };
         let Ok(value) = json::parse(&text) else { continue };
         let ran = matches!(value.get("outcome").and_then(Value::as_str), Some("killed" | "survived" | "unviable" | "flaky"));
