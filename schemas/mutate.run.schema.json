@@ -121,6 +121,10 @@
     {
       "name": "confirm-count",
       "required": false
+    },
+    {
+      "name": "low-priority",
+      "required": false
     }
   ],
   "title": "probatio mutate.run",
@@ -366,6 +370,19 @@
     },
     "miss": {
       "type": "boolean"
+    },
+    "treePath": {
+      "type": "string",
+      "description": "The first worker's mutant tree."
+    },
+    "treePathLength": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "longestTreePathLength": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The longest file path in the tree, in characters, tree root included. Windows refuses a run where this would reach 260."
     }
   },
   "if": {

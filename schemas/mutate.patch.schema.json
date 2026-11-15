@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/IronAdamant/Probatio/blob/main/schemas/mutate.patch.schema.json",
+  "flags": [
+    {
+      "name": "package",
+      "required": true
+    },
+    {
+      "name": "patch",
+      "required": true
+    },
+    {
+      "name": "tests",
+      "required": false
+    },
+    {
+      "name": "suite-command",
+      "required": false
+    },
+    {
+      "name": "timeout-ms",
+      "required": false
+    },
+    {
+      "name": "reverse",
+      "required": false
+    },
+    {
+      "name": "confirm",
+      "required": false
+    },
+    {
+      "name": "low-priority",
+      "required": false
+    }
+  ],
+  "title": "probatio mutate.patch",
+  "description": "Scores one change given as a unified diff, the way a mutant is scored: the usual use is to undo a fix and check that a named test fails. --patch is the diff text (pass it as --patch=<text>) or the path of a file that holds it; paths in it are from the top of the checkout or from the package. --reverse applies it in reverse (pass the fix's own diff to undo the fix). --tests names a test to run (repeat it); the names go at {tests} or {tests,} in the suite command, after -- for cargo test, or at the end for pytest; with no names the whole suite runs. The diff is applied with git apply in a mutant tree, never in your tree. The suite runs there once without it (it must pass) and once with it. outcome killed means a test failed with the diff applied; survived means nothing noticed it. unviable, timeout, and error are not scores (ok false). A kill is rerun twice unless --no-confirm. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "ok",
+    "command",
+    "summary",
+    "next",
+    "nextCall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "command": {
+      "const": "mutate.patch"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next": {
+      "type": "string"
+    },
+    "nextCall": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "argv"
+          ]
+        }
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "killed",
+        "survived",
+        "flaky",
+        "unviable",
+        "timeout",
+        "error"
+      ]
+    },
+    "killedBy": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Files the diff changes, from the top of the checkout."
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "suiteCommand": {
+      "type": "string",
+      "description": "The command as run, test names in it."
+    },
+    "treePath": {
+      "type": "string"
+    },
+    "treePathLength": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "longestTreePathLength": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

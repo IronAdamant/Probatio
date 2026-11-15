@@ -143,6 +143,52 @@ mod windows_job {
     }
 }
 
+/// `--low-priority`: this process and every process it starts from now on (suites, builds,
+/// git) run below normal priority, so a run can go on beside other work on one machine.
+/// Windows: the below-normal priority class, which a child inherits. Unix: niceness 10 (`nice`),
+/// which a child inherits; a process that is already nicer is left as it is. It does not limit
+/// how many build jobs run; pass `-j` in the suite command for that. Returns false when the
+/// operating system refused.
+pub fn lower_priority() -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        extern "system" {
+            fn GetCurrentProcess() -> *mut c_void;
+            fn GetPriorityClass(process: *mut c_void) -> u32;
+            fn SetPriorityClass(process: *mut c_void, class: u32) -> i32;
+        }
+        const IDLE_PRIORITY_CLASS: u32 = 0x40;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x4000;
+        unsafe {
+            // Already this low or lower (a CI runner may start jobs below normal): left as it is.
+            if matches!(GetPriorityClass(GetCurrentProcess()), IDLE_PRIORITY_CLASS | BELOW_NORMAL_PRIORITY_CLASS) {
+                return true;
+            }
+            SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) != 0
+        }
+    }
+    #[cfg(unix)]
+    {
+        const PRIO_PROCESS: i32 = 0;
+        const NICENESS: i32 = 10;
+        unsafe extern "C" {
+            fn getpriority(which: i32, who: u32) -> i32;
+            fn setpriority(which: i32, who: u32, prio: i32) -> i32;
+        }
+        unsafe {
+            if getpriority(PRIO_PROCESS, 0) >= NICENESS {
+                return true;
+            }
+            setpriority(PRIO_PROCESS, 0, NICENESS) == 0
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TimedRun {
     pub spawned: bool,

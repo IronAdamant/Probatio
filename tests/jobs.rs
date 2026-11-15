@@ -91,6 +91,10 @@ fn text(value: &Value, key: &str) -> String {
     value.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+fn is_tree(name: &str) -> bool {
+    name.strip_prefix('t').is_some_and(|rest| rest.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 fn trees_in(cache: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let Ok(keys) = std::fs::read_dir(cache) else { return found };
@@ -98,7 +102,8 @@ fn trees_in(cache: &Path) -> Vec<PathBuf> {
         let Ok(slots) = std::fs::read_dir(key.path()) else { continue };
         for slot in slots.flatten() {
             let Ok(entries) = std::fs::read_dir(slot.path()) else { continue };
-            found.extend(entries.flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("tree")).map(|entry| entry.path()));
+            // A slot's tree is `t` (or `t1` to `t7` beside one still held).
+            found.extend(entries.flatten().filter(|entry| is_tree(&entry.file_name().to_string_lossy())).map(|entry| entry.path()));
         }
     }
     found

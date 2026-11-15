@@ -17,7 +17,7 @@ use crate::json::{self, Value};
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 const LINE_MAP_BODY: &str = "{\"lines\":[1]}\n";
 
-const INSTRUCTIONS: &str = "Probatio finds changed lines no test checks, which grep and coverage cannot: it makes one small code change (a mutant) at a time in a separate tree, runs the project's own tests, and records whether a test failed. The package is never edited. After editing code, call mutate_diff: it scores only the changed lines (test code skipped) and names the untested ones. For a whole package: mutate_generate, then mutate_run, then mutate_tally. Calls that run tests are jobs: a reply within waitSeconds (default 20) is the result; otherwise it carries job_id, and job_status (waitSeconds up to 600) returns the result when the run ends. cancel_job stops one. Read summary and next in each reply; ok false means stop and show them.";
+const INSTRUCTIONS: &str = "Probatio finds changed lines no test checks, which grep and coverage cannot: it makes one small code change (a mutant) at a time in a separate tree, runs the project's own tests, and records whether a test failed. The package is never edited. After editing code, call mutate_diff: it scores only the changed lines (test code skipped) and names the untested ones; estimate: true first says how many mutants and how long, and a capped run goes on with continue: true. To check that a test holds a fix, mutate_patch applies a diff (such as the fix undone) in a separate tree and says whether a test failed. For a whole package: mutate_generate, then mutate_run, then mutate_tally. Calls that run tests are jobs: a reply within waitSeconds (default 20) is the result; otherwise it carries job_id, and job_status returns the result when the run ends (waitSeconds about 100: up to 600 is allowed, but a client may cut a longer call off). cancel_job stops one. Read summary and next in each reply; ok false means stop and show them.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -56,25 +56,48 @@ struct ToolSpec {
 const CORE: &str = "core";
 const GROUPS: &[&str] = &["core", "diagnostics", "cli"];
 
-const WAIT_HELP: &str = "Seconds to wait for the result (0-600, default 20). Past that the reply has job_id; the run goes on.";
+const WAIT_HELP: &str = "Seconds to wait for the result (0-600, default 20; about 100 is safe, a client may cut a longer call off). Past that the reply has job_id; the run goes on.";
+const LOW_PRIORITY_HELP: &str = "Run the tests and builds below normal priority, beside other work. Default false.";
 
 const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "mutate_diff",
         group: CORE,
-        description: "Use after editing code: names changed lines no test checks, which grep and coverage cannot. Mutates only lines changed since `since` (test code skipped), runs the tests per mutant in a separate tree, returns survivors (file:line, the unnoticed change). Package not edited. Reply within waitSeconds is the result, else job_id for job_status. Call again after adding a test.",
+        description: "Use after editing code: names changed lines no test checks, which grep and coverage cannot. Mutates only lines changed since `since` (test code skipped), runs the tests per mutant in a separate tree, returns survivors (file:line, the unnoticed change). Over maxMutants, the budget is spread across the changed files and continue: true scores the rest without rerunning. estimate: true gives the count and time first. Package not edited. Reply within waitSeconds is the result, else job_id for job_status. Call again after adding a test.",
         props: &[
             Prop { key: "package", kind: Kind::Str, help: "Project directory you edited, in a git checkout; a workspace member is fine." },
             Prop { key: "since", kind: Kind::Str, help: "HEAD (default): uncommitted edits. main: this branch's changes, from its merge-base. Or A..HEAD, A...HEAD." },
             Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root." },
             Prop { key: "timeoutMs", kind: Kind::Int, help: "Clock for the baseline and each mutant. Default 120000." },
-            Prop { key: "maxMutants", kind: Kind::Int, help: "Most mutants scored. Default 30." },
+            Prop { key: "maxMutants", kind: Kind::Int, help: "Most mutants scored in one call, spread across the changed files. Default 30." },
+            Prop { key: "continue", kind: Kind::Bool, help: "Keep the last call's results (same changed lines) and score the next maxMutants that have none. A capped reply's nextCall sets it." },
+            Prop { key: "estimate", kind: Kind::Bool, help: "Score nothing: return the mutant count and a time estimate (the last run's cost, else two timed suite runs in a mutant tree)." },
+            Prop { key: "maxMinutes", kind: Kind::Int, help: "Start no mutant after this many minutes from the call's start (baseline included). continue: true goes on." },
+            Prop { key: "lowPriority", kind: Kind::Bool, help: LOW_PRIORITY_HELP },
+            Prop { key: "workers", kind: Kind::Int, help: "Mutants scored at once, each in its own tree. Default 1." },
             Prop { key: "confirm", kind: Kind::Bool, help: "Rerun the killing test twice before counting a kill. Default true." },
             Prop { key: "includeTests", kind: Kind::Bool, help: "Also mutate test code (tests/, benches/, test files, #[cfg(test)]). Default false." },
             Prop { key: "out", kind: Kind::Str, help: "Output directory. Default <project root>/.probatio/diff/<package path>." },
             Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
         required: &["package"],
+    },
+    ToolSpec {
+        name: "mutate_patch",
+        group: CORE,
+        description: "Check that a test holds a change: applies a unified diff (often a fix undone) in a separate tree and runs the named tests (or the suite) without it, where they must pass, and with it. outcome killed: a test failed with the diff; survived: none noticed. Package not edited. Reply within waitSeconds is the result, else job_id for job_status.",
+        props: &[
+            Prop { key: "package", kind: Kind::Str, help: "Project whose tests should notice the diff." },
+            Prop { key: "patch", kind: Kind::Str, help: "A unified diff (git diff output), or the path of a file that holds one. Paths from the checkout top or the package." },
+            Prop { key: "tests", kind: Kind::StrArray, help: "Test names to run. They go at {tests} in suiteCommand, after -- for cargo test, or at the end for pytest. Default: the whole suite." },
+            Prop { key: "reverse", kind: Kind::Bool, help: "Apply the diff in reverse: pass a fix's own diff to undo the fix. Default false." },
+            Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root." },
+            Prop { key: "timeoutMs", kind: Kind::Int, help: "Clock for each suite run. Default 120000." },
+            Prop { key: "confirm", kind: Kind::Bool, help: "Rerun the killing test twice before counting a kill. Default true." },
+            Prop { key: "lowPriority", kind: Kind::Bool, help: LOW_PRIORITY_HELP },
+            Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
+        ],
+        required: &["package", "patch"],
     },
     ToolSpec {
         name: "mutate_generate",
@@ -106,6 +129,7 @@ const TOOLS: &[ToolSpec] = &[
             Prop { key: "tests", kind: Kind::Str, help: "File of test names, one per line, for {tests} in suiteCommand." },
             Prop { key: "maxSelected", kind: Kind::Int, help: "Most test names recorded per mutant. Default 30." },
             Prop { key: "confirmCount", kind: Kind::Int, help: "Run only if this equals the number of mutants still waiting." },
+            Prop { key: "lowPriority", kind: Kind::Bool, help: LOW_PRIORITY_HELP },
             Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
         required: &["package", "patches", "out"],
@@ -120,10 +144,10 @@ const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "job_status",
         group: CORE,
-        description: "Result of a job_id from mutate_diff, mutate_run, or probatio: waits up to waitSeconds and returns the result as soon as the run ends, else status running with progress (done of total, killed, survived). Works after the job ended and after a server restart.",
+        description: "Result of a job_id from mutate_diff, mutate_patch, mutate_run, or probatio: waits up to waitSeconds and returns the result as soon as the run ends, else status running with progress (done of total, killed, survived, etaSeconds). Works after the job ended and after a server restart.",
         props: &[
             Prop { key: "job_id", kind: Kind::Str, help: "The job_id a call replied with." },
-            Prop { key: "waitSeconds", kind: Kind::Int, help: "Seconds to wait for the end (0-600, default 60). 0 reads progress at once." },
+            Prop { key: "waitSeconds", kind: Kind::Int, help: "Seconds to wait for the end (0-600, default 60). About 100 is safe: a client may cut a longer call off. 0 reads progress at once." },
         ],
         required: &["job_id"],
     },
@@ -609,7 +633,7 @@ fn job_call(name: &str, params: Option<&Value>, jobs: &jobs::Table, surface: &Su
         }
         let known = jobs.known();
         let known = if known.is_empty() { "none".to_string() } else { known.join(", ") };
-        return Err(format!("{name}: unknown job_id \"{job_id}\"; jobs this server ran: {known}. A job_id comes from a mutate_diff, mutate_run, or probatio reply."));
+        return Err(format!("{name}: unknown job_id \"{job_id}\"; jobs this server ran: {known}. A job_id comes from a mutate_diff, mutate_patch, mutate_run, or probatio reply."));
     };
     if name == "cancel_job" {
         // A job that already ended is left as it is; the reply says how it ended.
@@ -823,6 +847,7 @@ fn build_argv(tool: &ToolSpec, args: &[(&'static str, Arg)]) -> Result<(Vec<Stri
             return Ok((argv, None));
         }
         "mutate_diff" => vec!["mutate".into(), "diff".into()],
+        "mutate_patch" => vec!["mutate".into(), "patch".into()],
         "mutate_generate" => vec!["mutate".into(), "generate".into()],
         "mutate_run" => vec!["mutate".into(), "run".into()],
         "mutate_tally" => vec!["mutate".into(), "tally".into()],
@@ -837,9 +862,17 @@ fn build_argv(tool: &ToolSpec, args: &[(&'static str, Arg)]) -> Result<(Vec<Stri
                     argv.push("--no-confirm".into());
                 }
             }
-            ("includeTests", Arg::Bool(flag)) => {
+            ("includeTests" | "continue" | "estimate" | "lowPriority" | "reverse", Arg::Bool(flag)) => {
                 if *flag {
-                    argv.push("--include-tests".into());
+                    argv.push(format!("--{}", kebab(key)));
+                }
+            }
+            // A diff starts with `---` or `diff --git`, which would read as a flag of its own.
+            ("patch", Arg::Str(value)) => argv.push(format!("--patch={value}")),
+            ("tests", Arg::List(names)) => {
+                for name in names {
+                    argv.push("--tests".into());
+                    argv.push(name.clone());
                 }
             }
             (key, Arg::Str(value)) => {
@@ -962,7 +995,7 @@ mod tests {
             assert_eq!(surface, Surface::all());
             assert_eq!(json::stringify_compact(&Value::Array(tools(&surface))), all);
         }
-        assert_eq!(names(&Surface::all()), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema", "probatio"]);
+        assert_eq!(names(&Surface::all()), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema", "probatio"]);
         let init = initialize(None, &Surface::all());
         let instructions = init.get("instructions").and_then(Value::as_str).unwrap();
         assert!(instructions.ends_with("\nTool groups on: core, diagnostics, cli. Off: none. Change them with a \"probatio: disable <groups>\" line in an agent-tools block in AGENTS.md."), "{instructions}");
@@ -975,14 +1008,14 @@ mod tests {
     #[test]
     fn agents_md_chooses_groups_and_env_wins_per_key() {
         let surface = Surface::resolve(None, None, Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
+        assert_eq!(names(&surface), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         assert!(surface.warnings.is_empty(), "{:?}", surface.warnings);
         let error = argv_of_call(Some(&call("probatio", r#"{"argv":["schema"]}"#)), &surface).unwrap_err();
         assert_eq!(error, "tool \"probatio\" is disabled (group \"cli\") by the probatio: disable line in AGENTS.md agent-tools; remove \"cli\" from it to enable");
         let env_disable = Surface::resolve(None, Some("diagnostics"), Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&env_disable), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
+        assert_eq!(names(&env_disable), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
         let env_tools = Surface::resolve(Some("core"), None, Some(AGENTS_MD)).unwrap();
-        assert_eq!(names(&env_tools), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job"]);
+        assert_eq!(names(&env_tools), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job"]);
         assert_eq!(Surface::resolve(None, None, Some("no block here")).unwrap(), Surface::all());
     }
 
@@ -1001,7 +1034,7 @@ mod tests {
     fn a_bad_agents_md_line_is_a_warning_not_a_stop() {
         let text = "```agent-tools\nprobatio: disable lokcs\nprobatio: tools diagnostics\n```\n";
         let surface = Surface::resolve(None, None, Some(text)).unwrap();
-        assert_eq!(names(&surface), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
+        assert_eq!(names(&surface), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         assert_eq!(surface.warnings, ["AGENTS.md agent-tools: unknown group \"lokcs\" for probatio; groups: core, diagnostics, cli"]);
         let core = Surface::resolve(None, None, Some("```agent-tools\nprobatio: disable core\n```\n")).unwrap();
         assert_eq!(names(&core), names(&Surface::all()));
@@ -1030,15 +1063,15 @@ mod tests {
     #[test]
     fn tools_and_disable_filter_by_group_and_by_tool() {
         let only_core = Surface::from_values(Some("core"), None).unwrap();
-        assert_eq!(names(&only_core), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job"]);
+        assert_eq!(names(&only_core), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job"]);
         let with_cli = Surface::from_values(Some(" CLI "), None).unwrap();
-        assert_eq!(names(&with_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
+        assert_eq!(names(&with_cli), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
         let by_tool = Surface::from_values(Some("schema"), None).unwrap();
-        assert_eq!(names(&by_tool), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
+        assert_eq!(names(&by_tool), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         let everything = Surface::from_values(Some("all"), Some("diagnostics")).unwrap();
-        assert_eq!(names(&everything), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
+        assert_eq!(names(&everything), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "probatio"]);
         let no_cli = Surface::from_values(None, Some("probatio")).unwrap();
-        assert_eq!(names(&no_cli), ["mutate_diff", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
+        assert_eq!(names(&no_cli), ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run", "mutate_tally", "job_status", "cancel_job", "schema"]);
         assert!(no_cli.groups_line().starts_with("Tool groups on: core, diagnostics. Off: cli."));
         let init = initialize(None, &no_cli);
         assert!(init.get("instructions").and_then(Value::as_str).unwrap().contains("\nTool groups on: core, diagnostics. Off: cli."));
@@ -1085,6 +1118,42 @@ mod tests {
         assert_eq!(schema, ["schema", "mutate.run"]);
         let unknown = argv_of_call(Some(&call("mutate", "{}")), &all).unwrap_err();
         assert!(unknown.starts_with("unknown tool \"mutate\"; tools: mutate_diff"), "{unknown}");
+    }
+
+    /// The 0.9 switches reach the CLI: continue, estimate, a time budget, low priority, and a
+    /// diff whose text starts with `---` (as `--patch=<text>`, so it is not read as a flag).
+    #[test]
+    fn the_new_switches_map_to_cli_flags() {
+        let all = Surface::all();
+        let (diff, _) = argv_of_call(
+            Some(&call("mutate_diff", r#"{"package":"p","out":"o","continue":true,"estimate":false,"maxMinutes":15,"lowPriority":true,"workers":2}"#)),
+            &all,
+        )
+        .unwrap();
+        assert_eq!(diff, ["mutate", "diff", "--package", "p", "--out", "o", "--continue", "--max-minutes", "15", "--low-priority", "--workers", "2"]);
+        let (patch, _) = argv_of_call(
+            Some(&call("mutate_patch", r#"{"package":"p","patch":"--- a/x\n+++ b/x\n","tests":["a::b","c"],"reverse":true,"waitSeconds":100}"#)),
+            &all,
+        )
+        .unwrap();
+        assert_eq!(patch, ["mutate", "patch", "--package", "p", "--patch=--- a/x\n+++ b/x\n", "--tests", "a::b", "--tests", "c", "--reverse"]);
+        let flags = crate::args::Flags::parse(&patch[2..]);
+        assert_eq!(flags.get("patch"), Some("--- a/x\n+++ b/x\n"));
+        assert_eq!(flags.texts("tests"), ["a::b", "c"]);
+        let missing = argv_of_call(Some(&call("mutate_patch", r#"{"package":"p"}"#)), &all).unwrap_err();
+        assert!(missing.starts_with("mutate_patch: missing required argument \"patch\""), "{missing}");
+        let (run, _) = argv_of_call(Some(&call("mutate_run", r#"{"package":"p","patches":"g","out":"o","lowPriority":true}"#)), &all).unwrap();
+        assert!(run.ends_with(&["--low-priority".to_string()]), "{run:?}");
+    }
+
+    /// Claude Code cut a 600 s wait at 120 s. The text recommends about 100 s and says why.
+    #[test]
+    fn the_wait_advice_fits_a_client_that_cuts_long_calls() {
+        let init = initialize(None, &Surface::all());
+        let instructions = init.get("instructions").and_then(Value::as_str).unwrap();
+        assert!(instructions.contains("waitSeconds about 100") && instructions.contains("may cut a longer call off"), "{instructions}");
+        assert!(WAIT_HELP.contains("about 100"));
+        assert!(spec("job_status").unwrap().props.iter().any(|prop| prop.key == "waitSeconds" && prop.help.contains("About 100")));
     }
 
     #[test]

@@ -19,6 +19,7 @@ const SCHEMAS: &[(&str, &str)] = &[
     ("mutate.diff", include_str!("../schemas/mutate.diff.schema.json")),
     ("mutate.generate", include_str!("../schemas/mutate.generate.schema.json")),
     ("mutate.help", include_str!("../schemas/mutate.help.schema.json")),
+    ("mutate.patch", include_str!("../schemas/mutate.patch.schema.json")),
     ("mutate.run", include_str!("../schemas/mutate.run.schema.json")),
     ("mutate.sealed", include_str!("../schemas/mutate.sealed.schema.json")),
     ("mutate.tally", include_str!("../schemas/mutate.tally.schema.json")),
@@ -82,7 +83,7 @@ mod tests {
     fn schema_lists_commands_and_returns_a_body_without_the_repo_cwd() {
         let listed = run(None);
         assert!(listed.ok, "{}", listed.summary);
-        assert!(listed.summary.contains("25 commands"), "{}", listed.summary);
+        assert!(listed.summary.contains("26 commands"), "{}", listed.summary);
         let one = run(Some("mutate.run"));
         assert!(one.ok, "{}", one.summary);
         let value = json::parse(&one.render("")).unwrap();

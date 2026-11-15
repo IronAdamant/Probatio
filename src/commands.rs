@@ -22,6 +22,7 @@ use crate::verify;
 pub const INVOCATIONS: &[&[&str]] = &[
     &["mutate", "generate"],
     &["mutate", "diff"],
+    &["mutate", "patch"],
     &["mutate", "run"],
     &["mutate", "sealed"],
     &["mutate", "tally"],
@@ -117,12 +118,13 @@ fn mutate(args: &[String]) -> Envelope {
     let command = match action {
         "generate" => "mutate.generate",
         "diff" => "mutate.diff",
+        "patch" => "mutate.patch",
         "run" => "mutate.run",
         "sealed" => "mutate.sealed",
         "tally" => "mutate.tally",
-        "" => return missing("mutate", "missing diff, generate, run, sealed, or tally"),
+        "" => return missing("mutate", "missing diff, patch, generate, run, sealed, or tally"),
         other => {
-            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use diff, generate, run, sealed, or tally.");
+            return Envelope::new(false, &format!("mutate.{other}"), format!("No mutate handler for {other}."), "Use diff, patch, generate, run, sealed, or tally.");
         }
     };
     if let Some(envelope) = refused(command, &flags) {
@@ -131,6 +133,7 @@ fn mutate(args: &[String]) -> Envelope {
     match action {
         "generate" => generate::generate(&flags),
         "diff" => crate::diffscope::diff(&flags),
+        "patch" => crate::patch::patch(&flags),
         "run" => runner::run(&flags),
         "sealed" => sealed::sealed(&flags),
         "tally" => tally_command(&flags),
