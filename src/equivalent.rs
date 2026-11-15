@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Specula M5: the same equivalent mutant was read again on every run. A record by id, or
+    /// A large Rust workspace: the same equivalent mutant was read again on every run. A record by id, or
     /// by file, line, and line text, labels it; a later `open` takes the label back; an edited
     /// line no longer matches.
     #[test]

@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(result.stdout.trim(), "3", "{program}: {}", result.stderr);
     }
 
-    /// Specula M5: `cargo test --target-dir C:\x\target` lost its backslashes in `sh`.
+    /// A large Rust workspace: `cargo test --target-dir C:\x\target` lost its backslashes in `sh`.
     #[test]
     fn a_windows_path_keeps_its_backslashes() {
         assert_eq!(keep_windows_backslashes(r"cargo test --target-dir C:\x\target"), r"cargo test --target-dir C:\\x\\target");

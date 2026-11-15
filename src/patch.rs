@@ -242,7 +242,7 @@ mod tests {
         super::patch(&Flags::parse(&argv))
     }
 
-    /// Specula M5: more than twenty "undo this fix, the named test must fail" checks were made by
+    /// A large Rust workspace: more than twenty "undo this fix, the named test must fail" checks were made by
     /// hand. `mutate patch` takes the diff, applies it in a mutant tree, runs the named tests
     /// without it and with it, and leaves your tree as it was.
     #[test]

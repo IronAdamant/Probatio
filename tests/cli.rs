@@ -1429,7 +1429,7 @@ fn priority_lines(path: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| line.trim().to_string()).filter(|line| !line.is_empty()).collect()
 }
 
-/// Specula M5: a run competed with the gate for one machine, so it was never started on the big
+/// A large Rust workspace: a run competed with the gate for one machine, so it was never started on the big
 /// crate. `--low-priority` (MCP `lowPriority`) runs every suite and build below normal
 /// priority: Windows' below-normal class, Unix niceness 10, both inherited by what they start.
 #[test]
@@ -1470,7 +1470,7 @@ fn low_priority_runs_every_suite_below_normal_priority() {
     }
 }
 
-/// Specula M5 reported `&gt;` and `&amp;&amp;` in `original` and `replacement`. The server
+/// A large Rust workspace reported `&gt;` and `&amp;&amp;` in `original` and `replacement`. The server
 /// writes the raw characters (the escaping was the client's); this pins them in the reply line
 /// itself. The same session scores a diff with `mutate_patch`, whose text starts with `---`.
 #[test]
@@ -1515,7 +1515,7 @@ fn mcp_replies_carry_raw_operator_characters_and_score_a_patch() {
     let _ = child.wait();
 }
 
-/// Specula M5: a build in a kept copy failed to link once its path reached 260 characters, and
+/// A large Rust workspace: a build in a kept copy failed to link once its path reached 260 characters, and
 /// said something about a plugin. A tree that deep is refused before it is made, naming the
 /// variable that moves it, and every run reports its tree's path length.
 #[cfg(windows)]

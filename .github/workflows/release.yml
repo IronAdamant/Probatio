@@ -64,6 +64,46 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      - name: Write SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          # Hash the four release binaries only. SHA256SUMS is not an input, so it
+          # is not listed in itself. Two spaces and a sorted name, the same layout
+          # as the file attached to v0.9.0 by hand. This runs for a newly pushed
+          # tag. It does not edit a release that already exists.
+          bins=(
+            probatio-aarch64-apple-darwin
+            probatio-x86_64-apple-darwin
+            probatio-x86_64-pc-windows-msvc.exe
+            probatio-x86_64-unknown-linux-musl
+          )
+          shopt -s nullglob
+          found=(probatio-*)
+          if [[ ${#found[@]} -ne ${#bins[@]} ]]; then
+            echo "expected ${#bins[@]} binaries, found ${#found[@]}" >&2
+            ls -la >&2
+            exit 1
+          fi
+          for bin in "${bins[@]}"; do
+            if [[ ! -s "$bin" ]]; then
+              echo "missing or empty binary: $bin" >&2
+              exit 1
+            fi
+          done
+          sha256sum -- "${bins[@]}" | LC_ALL=C sort -k2 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          if [[ "$(grep -cve '^$' SHA256SUMS)" -ne 4 ]]; then
+            echo "SHA256SUMS should list 4 binaries" >&2
+            cat SHA256SUMS >&2
+            exit 1
+          fi
+          if grep -q 'SHA256SUMS' SHA256SUMS; then
+            echo "SHA256SUMS must not list itself" >&2
+            exit 1
+          fi
+          cat SHA256SUMS
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -71,12 +111,14 @@ jobs:
           name: ${{ github.ref_name }}
           body: |
             Rust binaries for ${{ github.ref_name }}.
+            Check them against `SHA256SUMS` before you run one.
             `npm install probatio` installs the same binaries.
           files: |
             assets/probatio-x86_64-unknown-linux-musl
             assets/probatio-aarch64-apple-darwin
             assets/probatio-x86_64-apple-darwin
             assets/probatio-x86_64-pc-windows-msvc.exe
+            assets/SHA256SUMS
           fail_on_unmatched_files: true
 
   npm:

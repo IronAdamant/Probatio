@@ -690,7 +690,7 @@ mod tests {
         }
     }
 
-    /// Specula M5: a Rust 1.100 link failed when an argument file's path reached 260 characters,
+    /// A large Rust workspace: a Rust 1.100 link failed when an argument file's path reached 260 characters,
     /// with a message about a plugin. The default layout is short, and a tree whose longest path
     /// would reach the limit is refused on Windows, naming the variable that moves it.
     #[test]

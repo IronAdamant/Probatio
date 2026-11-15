@@ -1,5 +1,5 @@
 //! Test code is not mutated by default. A mutant in a test assertion only asks whether the test
-//! tests itself, and Specula's lanes found most of their survivors there. `--include-tests`
+//! tests itself, and lanes on a large Rust workspace found most of their survivors there. `--include-tests`
 //! (MCP `includeTests`) turns this off.
 //!
 //! A whole file is test code when its path says so (`tests/`, `benches/`, `*_test.go`,
