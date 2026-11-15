@@ -382,7 +382,7 @@ mod tests {
 mod progress_tests {
     use super::*;
 
-    /// Specula M5: an equivalent survivor recorded with `findings add` was read again on every
+    /// A large Rust workspace: an equivalent survivor recorded with `findings add` was read again on every
     /// tally. The gap now carries the recorded reason, and the first gap named is an open one.
     #[test]
     fn a_gap_recorded_as_equivalent_is_labelled() {

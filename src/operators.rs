@@ -897,7 +897,7 @@ mod tests {
         assert!(riscv.iter().any(|item| item.original == "beq" && item.replacement == "bne"));
     }
 
-    /// Specula M5 (renderfollow: 5 of 15 mutants did not build). A Rust closure with no arguments
+    /// A large Rust workspace (one crate: 5 of 15 mutants did not build). A Rust closure with no arguments
     /// and a double reference are not boolean operators, so no mutant swaps them.
     #[test]
     fn a_rust_closure_or_double_reference_is_not_a_boolean_operator() {

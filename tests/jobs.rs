@@ -1,6 +1,6 @@
 //! MCP jobs: a mutate call that outlasts its wait answers with a job_id, job_status returns the
 //! final summary once the run ends (also from a new server), and cancel_job stops the run and
-//! removes its mutant tree. Specula M5: `mutate_diff` and `mutate_run` died at the client's
+//! removes its mutant tree. On a large Rust workspace, `mutate_diff` and `mutate_run` died at the client's
 //! 30-minute idle timeout on large crates, and a cancelled run left its worktree behind.
 
 mod common;

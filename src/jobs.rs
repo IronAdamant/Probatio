@@ -592,7 +592,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: nothing said what a run would cost. Once the baseline is known, progress says
+    /// A large Rust workspace: nothing said what a run would cost. Once the baseline is known, progress says
     /// how long the mutants still waiting should take (the mean so far, else the baseline time,
     /// over the workers), and a continued diff's earlier results count neither as done nor as
     /// waiting.

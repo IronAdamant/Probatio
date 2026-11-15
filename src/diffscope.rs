@@ -827,7 +827,7 @@ mod tests {
             .collect()
     }
 
-    /// Specula M5 (editor: 5,979 lines): `since main` on a branch while main had moved on scored
+    /// A large Rust workspace (one lane: 5,979 lines): `since main` on a branch while main had moved on scored
     /// main's new lines too. One ref is read from its merge-base with HEAD, so only the branch's
     /// own change is scored. A range works too, and must end at HEAD.
     #[test]
@@ -862,7 +862,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5 (renderfollow: all 6 survivors in test assertions): changed lines in test code
+    /// A large Rust workspace (one crate: all 6 survivors in test assertions): changed lines in test code
     /// are not mutated unless asked, and the summary counts them.
     #[test]
     fn changed_test_lines_are_skipped_and_counted() {
@@ -891,7 +891,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5 (renderfollow: 5 of 15 mutants did not build): a mutant the compiler rejects is
+    /// A large Rust workspace (one crate: 5 of 15 mutants did not build): a mutant the compiler rejects is
     /// listed under `unbuildable`, never as a survivor, and `next` says so.
     #[test]
     fn a_mutant_that_does_not_build_is_listed_apart_from_survivors() {
@@ -914,7 +914,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: `.probatio/` was written inside the package (a workspace member) and committed
+    /// A large Rust workspace: `.probatio/` was written inside the package (a workspace member) and committed
     /// by mistake twice. It is at the project root now, and it ignores itself.
     #[test]
     fn output_goes_to_the_project_root_and_ignores_itself() {
@@ -988,7 +988,7 @@ mod tests {
         found
     }
 
-    /// Specula M5: a capped run took the whole budget from the alphabetically first file, and a
+    /// A large Rust workspace: a capped run took the whole budget from the alphabetically first file, and a
     /// larger cap reran the first mutants (one lane ran 24 of 293). The budget is spread across
     /// the changed files, and `--continue` (the reply's nextCall) scores the rest without
     /// rerunning what has a result. A changed tree starts over and says so.
@@ -1032,7 +1032,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: survivors and unbuildable rows were cut to 10 with no sign (one lane had 11).
+    /// A large Rust workspace: survivors and unbuildable rows were cut to 10 with no sign (one lane had 11).
     #[test]
     fn survivors_past_ten_are_counted_and_written_whole() {
         let dir = edited("diff-left-out", &[("src/A.java", java("A", 12))]);
@@ -1049,7 +1049,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: `mutate diff` did not forward a time budget. With one, a call stops starting
+    /// A large Rust workspace: `mutate diff` did not forward a time budget. With one, a call stops starting
     /// mutants once it has passed (the baseline counts; one mutant is always scored), says so,
     /// and continue goes on from there.
     #[test]
@@ -1090,7 +1090,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: the big crate was never scored because nothing said what a run would cost.
+    /// A large Rust workspace: the big crate was never scored because nothing said what a run would cost.
     /// `--estimate` scores nothing and gives the count and the time: from two timed suite runs
     /// in a mutant tree at first, then from the last call's record.
     #[test]
@@ -1115,7 +1115,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: line numbers are the working tree's at call time, and an edit during the job
+    /// A large Rust workspace: line numbers are the working tree's at call time, and an edit during the job
     /// changed what was scored: the tree was restored from the live file after each mutant, and
     /// the next span then failed with "patch does not apply". The run keeps a snapshot.
     #[test]
@@ -1137,7 +1137,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Specula M5: `findings add --status equivalent` was never read, so the same equivalent
+    /// A large Rust workspace: `findings add --status equivalent` was never read, so the same equivalent
     /// mutant was read again on every run. A matching record labels the survivor.
     #[test]
     fn a_survivor_recorded_as_equivalent_is_labelled() {

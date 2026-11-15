@@ -3119,7 +3119,7 @@ mod tests {
         let _ = fs::remove_dir_all(&package);
     }
 
-    /// Specula B10: a tree that does not build makes every mutant fail the same way, with an error
+    /// A large Rust workspace: a tree that does not build makes every mutant fail the same way, with an error
     /// that does not name the mutated file. That is a refusal, never a clean score, and the error
     /// results are removed so the same call scores them once the cause is fixed.
     #[test]
@@ -3137,7 +3137,7 @@ mod tests {
         let _ = fs::remove_dir_all(&package);
     }
 
-    /// Specula B10: a Cargo workspace member as the package. The mutant tree holds the whole
+    /// A large Rust workspace: a Cargo workspace member as the package. The mutant tree holds the whole
     /// checkout, so the member finds its workspace root, and the suite runs in the member folder.
     #[test]
     fn a_workspace_member_builds_with_its_workspace() {

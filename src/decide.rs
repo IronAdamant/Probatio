@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(deleted_tests(), 0);
     }
 
-    /// Specula M5 (renderfollow: 5 of 15 mutants did not build): a compile error that quotes a
+    /// A large Rust workspace (one crate: 5 of 15 mutants did not build): a compile error that quotes a
     /// line with `panic!` in it was read as a test failing, so it counted as a kill.
     #[test]
     fn a_cargo_compile_error_quoting_panic_is_unviable_not_a_kill() {
