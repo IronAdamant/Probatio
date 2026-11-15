@@ -155,10 +155,18 @@ pub fn lower_priority() -> bool {
         use std::ffi::c_void;
         extern "system" {
             fn GetCurrentProcess() -> *mut c_void;
+            fn GetPriorityClass(process: *mut c_void) -> u32;
             fn SetPriorityClass(process: *mut c_void, class: u32) -> i32;
         }
+        const IDLE_PRIORITY_CLASS: u32 = 0x40;
         const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x4000;
-        unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) != 0 }
+        unsafe {
+            // Already this low or lower (a CI runner may start jobs below normal): left as it is.
+            if matches!(GetPriorityClass(GetCurrentProcess()), IDLE_PRIORITY_CLASS | BELOW_NORMAL_PRIORITY_CLASS) {
+                return true;
+            }
+            SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) != 0
+        }
     }
     #[cfg(unix)]
     {

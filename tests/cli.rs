@@ -903,7 +903,7 @@ fn shipped_run_uses_node_bin_from_scripts_test() {
     let lines = marker_lines(&marker);
     assert!(lines.iter().any(|line| line.contains("probatio-test-cli-nodebin-")), "{lines:?}");
     // A mutant ran in its slot's tree in the mutant cache.
-    assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/tree")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/t")), "{lines:?}");
     assert_survived_mutants(&out);
     assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0), "{value:?}");
 
@@ -976,7 +976,7 @@ fn shipped_run_uses_node_bin_from_a_git_worktree() {
     let lines = marker_lines(&marker);
     assert!(lines.iter().any(|line| line.contains("probatio-test-cli-nodegit-")), "{lines:?}");
     // A mutant ran in the slot's worktree in the mutant cache.
-    assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/0/tree")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.contains("probatio-test-cache") && line.ends_with("/0/t")), "{lines:?}");
     assert_survived_mutants(&out);
     assert_eq!(value.get("counts").and_then(|counts| counts.get("killed")).and_then(json::Value::as_int), Some(0), "{value:?}");
 
@@ -1453,10 +1453,21 @@ fn low_priority_runs_every_suite_below_normal_priority() {
     // The baseline, the unmutated run in the tree, and each mutant.
     assert!(lines.len() >= 3, "{lines:?} {stdout}");
     assert!(lines.iter().all(|line| low(line)), "{lines:?}");
+    // Without the flag a suite runs at the caller's priority. A CI runner may already start
+    // jobs below normal, so the caller's own is read first, the same way.
+    let own = if cfg!(windows) {
+        Command::new("powershell").args(["-NoProfile", "-Command", "[System.Diagnostics.Process]::GetCurrentProcess().PriorityClass"]).output().unwrap()
+    } else {
+        Command::new("sh").args(["-c", "ps -o nice= -p $$"]).output().unwrap()
+    };
+    let own = String::from_utf8_lossy(&own.stdout).trim().to_string();
     let (code, stdout) = launch(&["mutate", "diff", "--package", &package, "--suite-command", &probe(&log("normal.txt")), "--no-confirm"]);
     assert_eq!(code, 0, "{stdout}");
     let normal = priority_lines(&root.join("normal.txt"));
-    assert!(!normal.is_empty() && normal.iter().all(|line| !low(line)), "without the flag the suite runs at the caller's priority: {normal:?}");
+    assert!(!normal.is_empty() && normal.iter().all(|line| *line == own), "without the flag the suite runs at the caller's priority ({own}): {normal:?}");
+    if !low(&own) {
+        assert!(normal.iter().all(|line| !low(line)), "{normal:?}");
+    }
 }
 
 /// Specula M5 reported `&gt;` and `&amp;&amp;` in `original` and `replacement`. The server
