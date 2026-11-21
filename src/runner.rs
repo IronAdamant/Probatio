@@ -272,7 +272,10 @@ pub fn run(flags: &Flags) -> Envelope {
                 }
             }
             if baseline.line_map.as_deref() == Some("") {
-                coverage_note = Some("coverage.py did not write a map.".into());
+                coverage_note = Some(match python.as_ref().map(|parsed| parsed.kind) {
+                    Some(PythonKind::Unittest) => "The unittest reporter did not write a line map (tracing failed or no package line ran).".into(),
+                    _ => "coverage.py did not write a map.".into(),
+                });
             }
         } else if baseline.line_map.as_deref() == Some("lines.json") {
             let path = out.join("lines.json");
@@ -328,7 +331,12 @@ pub fn run(flags: &Flags) -> Envelope {
     }
 
     let pending: Vec<&LoadedMutant> = mutants.iter().filter(|mutant| !result_path(&out, &mutant.id).exists()).collect();
-    if let Some(message) = decide::scale_stop(has_line_map, baseline.duration_ms, pending.len()) {
+    // `mutate diff` passes these. `--serial` allows a large batch without a map, and keeps the
+    // map the baseline writes. `--unmapped-max` is the most one call scores when there is no map.
+    let serial = flags.bool("serial", false);
+    let unmapped_max = if has_line_map { None } else { flags.parse_int("unmapped-max").unwrap_or(None).map(|max| max.max(1) as usize) };
+    let gated = unmapped_max.map_or(pending.len(), |max| pending.len().min(max));
+    if let Some(message) = decide::scale_stop(has_line_map || serial, baseline.duration_ms, gated) {
         let ids = pending.iter().map(|mutant| mutant.id.as_str()).collect::<Vec<_>>().join("\n");
         let _ = fs::write(out.join("not-started.txt"), format!("{ids}\n"));
         let mut next = "The ids are in not-started.txt. Nothing was started.".to_string();
@@ -372,6 +380,9 @@ pub fn run(flags: &Flags) -> Envelope {
     };
     if let Some(max) = flags.parse_int("max-mutants").unwrap_or(None) {
         budget = budget.min(max as usize);
+    }
+    if let Some(max) = unmapped_max {
+        budget = budget.min(max);
     }
     let batch: Vec<&LoadedMutant> = pending.into_iter().take(budget).collect();
     if whole_suite && map.chooses && !auto_map {
@@ -457,7 +468,7 @@ pub fn run(flags: &Flags) -> Envelope {
     let mut jobs = Vec::new();
     let budget_ms = flags.parse_int("budget-ms").unwrap_or(None).or_else(|| {
         flags.parse_int("max-minutes").ok().flatten().map(|minutes| minutes.saturating_mul(60_000))
-    });
+    }).or_else(|| if has_line_map { flags.parse_int("mapped-budget-ms").unwrap_or(None) } else { None });
     let deadline = budget_ms.map(|limit| call_started + Duration::from_millis(limit));
     let score_timeout = Duration::from_millis(if explicit_timeout.is_some() {
         timeout_ms
@@ -522,7 +533,10 @@ pub fn run(flags: &Flags) -> Envelope {
                 decide::LineHit::Dark => Vec::new(),
             }
         };
-        let mut selection = decide::cap_tests(&tests, max_selected);
+        // The reporter runs every name a baseline map gave the line: a cap there would leave out a
+        // test that ran the line and could have failed. The cap still applies to a caller's names.
+        let cap = if launcher_selects && matches!(hit, decide::LineHit::Listed(_)) { usize::MAX } else { max_selected };
+        let mut selection = decide::cap_tests(&tests, cap);
         let mut affected_files = Vec::new();
         if options.affected {
             let found = crate::run_options::affected_tests(&package, &tests_dir, &mutant.file);
@@ -696,7 +710,8 @@ pub fn run(flags: &Flags) -> Envelope {
         .with_extra("errors", Value::Int(counts.errors as i64))
         .with_extra("noCoverage", Value::Int(counts.no_coverage as i64))
         .with_extra("unviable", Value::Int(counts.unviable as i64))
-        .with_extra("budgetHit", Value::Bool(budget_hit));
+        .with_extra("budgetHit", Value::Bool(budget_hit))
+        .with_extra("lineMapUsed", Value::Bool(has_line_map));
     if let Some(tree) = &tree {
         envelope = envelope
             .with_extra("treePath", Value::String(tree.path.display().to_string()))
@@ -873,6 +888,12 @@ pub(crate) fn forward_run_flags(argv: &mut Vec<String>, flags: &Flags) {
     if !flags.bool("confirm", true) {
         argv.push("--no-confirm".into());
     }
+}
+
+/// `python3 -m unittest discover` (optional `-s dir`): the shipped reporter, which writes its own
+/// line map after a green baseline.
+pub fn is_unittest_suite(command: &str) -> bool {
+    parse_python(command).is_some_and(|parsed| parsed.kind == PythonKind::Unittest)
 }
 
 pub fn suite_command(flags: &Flags, package: &Path) -> Result<String, String> {
@@ -1879,6 +1900,9 @@ fn relative_names(names: &[String], root: &Path) -> Vec<String> {
 }
 
 fn confirm_kill(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, scored: Scored) -> Scored {
+    if job.launch.is_some() && !scored.killed_by.is_empty() {
+        return confirm_python_kill(job, root, package, timeout, scored);
+    }
     let targets = if scored.killed_by.is_empty() { vec![String::new()] } else { scored.killed_by.clone() };
     let mut kept = Vec::new();
     for name in &targets {
@@ -1910,6 +1934,35 @@ fn confirm_kill(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, 
     } else {
         scored.kind = Verdict::Flaky;
         scored.killed_by.clear();
+    }
+    scored
+}
+
+/// The Python reporter takes every killing name in one launch, so the two confirming reruns are
+/// two processes, not two per name (a line 198 tests ran cost 396 launches). A name is kept when
+/// it failed in both reruns; a rerun that errored, timed out, or did not load counts for every name,
+/// as it does one name at a time.
+fn confirm_python_kill(job: &ScoreJob, root: &Path, package: &Path, timeout: Duration, scored: Scored) -> Scored {
+    let Some(launch) = &job.launch else { return scored };
+    let suite = SuiteEnv { timeout, env: &job.project_env, unset: &job.unset };
+    let mut hits = vec![0usize; scored.killed_by.len()];
+    for _ in 0..2 {
+        let again = score_timed(&launch_python(root, package, launch, Some(&scored.killed_by), None, &suite), true);
+        for (index, name) in scored.killed_by.iter().enumerate() {
+            let matched = again.killed_by.iter().any(|item| item == name || item.ends_with(&format!("::{name}")));
+            if matched || !matches!(again.kind, Verdict::Survived | Verdict::Killed) {
+                hits[index] += 1;
+            }
+        }
+    }
+    let mut scored = scored;
+    let kept: Vec<String> = scored.killed_by.iter().zip(&hits).filter(|(_, hit)| **hit == 2).map(|(name, _)| name.clone()).collect();
+    if kept.is_empty() {
+        scored.kind = Verdict::Flaky;
+        scored.killed_by.clear();
+    } else {
+        scored.killed_by = kept;
+        scored.kind = Verdict::Killed;
     }
     scored
 }
@@ -2492,7 +2545,8 @@ fn python_baseline(
     })?;
     let names: Vec<String> = if command_asks_for_names(template) { baseline_tests.to_vec() } else { Vec::new() };
     let coverage_path = out.join("coverage-raw.json");
-    let coverage = if collect && parsed.kind == PythonKind::Pytest { Some(coverage_path.as_path()) } else { None };
+    // Pytest reads coverage.py; unittest traces with the standard library (sys.monitoring, else sys.settrace).
+    let coverage = if collect { Some(coverage_path.as_path()) } else { None };
     let launch = PythonLaunch {
         reporter,
         program: python.program.to_string(),
@@ -3876,8 +3930,11 @@ mod tests {
         let _ = fs::remove_dir_all(&package);
     }
 
+    /// unittest has no coverage tool, so the reporter traces with the standard library and the
+    /// baseline writes `<out>/lines.json`: more than 30 mutants run in one call, each with only
+    /// the tests that ran its line, and a module-level line runs the whole suite.
     #[test]
-    fn a_large_python_suite_without_coverage_stops_before_a_mutant() {
+    fn a_large_unittest_suite_writes_its_own_line_map_and_runs() {
         let mut expr = String::new();
         for index in 0..20 {
             if index > 0 {
@@ -3887,34 +3944,59 @@ mod tests {
         }
         let package = py_package(
             "py-large",
-            &format!("def gate(n):\n    return {expr}\n"),
-            "    def test_high(self):\n        self.assertTrue(gate.gate(100))\n    def test_low(self):\n        self.assertFalse(gate.gate(-1))\n",
+            &format!("LIMIT = 3 > 2\n\ndef gate(n):\n    return {expr}\n\ndef other(n):\n    return n < 0\n"),
+            "    def test_high(self):\n        self.assertTrue(gate.gate(100))\n    def test_low(self):\n        self.assertFalse(gate.gate(-1))\n    def test_limit(self):\n        self.assertTrue(gate.LIMIT)\n",
         );
         let patches = generate_into(&package);
+        let count = match json::parse(&fs::read_to_string(patches.join("mutants.json")).unwrap()).unwrap().get("mutants") {
+            Some(Value::Array(items)) => items.len(),
+            other => panic!("mutants was {other:?}"),
+        };
+        assert!(count > 30, "{count}");
         let out = package.join("out");
         let envelope = run_with(&package, &patches, &out, &[]);
-        assert_no_kill_count(&envelope);
-        assert!(envelope.summary.contains("No line map"), "{}", envelope.summary);
-        assert!(envelope.next.contains("coverage.py did not write a map"), "{}", envelope.next);
-        assert!(fs::read_dir(out.join("results")).is_err() || fs::read_dir(out.join("results")).unwrap().next().is_none());
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        assert!(out.join("lines.json").is_file());
+        assert_eq!(fs::read_dir(out.join("results")).unwrap().count(), count);
+        let text = fs::read_to_string(package.join("src/gate.py")).unwrap();
+        let line_of = |needle: &str| decide::line_at(&text, text.find(needle).unwrap());
+        let map = load_map_file(&out.join("lines.json"));
+        assert!(matches!(map.line_hit("src/gate.py", line_of("LIMIT")), decide::LineHit::Listed(names) if names.is_empty()));
+        let gate_names = map.names_for("src/gate.py", line_of("return n > 0"));
+        assert!(gate_names.iter().any(|name| name.ends_with("GateTests.test_high")), "{gate_names:?}");
+        assert!(!gate_names.iter().any(|name| name.ends_with("test_limit")), "{gate_names:?}");
+        assert!(matches!(map.line_hit("src/gate.py", line_of("return n < 0")), decide::LineHit::Dark));
+        let mut saw = (false, false, false);
+        for entry in fs::read_dir(out.join("results")).unwrap() {
+            let body = json::parse(&fs::read_to_string(entry.unwrap().path()).unwrap()).unwrap();
+            let line = body.get("line").and_then(Value::as_int).unwrap_or(0) as usize;
+            let command = body.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+            let outcome = body.get("outcome").and_then(Value::as_str).unwrap_or("");
+            if line == line_of("LIMIT") {
+                assert!(!command.contains("GateTests"), "a module line runs the whole suite: {command}");
+                saw.0 = true;
+            } else if line == line_of("return n < 0") {
+                assert_eq!(outcome, "no coverage");
+                saw.1 = true;
+            } else {
+                assert!(command.contains("GateTests.test_") && !command.contains("test_limit"), "{command}");
+                saw.2 = true;
+            }
+        }
+        assert!(saw.0 && saw.1 && saw.2, "{saw:?}");
         let _ = fs::remove_dir_all(&package);
     }
 
     #[test]
-    fn a_planted_coverage_map_selects_python_tests_and_a_caller_map_wins() {
+    fn a_unittest_line_map_selects_python_tests_and_a_caller_map_wins() {
         let gate = "def low(n):\n    return n > 0\n\ndef high(n):\n    return n > 10\n";
         let methods = "    def test_low(self):\n        self.assertFalse(gate.low(0))\n        self.assertTrue(gate.low(1))\n    def test_high(self):\n        self.assertFalse(gate.high(10))\n        self.assertTrue(gate.high(11))\n";
         let package = py_package("py-map", gate, methods);
         let text = fs::read_to_string(package.join("src/gate.py")).unwrap();
         let low_line = decide::line_at(&text, text.find("return n > 0").unwrap());
+        let high_line = decide::line_at(&text, text.find("return n > 10").unwrap());
         let patches = generate_into(&package);
         let out = package.join("out");
-        fs::create_dir_all(&out).unwrap();
-        fs::write(
-            out.join("coverage-raw.json"),
-            format!(r#"{{"files":{{"src/gate.py":{{"{low_line}":["tests.test_gate.GateTests.test_low"]}}}}}}"#),
-        )
-        .unwrap();
         let envelope = run_with(&package, &patches, &out, &[]);
         assert!(envelope.ok, "{}", envelope.summary);
         let listed = json::parse(&fs::read_to_string(patches.join("mutants.json")).unwrap()).unwrap();
@@ -3922,24 +4004,25 @@ mod tests {
             Some(Value::Array(items)) => items.clone(),
             other => panic!("mutants was {other:?}"),
         };
-        let mut saw_named = false;
-        let mut saw_dark = false;
+        let mut saw_low = false;
+        let mut saw_high = false;
         for item in &items {
             let id = item.get("id").and_then(Value::as_str).unwrap();
             let start = item.get("start").and_then(Value::as_int).unwrap() as usize;
             let line = decide::line_at(&text, start);
             let body = json::parse(&fs::read_to_string(out.join("results").join(format!("{id}.json"))).unwrap()).unwrap();
+            let command = body.get("command").and_then(Value::as_str).unwrap_or("");
+            // The baseline traced each test: a mutant runs only the test that ran its line.
             if line == low_line {
-                let command = body.get("command").and_then(Value::as_str).unwrap_or("");
-                assert!(command.contains("tests.test_gate.GateTests.test_low"), "{command}");
-                saw_named = true;
-            } else {
-                assert_eq!(body.get("outcome").and_then(Value::as_str), Some("no coverage"));
-                assert!(body.get("command").is_none(), "{body:?}");
-                saw_dark = true;
+                assert!(command.contains("GateTests.test_low") && !command.contains("test_high"), "{command}");
+                saw_low = true;
+            } else if line == high_line {
+                assert!(command.contains("GateTests.test_high") && !command.contains("test_low"), "{command}");
+                saw_high = true;
             }
+            assert_eq!(body.get("outcome").and_then(Value::as_str), Some("killed"), "{body:?}");
         }
-        assert!(saw_named && saw_dark);
+        assert!(saw_low && saw_high);
 
         let caller = package.join("caller.json");
         fs::write(&caller, "{\"files\":{}}\n").unwrap();

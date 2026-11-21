@@ -17,7 +17,7 @@ use crate::json::{self, Value};
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 const LINE_MAP_BODY: &str = "{\"lines\":[1]}\n";
 
-const INSTRUCTIONS: &str = "Probatio finds changed lines no test checks, which grep and coverage cannot: it makes one small code change (a mutant) at a time in a separate tree, runs the project's own tests, and records whether a test failed. The package is never edited. After editing code, call mutate_diff: it scores only the changed lines (test code skipped) and names the untested ones; estimate: true first says how many mutants and how long, and a capped run goes on with continue: true. To check that a test holds a fix, mutate_patch applies a diff (such as the fix undone) in a separate tree and says whether a test failed. For a whole package: mutate_generate, then mutate_run, then mutate_tally. Calls that run tests are jobs: a reply within waitSeconds (default 20) is the result; otherwise it carries job_id, and job_status returns the result when the run ends (waitSeconds about 100: up to 600 is allowed, but a client may cut a longer call off). cancel_job stops one. Read summary and next in each reply; ok false means stop and show them.";
+const INSTRUCTIONS: &str = "Probatio finds changed lines no test checks, which grep and coverage cannot: it makes one small code change (a mutant) at a time in a separate tree, runs the project's own tests, and records whether a test failed. The package (default: the git root of the working directory) is never edited. After editing code, call mutate_diff: it scores only the changed lines (test code skipped) and names the untested ones; estimate: true first says how many mutants and how long, and a capped run goes on with continue: true. To check that a test holds a fix, mutate_patch applies a diff (such as the fix undone) in a separate tree and says whether a test failed. For a whole package: mutate_generate, then mutate_run, then mutate_tally. Calls that run tests are jobs: a reply within waitSeconds (default 20) is the result; otherwise it carries job_id, and job_status returns the result when the run ends (waitSeconds about 100: up to 600 is allowed, but a client may cut a longer call off). cancel_job stops one. Read summary and next in each reply; ok false means stop and show them.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -57,19 +57,20 @@ const CORE: &str = "core";
 const GROUPS: &[&str] = &["core", "diagnostics", "cli"];
 
 const WAIT_HELP: &str = "Seconds to wait for the result (0-600, default 20; about 100 is safe, a client may cut a longer call off). Past that the reply has job_id; the run goes on.";
+const PACKAGE_HELP: &str = "Project directory. Default: the git root of the working directory.";
 const LOW_PRIORITY_HELP: &str = "Run the tests and builds below normal priority, beside other work. Default false.";
 
 const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "mutate_diff",
         group: CORE,
-        description: "Use after editing code: names changed lines no test checks, which grep and coverage cannot. Mutates only lines changed since `since` (test code skipped), runs the tests per mutant in a separate tree, returns survivors (file:line, the unnoticed change). Over maxMutants, the budget is spread across the changed files and continue: true scores the rest without rerunning. estimate: true gives the count and time first. Package not edited. Reply within waitSeconds is the result, else job_id for job_status. Call again after adding a test.",
+        description: "Use after editing code: names changed lines no test checks, which grep and coverage cannot. Mutates only lines changed since `since` (test code skipped; paths limits it to your files), runs the tests per mutant in a separate tree, returns survivors (file:line, the unnoticed change). With a line map (unittest and pytest+coverage.py write one) one call scores every mutant; without one it scores 30 (serial: true for all) and continue: true scores the rest without rerunning. estimate: true gives the count and time first. Package not edited. Reply within waitSeconds is the result, else job_id for job_status. Call again after adding a test.",
         props: &[
-            Prop { key: "package", kind: Kind::Str, help: "Project directory you edited, in a git checkout; a workspace member is fine." },
+            Prop { key: "package", kind: Kind::Str, help: "Project directory you edited, in a git checkout; a workspace member is fine. Default: the git root of the working directory." },
             Prop { key: "since", kind: Kind::Str, help: "HEAD (default): uncommitted edits. main: this branch's changes, from its merge-base. Or A..HEAD, A...HEAD." },
             Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root." },
             Prop { key: "timeoutMs", kind: Kind::Int, help: "Clock for the baseline and each mutant. Default 120000." },
-            Prop { key: "maxMutants", kind: Kind::Int, help: "Most mutants scored in one call, spread across the changed files. Default 30." },
+            Prop { key: "maxMutants", kind: Kind::Int, help: "Most mutants scored in one call, spread across the changed files. Default: all of them when there is a line map (unittest writes one) or serial, else 30." },
             Prop { key: "continue", kind: Kind::Bool, help: "Keep the last call's results (same changed lines) and score the next maxMutants that have none. A capped reply's nextCall sets it." },
             Prop { key: "estimate", kind: Kind::Bool, help: "Score nothing: return the mutant count and a time estimate (the last run's cost, else two timed suite runs in a mutant tree)." },
             Prop { key: "maxMinutes", kind: Kind::Int, help: "Start no mutant after this many minutes from the call's start (baseline included). continue: true goes on." },
@@ -77,17 +78,20 @@ const TOOLS: &[ToolSpec] = &[
             Prop { key: "workers", kind: Kind::Int, help: "Mutants scored at once, each in its own tree. Default 1." },
             Prop { key: "confirm", kind: Kind::Bool, help: "Rerun the killing test twice before counting a kill. Default true." },
             Prop { key: "includeTests", kind: Kind::Bool, help: "Also mutate test code (tests/, benches/, test files, #[cfg(test)]). Default false." },
+            Prop { key: "paths", kind: Kind::StrArray, help: "Only changed files under these paths: prefixes or globs from the package, e.g. [\"src/storage\", \"src/**/*.py\"]. pathLinesSkipped counts the changed lines left out. Default: every changed file." },
+            Prop { key: "serial", kind: Kind::Bool, help: "Allow more than 30 mutants without a line map; each runs the whole suite. Default false." },
+            Prop { key: "lineMap", kind: Kind::Str, help: "Line map file. A files object names the tests for each line. A unittest baseline writes one itself." },
             Prop { key: "out", kind: Kind::Str, help: "Output directory. Default <project root>/.probatio/diff/<package path>." },
             Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
-        required: &["package"],
+        required: &[],
     },
     ToolSpec {
         name: "mutate_patch",
         group: CORE,
         description: "Check that a test holds a change: applies a unified diff (often a fix undone) in a separate tree and runs the named tests (or the suite) without it, where they must pass, and with it. outcome killed: a test failed with the diff; survived: none noticed. Package not edited. Reply within waitSeconds is the result, else job_id for job_status.",
         props: &[
-            Prop { key: "package", kind: Kind::Str, help: "Project whose tests should notice the diff." },
+            Prop { key: "package", kind: Kind::Str, help: "Project whose tests should notice the diff. Default: the git root of the working directory." },
             Prop { key: "patch", kind: Kind::Str, help: "A unified diff (git diff output), or the path of a file that holds one. Paths from the checkout top or the package." },
             Prop { key: "tests", kind: Kind::StrArray, help: "Test names to run. They go at {tests} in suiteCommand, after -- for cargo test, or at the end for pytest. Default: the whole suite." },
             Prop { key: "reverse", kind: Kind::Bool, help: "Apply the diff in reverse: pass a fix's own diff to undo the fix. Default false." },
@@ -97,27 +101,27 @@ const TOOLS: &[ToolSpec] = &[
             Prop { key: "lowPriority", kind: Kind::Bool, help: LOW_PRIORITY_HELP },
             Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
-        required: &["package", "patch"],
+        required: &["patch"],
     },
     ToolSpec {
         name: "mutate_generate",
         group: CORE,
         description: "Write mutants (one small code change each) for a whole package to <out>/mutants.json, skipping test code. Runs no tests. Next: mutate_run with patches set to this out.",
         props: &[
-            Prop { key: "package", kind: Kind::Str, help: "Project directory." },
+            Prop { key: "package", kind: Kind::Str, help: PACKAGE_HELP },
             Prop { key: "out", kind: Kind::Str, help: "Output directory, usually <project root>/.probatio/generate." },
             Prop { key: "src", kind: Kind::Str, help: "Subdirectory of package to mutate. Default src." },
             Prop { key: "maxMutants", kind: Kind::Int, help: "Stop after this many mutants." },
             Prop { key: "includeTests", kind: Kind::Bool, help: "Also mutate test code. Default false." },
         ],
-        required: &["package", "out"],
+        required: &["out"],
     },
     ToolSpec {
         name: "mutate_run",
         group: CORE,
         description: "Score mutate_generate's mutants: a baseline run, then one per mutant in a separate tree; records killed, survived (a gap), did not build, or no coverage. Package not edited. A red baseline, a missing tool, or over 30 mutants with no line map stops with no score; serial=true allows a large batch. Reply within waitSeconds is the result, else job_id for job_status. The same call resumes.",
         props: &[
-            Prop { key: "package", kind: Kind::Str, help: "Project directory." },
+            Prop { key: "package", kind: Kind::Str, help: PACKAGE_HELP },
             Prop { key: "patches", kind: Kind::Str, help: "The mutate_generate out directory." },
             Prop { key: "out", kind: Kind::Str, help: "Results directory, usually <project root>/.probatio/run. Reuse it to resume." },
             Prop { key: "suiteCommand", kind: Kind::Str, help: "Test command. Default: .probatio.json suiteCommand, else found from the package root (cargo test, go test ./..., npm test, python3 -m pytest, ...)." },
@@ -132,7 +136,7 @@ const TOOLS: &[ToolSpec] = &[
             Prop { key: "lowPriority", kind: Kind::Bool, help: LOW_PRIORITY_HELP },
             Prop { key: "waitSeconds", kind: Kind::Int, help: WAIT_HELP },
         ],
-        required: &["package", "patches", "out"],
+        required: &["patches", "out"],
     },
     ToolSpec {
         name: "mutate_tally",
@@ -747,6 +751,11 @@ fn text_block(text: &str) -> Value {
 /// The CLI argv for one tool call, after the arguments are checked against the tool's schema.
 /// Each refusal names the tool, the argument, and what is expected.
 pub fn argv_of_call(params: Option<&Value>, surface: &Surface) -> Result<(Vec<String>, Option<String>), String> {
+    argv_of_call_in(params, surface, &std::env::current_dir().unwrap_or_default())
+}
+
+/// `argv_of_call` with the working directory a missing `package` defaults from.
+fn argv_of_call_in(params: Option<&Value>, surface: &Surface, cwd: &Path) -> Result<(Vec<String>, Option<String>), String> {
     let Some(params) = params else {
         return Err("tools/call needs params with name and arguments".into());
     };
@@ -765,7 +774,18 @@ pub fn argv_of_call(params: Option<&Value>, surface: &Surface) -> Result<(Vec<St
         Some(value @ Value::Object(_)) => value.clone(),
         Some(_) => return Err(format!("{name}: arguments must be an object")),
     };
-    let checked = check_args(tool, &args)?;
+    let mut checked = check_args(tool, &args)?;
+    if tool.props.iter().any(|prop| prop.key == "package") && !checked.iter().any(|(key, _)| *key == "package") {
+        let Some(root) = crate::worktree::default_package(cwd) else {
+            return Err(format!(
+                "{}: no \"package\" given, and the working directory {} is not in a git checkout; pass package, the project directory",
+                tool.name,
+                cwd.display()
+            ));
+        };
+        // First, where a caller's package would usually be, so the argv reads the same either way.
+        checked.insert(0, ("package", Arg::Str(root.display().to_string())));
+    }
     build_argv(tool, &checked)
 }
 
@@ -800,14 +820,16 @@ fn check_args(tool: &ToolSpec, args: &Value) -> Result<Vec<(&'static str, Arg)>,
             (Kind::StrArray, Value::Array(items)) if items.iter().all(|item| item.as_str().is_some()) => {
                 Arg::List(items.iter().filter_map(Value::as_str).map(str::to_string).collect())
             }
+            // Some clients send an array as its JSON text: "[\"a\",\"b\"]". That reads one way only.
+            (Kind::StrArray, Value::String(text)) if string_list(text).is_some() => Arg::List(string_list(text).unwrap_or_default()),
             (kind, other) => {
-                let wanted = match kind {
-                    Kind::Int => "a non-negative integer",
-                    Kind::Bool => "true or false",
-                    Kind::StrArray => "an array of strings",
-                    Kind::Str => "a string",
+                let (wanted, fix) = match kind {
+                    Kind::Int => ("a non-negative integer", "send a number such as 590"),
+                    Kind::Bool => ("true or false", "send true or false without quotes"),
+                    Kind::StrArray => ("an array of strings", "send a JSON array such as [\"src\"]"),
+                    Kind::Str => ("a string", "send it in quotes"),
                 };
-                return Err(format!("{}: \"{key}\" must be {wanted}, got {}", tool.name, short(other)));
+                return Err(format!("{}: \"{key}\" must be {wanted}, got {}; {fix}", tool.name, short(other)));
             }
         };
         checked.push((prop.key, arg));
@@ -819,6 +841,18 @@ fn check_args(tool: &ToolSpec, args: &Value) -> Result<Vec<(&'static str, Arg)>,
         }
     }
     Ok(checked)
+}
+
+/// A JSON array of strings sent as text. Anything else is None.
+fn string_list(text: &str) -> Option<Vec<String>> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    match json::parse(trimmed).ok()? {
+        Value::Array(items) => items.iter().map(|item| item.as_str().map(str::to_string)).collect(),
+        _ => None,
+    }
 }
 
 fn short(value: &Value) -> String {
@@ -856,6 +890,21 @@ fn build_argv(tool: &ToolSpec, args: &[(&'static str, Arg)]) -> Result<(Vec<Stri
     let mut note = None;
     for (key, arg) in args {
         match (*key, arg) {
+            ("serial", Arg::Bool(flag)) if tool.name == "mutate_diff" => {
+                if *flag {
+                    argv.push("--serial".into());
+                }
+            }
+            ("lineMap", Arg::Str(value)) if tool.name == "mutate_diff" => {
+                argv.push("--line-map".into());
+                argv.push(value.clone());
+            }
+            ("paths", Arg::List(paths)) => {
+                for path in paths {
+                    argv.push("--path".into());
+                    argv.push(path.clone());
+                }
+            }
             ("serial" | "lineMap" | "waitSeconds", _) => {}
             ("confirm", Arg::Bool(flag)) => {
                 if !flag {
@@ -1107,7 +1156,7 @@ mod tests {
         let missing = argv_of_call(Some(&call("mutate_generate", r#"{"package":"p"}"#)), &all).unwrap_err();
         assert_eq!(missing, "mutate_generate: missing required argument \"out\" (Output directory, usually <project root>/.probatio/generate.)");
         let wrong = argv_of_call(Some(&call("mutate_run", r#"{"package":"p","patches":"g","out":"o","timeoutMs":"soon"}"#)), &all).unwrap_err();
-        assert_eq!(wrong, "mutate_run: \"timeoutMs\" must be a non-negative integer, got \"soon\"");
+        assert_eq!(wrong, "mutate_run: \"timeoutMs\" must be a non-negative integer, got \"soon\"; send a number such as 590");
         let (argv, _) = argv_of_call(
             Some(&call("mutate_run", r#"{"package":"p","patches":"g","out":"o","timeoutMs":"60000","workers":2,"confirm":false,"maxSelected":5}"#)),
             &all,
@@ -1146,6 +1195,97 @@ mod tests {
         assert!(run.ends_with(&["--low-priority".to_string()]), "{run:?}");
     }
 
+    /// `mutate_diff` takes serial and lineMap as mutate_run does, and paths as repeated --path.
+    /// serial on a diff is a flag, not a slip file, so the baseline can still write its line map.
+    #[test]
+    fn mutate_diff_takes_serial_line_map_and_paths() {
+        let all = Surface::all();
+        let (diff, note) = argv_of_call(
+            Some(&call("mutate_diff", r#"{"package":"p","out":"o","serial":true,"lineMap":"m.json","paths":["src/storage","src/**/*.py"]}"#)),
+            &all,
+        )
+        .unwrap();
+        assert_eq!(diff, ["mutate", "diff", "--package", "p", "--out", "o", "--serial", "--line-map", "m.json", "--path", "src/storage", "--path", "src/**/*.py"]);
+        assert!(note.is_none());
+        let flags = crate::args::Flags::parse(&diff[2..]);
+        assert!(flags.bool("serial", false));
+        assert_eq!(flags.texts("path"), ["src/storage", "src/**/*.py"]);
+        let (off, _) = argv_of_call(Some(&call("mutate_diff", r#"{"package":"p","out":"o","serial":false}"#)), &all).unwrap();
+        assert_eq!(off, ["mutate", "diff", "--package", "p", "--out", "o"]);
+        let wrong = argv_of_call(Some(&call("mutate_diff", r#"{"package":"p","paths":"src"}"#)), &all).unwrap_err();
+        assert_eq!(wrong, "mutate_diff: \"paths\" must be an array of strings, got \"src\"; send a JSON array such as [\"src\"]");
+    }
+
+    /// Agents called mutate_diff with no package and lost two turns to the refusal. A missing
+    /// package is the git root of the server's working directory, and the default out follows it.
+    #[test]
+    fn a_missing_package_is_the_git_root_of_the_working_directory() {
+        let all = Surface::all();
+        let cwd = std::env::current_dir().unwrap();
+        let root = crate::worktree::toplevel(&cwd).expect("the crate is tested inside its checkout").display().to_string();
+        let (diff, _) = argv_of_call_in(Some(&call("mutate_diff", "{}")), &all, &cwd).unwrap();
+        let out = crate::diffscope::default_diff_out(Path::new(&root)).display().to_string();
+        assert_eq!(diff, ["mutate", "diff", "--package", &root, "--out", &out]);
+        let (estimate, _) = argv_of_call_in(Some(&call("mutate_diff", r#"{"estimate":true}"#)), &all, &cwd.join("src")).unwrap();
+        assert_eq!(&estimate[..4], ["mutate", "diff", "--package", &root]);
+        let (patch, _) = argv_of_call_in(Some(&call("mutate_patch", r#"{"patch":"fix.diff"}"#)), &all, &cwd).unwrap();
+        assert_eq!(patch, ["mutate", "patch", "--package", &root, "--patch=fix.diff"]);
+        let (generate, _) = argv_of_call_in(Some(&call("mutate_generate", r#"{"out":"g"}"#)), &all, &cwd).unwrap();
+        assert_eq!(generate, ["mutate", "generate", "--package", &root, "--out", "g"]);
+        let (run, _) = argv_of_call_in(Some(&call("mutate_run", r#"{"patches":"g","out":"o"}"#)), &all, &cwd).unwrap();
+        assert_eq!(run, ["mutate", "run", "--package", &root, "--patches", "g", "--out", "o"]);
+        let (given, _) = argv_of_call_in(Some(&call("mutate_generate", r#"{"package":"p","out":"g"}"#)), &all, &cwd).unwrap();
+        assert_eq!(given, ["mutate", "generate", "--package", "p", "--out", "g"]);
+        for name in ["mutate_diff", "mutate_patch", "mutate_generate", "mutate_run"] {
+            let tool = tool_value(spec(name).unwrap());
+            let schema = tool.get("inputSchema").unwrap();
+            assert!(!json::stringify_compact(schema.get("required").unwrap()).contains("package"), "{name}");
+            let help = schema.get("properties").and_then(|props| props.get("package")).and_then(|prop| prop.get("description")).and_then(Value::as_str).unwrap();
+            assert!(help.contains("Default: the git root of the working directory."), "{name}: {help}");
+        }
+        assert!(INSTRUCTIONS.contains("default: the git root of the working directory"));
+    }
+
+    #[test]
+    fn a_missing_package_outside_a_git_checkout_says_to_pass_it() {
+        let dir = crate::testdir::TempDir::new("nogit");
+        fs::create_dir_all(&dir).unwrap();
+        if crate::worktree::toplevel(&dir).is_some() {
+            return; // the temp folder is inside a checkout on this machine
+        }
+        let error = argv_of_call_in(Some(&call("mutate_diff", "{}")), &Surface::all(), &dir).unwrap_err();
+        assert_eq!(error, format!("mutate_diff: no \"package\" given, and the working directory {} is not in a git checkout; pass package, the project directory", dir.display()));
+        assert!(!error.contains('\n'));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Agents sent "[\"a\",\"b\"]" for an array and "590" for an integer. Both read one way only.
+    #[test]
+    fn an_array_or_integer_sent_as_text_is_read_when_it_is_unambiguous() {
+        let all = Surface::all();
+        let (diff, _) = argv_of_call(
+            Some(&call("mutate_diff", r#"{"package":"p","out":"o","paths":"[\"src/a\", \"src/b\"]","maxMutants":"590","timeoutMs":590.0}"#)),
+            &all,
+        )
+        .unwrap();
+        assert_eq!(diff, ["mutate", "diff", "--package", "p", "--out", "o", "--path", "src/a", "--path", "src/b", "--max-mutants", "590", "--timeout-ms", "590"]);
+        let (patch, _) = argv_of_call(Some(&call("mutate_patch", r#"{"package":"p","patch":"f","tests":" [\"a::b\"] "}"#)), &all).unwrap();
+        assert_eq!(patch, ["mutate", "patch", "--package", "p", "--patch=f", "--tests", "a::b"]);
+        let (argv, _) = argv_of_call(Some(&call("probatio", r#"{"argv":"[\"schema\"]"}"#)), &all).unwrap();
+        assert_eq!(argv, ["schema"]);
+        for (arguments, expected) in [
+            (r#"{"package":"p","paths":"[1,2]"}"#, "mutate_diff: \"paths\" must be an array of strings, got \"[1,2]\"; send a JSON array such as [\"src\"]"),
+            (r#"{"package":"p","paths":"[\"a\""}"#, "mutate_diff: \"paths\" must be an array of strings, got \"[\\\"a\\\"\"; send a JSON array such as [\"src\"]"),
+            (r#"{"package":"p","maxMutants":"590.5"}"#, "mutate_diff: \"maxMutants\" must be a non-negative integer, got \"590.5\"; send a number such as 590"),
+            (r#"{"package":"p","estimate":"yes"}"#, "mutate_diff: \"estimate\" must be true or false, got \"yes\"; send true or false without quotes"),
+            (r#"{"package":5}"#, "mutate_diff: \"package\" must be a string, got 5; send it in quotes"),
+        ] {
+            let error = argv_of_call(Some(&call("mutate_diff", arguments)), &all).unwrap_err();
+            assert_eq!(error, expected, "{arguments}");
+            assert!(!error.contains('\n'));
+        }
+    }
+
     /// Claude Code cut a 600 s wait at 120 s. The text recommends about 100 s and says why.
     #[test]
     fn the_wait_advice_fits_a_client_that_cuts_long_calls() {
@@ -1163,8 +1303,10 @@ mod tests {
             let flags: Vec<&str> = crate::args::command_flags(&command).unwrap().iter().map(|(name, _)| *name).collect();
             for prop in tool.props {
                 let flag = match prop.key {
-                    "serial" | "waitSeconds" => continue,
+                    "waitSeconds" => continue,
+                    "serial" if tool.name == "mutate_run" => continue,
                     "lineMap" => "line-map".to_string(),
+                    "paths" => "path".to_string(),
                     other => kebab(other),
                 };
                 assert!(flags.contains(&flag.as_str()), "{} {} -> --{flag}", tool.name, prop.key);

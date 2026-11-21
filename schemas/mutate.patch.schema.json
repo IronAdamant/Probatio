@@ -4,7 +4,7 @@
   "flags": [
     {
       "name": "package",
-      "required": true
+      "required": false
     },
     {
       "name": "patch",
@@ -36,7 +36,7 @@
     }
   ],
   "title": "probatio mutate.patch",
-  "description": "Scores one change given as a unified diff, the way a mutant is scored: the usual use is to undo a fix and check that a named test fails. --patch is the diff text (pass it as --patch=<text>) or the path of a file that holds it; paths in it are from the top of the checkout or from the package. --reverse applies it in reverse (pass the fix's own diff to undo the fix). --tests names a test to run (repeat it); the names go at {tests} or {tests,} in the suite command, after -- for cargo test, or at the end for pytest; with no names the whole suite runs. The diff is applied with git apply in a mutant tree, never in your tree. The suite runs there once without it (it must pass) and once with it. outcome killed means a test failed with the diff applied; survived means nothing noticed it. unviable, timeout, and error are not scores (ok false). A kill is rerun twice unless --no-confirm. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "description": "Scores one change given as a unified diff, the way a mutant is scored: the usual use is to undo a fix and check that a named test fails. --package defaults to the git root of the working directory; outside a git checkout it must be passed. --patch is the diff text (pass it as --patch=<text>) or the path of a file that holds it; paths in it are from the top of the checkout or from the package. --reverse applies it in reverse (pass the fix's own diff to undo the fix). --tests names a test to run (repeat it); the names go at {tests} or {tests,} in the suite command, after -- for cargo test, or at the end for pytest; with no names the whole suite runs. The diff is applied with git apply in a mutant tree, never in your tree. The suite runs there once without it (it must pass) and once with it. outcome killed means a test failed with the diff applied; survived means nothing noticed it. unviable, timeout, and error are not scores (ok false). A kill is rerun twice unless --no-confirm. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
   "required": [
     "schemaVersion",
