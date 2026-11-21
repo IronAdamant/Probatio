@@ -21,7 +21,8 @@ use crate::verify;
 /// Invocations that must each return an envelope. Flags may be missing on purpose.
 pub const INVOCATIONS: &[&[&str]] = &[
     &["mutate", "generate"],
-    &["mutate", "diff"],
+    // With no --package the git root is used: a bad flag keeps this from scoring the checkout.
+    &["mutate", "diff", "--max-mutants", "none"],
     &["mutate", "patch"],
     &["mutate", "run"],
     &["mutate", "sealed"],
@@ -130,6 +131,11 @@ fn mutate(args: &[String]) -> Envelope {
     if let Some(envelope) = refused(command, &flags) {
         return envelope;
     }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let flags = match with_default_package(command, &args[1..], flags, &cwd) {
+        Ok(flags) => flags,
+        Err(envelope) => return *envelope,
+    };
     match action {
         "generate" => generate::generate(&flags),
         "diff" => crate::diffscope::diff(&flags),
@@ -139,6 +145,29 @@ fn mutate(args: &[String]) -> Envelope {
         "tally" => tally_command(&flags),
         _ => unreachable!(),
     }
+}
+
+/// `mutate diff`, `patch`, `generate`, and `run` with no `--package` take the git root of the
+/// working directory. The flag is added to the argv, so a `nextCall` names it.
+fn with_default_package(command: &str, args: &[String], flags: Flags, cwd: &std::path::Path) -> Result<Flags, Box<Envelope>> {
+    if !matches!(command, "mutate.diff" | "mutate.patch" | "mutate.generate" | "mutate.run") || flags.get("package").is_some() {
+        return Ok(flags);
+    }
+    let Some(root) = crate::worktree::default_package(cwd) else {
+        return Err(Box::new(missing_package(command, cwd)));
+    };
+    let mut args = args.to_vec();
+    args.push(format!("--package={}", root.display()));
+    Ok(Flags::parse(&args))
+}
+
+fn missing_package(command: &str, cwd: &std::path::Path) -> Envelope {
+    Envelope::new(
+        false,
+        command,
+        format!("missing --package, and the working directory {} is not in a git checkout", cwd.display()),
+        "Pass --package, the project directory (default: the git root of the working directory).",
+    )
 }
 
 fn tally_command(flags: &Flags) -> Envelope {
@@ -731,6 +760,34 @@ mod tests {
             assert!(!next.is_empty(), "{invocation:?}");
             assert!(!rendered.to_ascii_lowercase().contains("unknown command"), "{rendered}");
         }
+    }
+
+    /// `mutate diff`, `patch`, `generate`, and `run` with no --package take the git root of the
+    /// working directory, as the MCP tools do; outside a checkout they say to pass it.
+    #[test]
+    fn a_missing_package_is_the_git_root_or_a_one_line_refusal() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = crate::worktree::toplevel(&cwd).unwrap().display().to_string();
+        for command in ["mutate.diff", "mutate.patch", "mutate.generate", "mutate.run"] {
+            let rest = args(&["--out", "o"]);
+            let flags = with_default_package(command, &rest, Flags::parse(&rest), &cwd.join("src")).unwrap_or_else(|envelope| panic!("{}", envelope.summary));
+            assert_eq!(flags.get("package"), Some(root.as_str()), "{command}");
+            assert_eq!(flags.get("out"), Some("o"), "{command}");
+            let given = args(&["--package", "p"]);
+            let flags = with_default_package(command, &given, Flags::parse(&given), &cwd).unwrap_or_else(|envelope| panic!("{}", envelope.summary));
+            assert_eq!(flags.get("package"), Some("p"));
+        }
+        let rest = args(&["--out", "o"]);
+        let ledger = with_default_package("ledger.build", &rest, Flags::parse(&rest), &cwd).unwrap_or_else(|envelope| panic!("{}", envelope.summary));
+        assert_eq!(ledger.get("package"), None, "only the four mutate commands default");
+        let dir = crate::testdir::TempDir::new("nogit-cli");
+        fs::create_dir_all(&dir).unwrap();
+        if crate::worktree::toplevel(&dir).is_none() {
+            let refused = with_default_package("mutate.diff", &rest, Flags::parse(&rest), &dir).err().unwrap();
+            assert!(!refused.ok);
+            assert_eq!(refused.summary, format!("missing --package, and the working directory {} is not in a git checkout", dir.display()));
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

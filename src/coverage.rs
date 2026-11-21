@@ -67,10 +67,8 @@ fn legacy_hits(text: &str) -> Option<BTreeMap<String, BTreeMap<u32, Vec<String>>
         for (line, names) in rows {
             let line = line.parse::<u32>().ok()?;
             let Value::Array(names) = names else { return None };
+            // An empty list ran outside any one test (an import, a class setup): the whole suite.
             let tests = names.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
-            if tests.is_empty() {
-                continue;
-            }
             mapped.insert(line, tests);
         }
         if !mapped.is_empty() {
@@ -406,6 +404,16 @@ mod tests {
         assert_eq!(map.names_for("src/a.go", 4), vec!["TestAdd".to_string()]);
         assert_eq!(map.names_for("src/a.go", 6), vec!["TestSub".to_string()]);
         assert!(map.names_for("src/a.go", 5).is_empty());
+    }
+
+    /// The unittest reporter writes `[]` for a line that ran outside any one test.
+    #[test]
+    fn an_empty_legacy_list_runs_the_whole_suite() {
+        let raw = r#"{"files":{"pkg/a.py":{"1":[],"2":["t.A.test_x"]}}}"#;
+        let map = parse_test_map(&normalize(raw).unwrap());
+        assert!(matches!(map.line_hit("pkg/a.py", 1), crate::decide::LineHit::Listed(names) if names.is_empty()));
+        assert_eq!(map.names_for("pkg/a.py", 2), vec!["t.A.test_x".to_string()]);
+        assert!(matches!(map.line_hit("pkg/a.py", 3), crate::decide::LineHit::Dark));
     }
 
     #[test]

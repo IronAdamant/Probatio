@@ -142,7 +142,7 @@ impl Flags {
 pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
     match command {
         "mutate.diff" => Some(&[
-            ("package", true),
+            ("package", false),
             ("since", false),
             ("out", false),
             ("src", false),
@@ -158,9 +158,12 @@ pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
             ("budget-ms", false),
             ("max-minutes", false),
             ("low-priority", false),
+            ("serial", false),
+            ("line-map", false),
+            ("path", false),
         ]),
         "mutate.patch" => Some(&[
-            ("package", true),
+            ("package", false),
             ("patch", true),
             ("tests", false),
             ("suite-command", false),
@@ -170,7 +173,7 @@ pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
             ("low-priority", false),
         ]),
         "mutate.generate" => Some(&[
-            ("package", true),
+            ("package", false),
             ("out", true),
             ("per-file", false),
             ("src", false),
@@ -189,7 +192,7 @@ pub fn command_flags(command: &str) -> Option<&'static [(&'static str, bool)]> {
             ("hide", false),
             ("only-test", false),
             ("suite-command", false),
-            ("package", true),
+            ("package", false),
             ("patches", true),
             ("out", true),
             ("repo", false),

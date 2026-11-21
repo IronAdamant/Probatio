@@ -6,6 +6,26 @@ Versions on npm, newest first. `0.4.0` was the crate version in git and was not 
 
 The version in git moved `0.1.0` at `922a301`, back to `0.0.5` at `c786540`, then `0.1.0` again at `4e0bd47`. npm never published the in-between `0.1.0` at `922a301`.
 
+## Unreleased
+
+From an A/B run in which agents used `mutate_diff` on a small stdlib-unittest Python project (about 4,000 lines, a 5-20 s suite). Probatio was the largest remaining turn cost: 12 calls, 14.5% of the run's cost, mostly spent on calls that scored nothing or 30 mutants at a time. `schemaVersion` stays 2: fields were added, none renamed or removed.
+
+Added:
+
+- A unittest line map with the standard library. When the suite is `python3 -m unittest discover` and no line map was passed, the shipped reporter records which lines of the package's files each test ran (`sys.monitoring` on Python 3.12 and later, else `sys.settrace`) and the baseline writes `<out>/lines.json` in the `files` format. The 30-mutant stop no longer applies, and each mutant runs only the tests that ran its line. A line that ran outside any one test (a module body, `setUpClass`) runs the whole suite. Test files are left out. If tracing fails, no map is written and the run behaves as before. On a 291-test, 9 s suite the trace added about 1 s with `sys.monitoring`.
+- `serial` and `lineMap` on MCP `mutate_diff`, and `--serial` and `--line-map` on `mutate diff`. Agents told to pass `serial: true` were refused for an unknown argument. On a diff, `serial` lifts the 30-mutant stop without writing a slip, so the baseline can still write its own map.
+- `paths` on MCP `mutate_diff` (`--path`, repeatable): only the changed files under those prefixes or globs (from the package) get mutants. `pathLinesSkipped` counts the changed lines left out, and the summary names them. A diff since a shared seed commit held other agents' files, and the mutant budget went to them.
+- `lineMapUsed` on `mutate run` and `mutate diff`: whether the run had a line map.
+- `package` is optional on MCP `mutate_diff`, `mutate_patch`, `mutate_generate`, and `mutate_run`, and `--package` on the same CLI commands. The default is the git root of the working directory (the server's, for MCP). Outside a git checkout the call is refused in one line that says to pass it. Agents called `mutate_diff` without `package` and spent two turns on the refusal.
+
+Changed:
+
+- `mutate diff` with no `maxMutants` scores every mutant in one call when the run has a line map (passed, or written by the baseline) or `serial`, and starts no mutant after 10 minutes unless `maxMinutes` or `--budget-ms` is given. With no map and no `serial` it still scores 30 per call. `maxMutants` caps every call as before. `estimate` counts one call for all of them when a map is expected (unittest, `lineMap`, or `serial`).
+- A mutant whose line a baseline map lists runs every test the map names for that line. The `maxSelected` cap (default 30) had cut that list, so a line many tests ran was checked by only the first 30. The cap still applies to names you pass.
+- A Python kill is confirmed with two reporter runs of all its killing tests together. It was two runs per killing test, so a mutant on a line 198 tests ran started 396 processes; on the A/B project that was most of each mutant's time. A name is still kept only when it failed in both reruns.
+- An MCP array argument sent as the JSON text of an array (`"[\"a\",\"b\"]"`) is read as that array. An integer sent as text (`"590"`) was already read. Any other wrong type is still refused in one line, which now ends with the fix, such as `send a number such as 590`.
+- A `coverage-raw.json` line with an empty test list counts as a line that ran and named no test (the whole suite runs for it). It was dropped, which made the line no coverage.
+
 ## 0.9.0 - 2026-11-15
 
 Fixes from a week of Probatio 0.8.1 on a large Rust workspace. Every run there found untested behaviour, but it was never run on the big crate: nothing said what a run would cost, it competed with the gate for one machine, a capped run could not be continued, and the agent made more than twenty "undo this fix, the named test must fail" checks by hand. `schemaVersion` stays 2: fields were added, none renamed or removed. MIGRATION.md has a row for each behaviour change.

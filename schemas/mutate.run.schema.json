@@ -16,7 +16,7 @@
     },
     {
       "name": "package",
-      "required": true
+      "required": false
     },
     {
       "name": "patches",
@@ -128,7 +128,7 @@
     }
   ],
   "title": "probatio mutate.run",
-  "description": "Scores a batch of mutants against the project's own suite. mutate sealed prints this shape too, with fixEdited, olderTestCatch, and miss. A kill only from tests the fix commit edited is a miss: ok is false and killed is 0. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
+  "description": "Scores a batch of mutants against the project's own suite. --package defaults to the git root of the working directory; outside a git checkout it must be passed. mutate sealed prints this shape too, with fixEdited, olderTestCatch, and miss. A kill only from tests the fix commit edited is a miss: ok is false and killed is 0. Every command prints one JSON object. schemaVersion changes when a field is renamed, removed, or changes meaning. A new field does not change it.",
   "type": "object",
   "required": [
     "schemaVersion",

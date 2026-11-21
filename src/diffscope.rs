@@ -12,6 +12,9 @@ use crate::operators::{self, Mutant};
 
 const COMMAND: &str = "mutate.diff";
 const DEFAULT_MAX: usize = 30;
+/// With no `maxMutants` and a line map, one call scores every mutant; past this much time since
+/// the call began it starts no more, and `continue` goes on. A caller's `maxMinutes` replaces it.
+const MAPPED_BUDGET_MS: u64 = 10 * 60_000;
 
 /// Where Probatio keeps its output for a package: `PROBATIO_DIR` when set (a relative value is
 /// read from the project root), else `.probatio` at the project root, which is the top of the git
@@ -134,6 +137,16 @@ pub fn diff(flags: &Flags) -> Envelope {
     }
     let src = flags.get("src").map(|dir| dir.trim_matches(['/', '\\']).replace('\\', "/"));
     let include_tests = flags.bool("include-tests", false);
+    let paths: Vec<String> = flags.texts("path").iter().map(|path| clean_path(path)).collect();
+    let serial = flags.bool("serial", false);
+    let line_map = flags.get("line-map").map(str::to_string);
+    if let Some(map) = &line_map {
+        if !Path::new(map).is_file() {
+            return Envelope::new(false, COMMAND, format!("--line-map {map} is not a file"), "Pass the path of a line map file, or leave it out: a unittest or pytest baseline writes one.");
+        }
+    }
+    // No maxMutants: with a line map one call scores them all. maxMutants given: that many per call.
+    let explicit_max = flags.get("max-mutants").is_some();
 
     let base = match resolve_since(&package, &since) {
         Ok(base) => base,
@@ -150,6 +163,9 @@ pub fn diff(flags: &Flags) -> Envelope {
         .filter(|(file, _)| operators::kind_of(file) && !file.ends_with(".d.ts"))
         .filter(|(file, _)| src.as_deref().is_none_or(|dir| dir.is_empty() || file.starts_with(&format!("{dir}/"))))
         .collect();
+    // `--path`: only the changed files the caller names (a prefix or a glob, from the package).
+    let (changed, left_out): (Vec<_>, Vec<_>) = changed.into_iter().partition(|(file, _)| paths.is_empty() || paths.iter().any(|path| path_matches(path, file)));
+    let path_lines_skipped: usize = left_out.iter().map(|(_, lines)| lines.len()).sum();
     let mut test_lines_skipped = 0usize;
     let mut kept: Vec<(String, Vec<u32>, String)> = Vec::new();
     for (file, lines) in changed {
@@ -176,11 +192,14 @@ pub fn diff(flags: &Flags) -> Envelope {
         }
     }
     let points = spread(points);
-    let skipped_note = if test_lines_skipped > 0 {
-        format!(" ({} skipped)", count(test_lines_skipped, "test line"))
-    } else {
-        String::new()
-    };
+    let mut skipped = Vec::new();
+    if test_lines_skipped > 0 {
+        skipped.push(format!("{} skipped", count(test_lines_skipped, "test line")));
+    }
+    if path_lines_skipped > 0 {
+        skipped.push(format!("{} outside path", count(path_lines_skipped, "changed line")));
+    }
+    let skipped_note = if skipped.is_empty() { String::new() } else { format!(" ({})", skipped.join("; ")) };
     let scope = format!("{} in {} since {since}{skipped_note}", count(line_count, "changed line"), count(kept.len(), "file"));
     if points.is_empty() {
         let summary = if line_count == 0 && test_lines_skipped > 0 {
@@ -190,7 +209,14 @@ pub fn diff(flags: &Flags) -> Envelope {
         } else {
             format!("{scope}, and none has a condition, comparison, or boolean to mutate.")
         };
-        let next = if line_count == 0 && test_lines_skipped > 0 {
+        let summary = if line_count == 0 && path_lines_skipped > 0 {
+            format!("No changed source line since {since} under {}: {} changed outside it. Nothing was mutated.", paths.join(", "), count(path_lines_skipped, "line"))
+        } else {
+            summary
+        };
+        let next = if line_count == 0 && path_lines_skipped > 0 && test_lines_skipped == 0 {
+            "Nothing to score. Check paths (--path): each is a prefix or a glob from the package, such as src/storage or src/**/*.py."
+        } else if line_count == 0 && test_lines_skipped > 0 {
             "Nothing to score. Test code is skipped by default; pass includeTests (--include-tests) to mutate it."
         } else {
             "Nothing to score. Edit code, or pass --since with an older ref."
@@ -198,6 +224,7 @@ pub fn diff(flags: &Flags) -> Envelope {
         return Envelope::new(true, COMMAND, summary, next)
             .with_extra("changedLines", Value::Int(line_count as i64))
             .with_extra("testLinesSkipped", Value::Int(test_lines_skipped as i64))
+            .with_extra("pathLinesSkipped", Value::Int(path_lines_skipped as i64))
             .with_extra("mutantCount", Value::Int(0));
     }
 
@@ -217,10 +244,16 @@ pub fn diff(flags: &Flags) -> Envelope {
     };
     let done = |mutant: &Mutant| done_ids.contains(&mutant.id);
     let pending = points.iter().filter(|(mutant, _)| !done(mutant)).count();
-    let this_call = pending.min(max);
+    // Without maxMutants every waiting mutant goes to the run, which scores them all when it has
+    // a line map (passed, or written by the baseline), or when serial; else the first `max`.
+    let uncapped = !explicit_max;
+    let this_call = if uncapped { pending } else { pending.min(max) };
 
     if flags.bool("estimate", false) {
-        return estimate(flags, &package, &out, &points, &scope, EstimateScope { max, pending, this_call, continuing, run_out: &run_out });
+        let suite = crate::runner::suite_command(flags, &package).unwrap_or_default();
+        let mapped = serial || line_map.is_some() || crate::runner::is_unittest_suite(&suite);
+        let per_call = if uncapped && mapped { pending.max(1) } else { max };
+        return estimate(flags, &package, &out, &points, &scope, EstimateScope { max: per_call, pending, this_call: pending.min(per_call), continuing, run_out: &run_out, lifted: uncapped && mapped });
     }
 
     // A fresh directory unless continuing: the tests may have changed since the last call, so
@@ -263,7 +296,7 @@ pub fn diff(flags: &Flags) -> Envelope {
         "--out".into(),
         run_out.display().to_string(),
     ];
-    for key in ["suite-command", "timeout-ms", "workers", "budget-ms", "max-minutes"] {
+    for key in ["suite-command", "timeout-ms", "workers", "budget-ms", "max-minutes", "line-map"] {
         if let Some(value) = flags.get(key) {
             argv.push(format!("--{key}"));
             argv.push(value.to_string());
@@ -274,6 +307,19 @@ pub fn diff(flags: &Flags) -> Envelope {
     }
     if !flags.bool("confirm", true) {
         argv.push("--no-confirm".into());
+    }
+    if serial {
+        argv.push("--serial".into());
+    }
+    if uncapped {
+        if !serial {
+            argv.push("--unmapped-max".into());
+            argv.push(max.to_string());
+        }
+        if flags.get("budget-ms").is_none() && flags.get("max-minutes").is_none() {
+            argv.push("--mapped-budget-ms".into());
+            argv.push(MAPPED_BUDGET_MS.to_string());
+        }
     }
     let mut envelope = crate::runner::run(&Flags::parse(&argv));
     envelope.command = COMMAND.into();
@@ -298,6 +344,7 @@ pub fn diff(flags: &Flags) -> Envelope {
         return envelope
             .with_extra("changedLines", Value::Int(line_count as i64))
             .with_extra("testLinesSkipped", Value::Int(test_lines_skipped as i64))
+            .with_extra("pathLinesSkipped", Value::Int(path_lines_skipped as i64))
             .with_extra("mutantsTotal", Value::Int(points.len() as i64))
             .with_extra("continued", Value::Bool(continuing));
     }
@@ -355,21 +402,28 @@ pub fn diff(flags: &Flags) -> Envelope {
     }
     let budget_hit = envelope.extra.iter().any(|(key, value)| key == "budgetHit" && value.as_bool() == Some(true));
     envelope.next_call = None;
+    let mapped = envelope.extra.iter().any(|(key, value)| key == "lineMapUsed" && value.as_bool() == Some(true));
     if not_run > 0 {
-        let share = not_run.min(max);
         let have = if not_run == 1 { "has" } else { "have" };
         if budget_hit {
             next.push_str(&format!(" The time budget ended this call; {} on these lines {have} no result yet.", count(not_run, "mutant")));
+        } else if uncapped && !mapped {
+            next.push_str(&format!(
+                " {} on these lines {have} no result yet: with no line map one call scores {max}, spread across the changed files. serial: true (--serial) scores them all in one call, each with the whole suite.",
+                count(not_run, "more mutant")
+            ));
         } else {
             next.push_str(&format!(" {} on these lines {have} no result yet (each call spreads maxMutants across the changed files).", count(not_run, "more mutant")));
         }
-        next.push_str(&format!(" To score the next {share} without rerunning these, make the same call with continue: true (nextCall)."));
+        let what = if uncapped && (mapped || serial) { "the rest".to_string() } else { format!("the next {}", not_run.min(max)) };
+        next.push_str(&format!(" To score {what} without rerunning these, make the same call with continue: true (nextCall)."));
         envelope.next_call = Some(continue_argv(flags, &package, &out));
     }
     envelope.next = format!("{started_over}{next}");
     envelope
         .with_extra("changedLines", Value::Int(line_count as i64))
         .with_extra("testLinesSkipped", Value::Int(test_lines_skipped as i64))
+        .with_extra("pathLinesSkipped", Value::Int(path_lines_skipped as i64))
         .with_extra("mutantCount", Value::Int(batch.len() as i64))
         .with_extra("mutantsTotal", Value::Int(points.len() as i64))
         .with_extra("scoredThisCall", Value::Int(scored_now as i64))
@@ -382,6 +436,59 @@ pub fn diff(flags: &Flags) -> Envelope {
         .with_extra("unbuildableLeftOut", Value::Int(unbuildable_left as i64))
         .with_extra("fullList", if survivors_left > 0 || unbuildable_left > 0 { Value::String(full_list.display().to_string()) } else { Value::Null })
         .with_extra("results", Value::String(run_out.join("results").display().to_string()))
+}
+
+/// A `--path` value as written: forward slashes, no leading `./`, no trailing `/`.
+fn clean_path(path: &str) -> String {
+    let path = path.trim().replace('\\', "/");
+    let path = path.strip_prefix("./").unwrap_or(&path);
+    path.trim_end_matches('/').to_string()
+}
+
+/// A changed file (from the package) is in `path` when `path` names it or a folder above it, or
+/// when `path` is a glob (`*`, `?`, `**`) that matches it or a folder above it. `*` and `?` stop
+/// at `/`; `**` does not.
+fn path_matches(path: &str, file: &str) -> bool {
+    if path.is_empty() || path == "." {
+        return true;
+    }
+    if !path.contains(['*', '?']) {
+        return file == path || file.starts_with(&format!("{path}/"));
+    }
+    let pattern = path.as_bytes();
+    if glob(pattern, file.as_bytes()) {
+        return true;
+    }
+    file.match_indices('/').any(|(at, _)| glob(pattern, &file.as_bytes()[..at]))
+}
+
+fn glob(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern.first() {
+        None => text.is_empty(),
+        Some(b'*') if pattern.get(1) == Some(&b'*') => {
+            // `**/` also matches no folder at all.
+            let rest = &pattern[2..];
+            if rest.first() == Some(&b'/') && glob(&rest[1..], text) {
+                return true;
+            }
+            (0..=text.len()).any(|at| glob(rest, &text[at..]))
+        }
+        Some(b'*') => {
+            let rest = &pattern[1..];
+            let mut at = 0;
+            loop {
+                if glob(rest, &text[at..]) {
+                    return true;
+                }
+                if at == text.len() || text[at] == b'/' {
+                    return false;
+                }
+                at += 1;
+            }
+        }
+        Some(b'?') => text.first().is_some_and(|byte| *byte != b'/') && glob(&pattern[1..], &text[1..]),
+        Some(byte) => text.first() == Some(byte) && glob(&pattern[1..], &text[1..]),
+    }
 }
 
 /// Survivors and did-not-build rows listed in a reply; the rest go to `<out>/survivors.json`.
@@ -463,13 +570,17 @@ fn write_plan(out: &Path, key: &str) -> Result<(), String> {
 /// The same call, continued: every flag as given, plus `--continue`.
 fn continue_argv(flags: &Flags, package: &Path, out: &Path) -> Vec<String> {
     let mut argv: Vec<String> = vec!["mutate".into(), "diff".into(), "--package".into(), package.display().to_string(), "--out".into(), out.display().to_string()];
-    for key in ["since", "src", "suite-command", "timeout-ms", "workers", "max-mutants", "budget-ms", "max-minutes", "operators"] {
+    for key in ["since", "src", "suite-command", "timeout-ms", "workers", "max-mutants", "budget-ms", "max-minutes", "operators", "line-map"] {
         if let Some(value) = flags.get(key) {
             argv.push(format!("--{key}"));
             argv.push(value.to_string());
         }
     }
-    for key in ["include-tests", "low-priority"] {
+    for path in flags.texts("path") {
+        argv.push("--path".into());
+        argv.push(path);
+    }
+    for key in ["include-tests", "low-priority", "serial"] {
         if flags.bool(key, false) {
             argv.push(format!("--{key}"));
         }
@@ -520,6 +631,8 @@ struct EstimateScope<'a> {
     this_call: usize,
     continuing: bool,
     run_out: &'a Path,
+    /// No maxMutants, and a line map (or serial) lets one call score every mutant.
+    lifted: bool,
 }
 
 /// `--estimate`: the mutant count and what a call would cost, without scoring anything. The
@@ -551,12 +664,12 @@ fn estimate(flags: &Flags, package: &Path, out: &Path, points: &[(Mutant, String
     let this_call_ms = baseline + check + rounds(at.this_call) * per;
     let calls = at.pending.div_ceil(at.max).max(1) as u64;
     let all_ms = baseline + calls * check + rounds(at.pending) * per;
+    let limit = if at.lifted { "a line map or serial lifts maxMutants".to_string() } else { format!("maxMutants {}", at.max) };
     let mut summary = format!(
-        "{scope}: {}, {} still to score. One call scores {} (maxMutants {}): about {}. All of them: about {} in {}. One mutant costs about {} ({basis}).",
+        "{scope}: {}, {} still to score. One call scores {} ({limit}): about {}. All of them: about {} in {}. One mutant costs about {} ({basis}).",
         count(points.len(), "mutant"),
         at.pending,
         at.this_call,
-        at.max,
         minutes(this_call_ms),
         minutes(all_ms),
         count(calls as usize, "call"),
@@ -1029,6 +1142,117 @@ mod tests {
         assert!(changed.summary.contains(": 2 of 6 mutants scored, 2 this call."), "{}", changed.summary);
         let fresh = diff(&flags_of(&dir, &["--max-mutants", "2"]));
         assert!(fresh.summary.contains(": 2 of 6 mutants scored"), "a call without continue starts over: {}", fresh.summary);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_is_a_prefix_or_a_glob() {
+        assert!(path_matches("minisql/storage", "minisql/storage/btree.py"));
+        assert!(path_matches("minisql/storage", "minisql/storage"));
+        assert!(!path_matches("minisql/storage", "minisql/storage_old/a.py"));
+        assert!(!path_matches("minisql/storage", "minisql/sql/parser.py"));
+        assert!(path_matches("", "a.py") && path_matches(".", "a.py"));
+        assert!(path_matches("src/*.py", "src/a.py"));
+        assert!(!path_matches("src/*.py", "src/sub/a.py"));
+        assert!(path_matches("src/**/*.py", "src/sub/deep/a.py"));
+        assert!(path_matches("src/**/*.py", "src/a.py"));
+        assert!(path_matches("**/engine.py", "minisql/storage/engine.py"));
+        assert!(path_matches("min*/stor?ge", "minisql/storage/pager.py"), "a glob that names a folder keeps what is under it");
+        assert!(!path_matches("src/?.py", "src/ab.py"));
+        assert_eq!(clean_path("./src/storage/"), "src/storage");
+        assert_eq!(clean_path("src\\storage"), "src/storage");
+    }
+
+    /// An A/B run: a diff since the seed commit held other agents' files, and the mutant budget
+    /// went to them. `--path` keeps only the caller's files and counts the lines it left out.
+    #[test]
+    fn a_path_filter_scores_only_those_files_and_counts_the_rest() {
+        let dir = edited("diff-path", &[("src/A.java", java("A", 2)), ("src/B.java", java("B", 3))]);
+        let envelope = diff(&flags_of(&dir, &["--path", "src/B.java"]));
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        assert!(envelope.summary.starts_with("5 changed lines in 1 file since HEAD (4 changed lines outside path): 3 mutants."), "{}", envelope.summary);
+        let value = envelope.to_value("");
+        assert_eq!(value.get("pathLinesSkipped").and_then(Value::as_int), Some(4));
+        assert_eq!(files_of(&value, "survivors"), ["src/B.java", "src/B.java", "src/B.java"]);
+        let both = diff(&flags_of(&dir, &["--path", "src/*.java"]));
+        assert_eq!(both.to_value("").get("mutantsTotal").and_then(Value::as_int), Some(5), "{}", both.summary);
+        let none = diff(&flags_of(&dir, &["--path", "lib"]));
+        assert!(none.ok);
+        assert!(none.summary.contains("under lib: 9 lines changed outside it"), "{}", none.summary);
+        assert!(none.next.contains("Check paths"), "{}", none.next);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// With no line map and no maxMutants a call scores 30 and says serial scores them all;
+    /// serial: true scores every mutant in one call. A continued call keeps --path and --serial.
+    #[test]
+    fn serial_scores_every_mutant_in_one_call() {
+        let dir = edited("diff-serial", &[("src/A.java", java("A", 33))]);
+        let capped = diff(&flags_of(&dir, &[]));
+        assert!(capped.ok, "{} {}", capped.summary, capped.next);
+        let value = capped.to_value("");
+        assert_eq!(value.get("scoredThisCall").and_then(Value::as_int), Some(30), "{}", capped.summary);
+        assert_eq!(value.get("notRun").and_then(Value::as_int), Some(3));
+        assert!(capped.next.contains("serial: true"), "{}", capped.next);
+        let serial = diff(&flags_of(&dir, &["--serial", "--path", "src"]));
+        assert!(serial.ok, "{} {}", serial.summary, serial.next);
+        let value = serial.to_value("");
+        assert_eq!(value.get("scoredThisCall").and_then(Value::as_int), Some(33), "{}", serial.summary);
+        assert_eq!(value.get("notRun").and_then(Value::as_int), Some(0));
+        assert!(serial.next_call.is_none(), "{:?}", serial.next_call);
+        let mut argv: Vec<String> = Vec::new();
+        for (key, value) in [("max-mutants", "2"), ("path", "src")] {
+            argv.push(format!("--{key}"));
+            argv.push(value.to_string());
+        }
+        argv.push("--serial".into());
+        let more = diff(&flags_of(&dir, &argv.iter().map(String::as_str).collect::<Vec<_>>()));
+        let call = more.next_call.clone().expect("a capped call continues");
+        assert!(call.windows(2).any(|pair| pair == ["--path", "src"]) && call.contains(&"--serial".to_string()), "{call:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An A/B run on a stdlib-unittest project: no coverage.py, so no line map, and every diff
+    /// over 30 mutants needed several calls. The unittest baseline now writes its own map, and
+    /// one call scores every mutant, each with the tests that ran its line.
+    #[test]
+    fn a_unittest_diff_scores_every_mutant_in_one_call() {
+        let dir = repo("diff-unittest");
+        fs::write(dir.join("README.md"), "base\n").unwrap();
+        git_ok(&dir, &["add", "."]);
+        git_ok(&dir, &["commit", "-q", "-m", "base"]);
+        let mut expr = String::new();
+        for index in 0..20 {
+            if index > 0 {
+                expr.push_str(" and ");
+            }
+            expr.push_str(&format!("n > {index}"));
+        }
+        fs::create_dir_all(dir.join("pkg")).unwrap();
+        fs::write(dir.join("pkg/__init__.py"), "").unwrap();
+        fs::write(dir.join("pkg/gate.py"), format!("def gate(n):\n    return {expr}\n\ndef dark(n):\n    return n < 0\n")).unwrap();
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(
+            dir.join("tests/test_gate.py"),
+            "import unittest\nfrom pkg import gate\n\nclass GateTests(unittest.TestCase):\n    def test_high(self):\n        self.assertTrue(gate.gate(100))\n    def test_low(self):\n        self.assertFalse(gate.gate(-1))\n",
+        )
+        .unwrap();
+        let out = dir.join("out").display().to_string();
+        let argv: Vec<String> = ["--package", &dir.display().to_string(), "--out", &out, "--suite-command", "python3 -m unittest discover -s tests", "--no-confirm", "--path", "pkg"]
+            .iter()
+            .map(|item| item.to_string())
+            .collect();
+        let envelope = diff(&Flags::parse(&argv));
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        let value = envelope.to_value("");
+        let total = value.get("mutantsTotal").and_then(Value::as_int).unwrap();
+        assert!(total > 30, "{total}");
+        assert_eq!(value.get("scoredThisCall").and_then(Value::as_int), Some(total), "{}", envelope.summary);
+        assert_eq!(value.get("lineMapUsed").and_then(Value::as_bool), Some(true));
+        assert!(envelope.next_call.is_none(), "{:?}", envelope.next_call);
+        assert!(dir.join("out/run/lines.json").is_file());
+        let counts = value.get("counts").unwrap();
+        assert!(counts.get("noCoverage").and_then(Value::as_int).unwrap_or(0) >= 1, "the dark line is no coverage: {}", envelope.summary);
         let _ = fs::remove_dir_all(&dir);
     }
 

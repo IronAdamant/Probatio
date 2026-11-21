@@ -158,6 +158,12 @@ pub fn toplevel(path: &Path) -> Option<PathBuf> {
     if text.is_empty() { None } else { Some(PathBuf::from(text)) }
 }
 
+/// The package a call gets when it names none: the top of the git checkout that holds `cwd`.
+/// None when `cwd` is not inside a git checkout; the caller then asks for the package.
+pub fn default_package(cwd: &Path) -> Option<PathBuf> {
+    toplevel(cwd)
+}
+
 pub fn is_git_repo(path: &Path) -> bool {
     git(path, &["rev-parse", "--is-inside-work-tree"]).ok().as_deref() == Some("true\n")
         || git(path, &["rev-parse", "--is-inside-work-tree"]).ok().as_deref() == Some("true")
