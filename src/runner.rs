@@ -996,8 +996,11 @@ pub fn discover(package: &Path) -> Result<String, String> {
         Ok("mvn -B test".into())
     } else if package.join("package.json").is_file() {
         node_suite(package)
-    } else if package.join("pytest.ini").is_file() || package.join("pyproject.toml").is_file() {
+    } else if package.join("pytest.ini").is_file() || uses_pytest(package) {
         Ok("python3 -m pytest".into())
+    } else if package.join("pyproject.toml").is_file() {
+        // A pyproject.toml alone does not name a runner: unittest-style tests run with unittest.
+        Ok(if has_unittest(package) { "python3 -m unittest discover" } else { "python3 -m pytest" }.into())
     } else if package.join("Package.swift").is_file() {
         Ok("swift test".into())
     } else if root_file_ends_with(package, &[".sln", ".csproj", ".fsproj"]) {
@@ -1042,6 +1045,17 @@ fn root_file_ends_with(package: &Path, suffixes: &[&str]) -> bool {
         let name = name.to_string_lossy();
         suffixes.iter().any(|suffix| name.ends_with(suffix))
     })
+}
+
+/// Pytest is configured: `[tool.pytest...]` or a pytest dependency in pyproject.toml, `[tool:pytest]` in
+/// setup.cfg, `[pytest]` in tox.ini, or a conftest.py in the root or `tests/`.
+fn uses_pytest(package: &Path) -> bool {
+    let has = |file: &str, needle: &str| fs::read_to_string(package.join(file)).is_ok_and(|text| text.contains(needle));
+    has("pyproject.toml", "pytest")
+        || has("setup.cfg", "[tool:pytest]")
+        || has("tox.ini", "[pytest]")
+        || package.join("conftest.py").is_file()
+        || package.join("tests").join("conftest.py").is_file()
 }
 
 /// `test_*.py` in the package root, or in a direct child directory named `tests`.
@@ -3011,6 +3025,31 @@ mod tests {
         fs::write(package.join("go.mod"), "module example\n").unwrap();
         assert_eq!(discover(&package).unwrap(), "go test ./...");
         let _ = fs::remove_dir_all(&package);
+    }
+
+    /// Brownfield A/B run, 2026-11-22: sqlglot has a pyproject.toml (no pytest config) and unittest
+    /// tests, and every mutant failed on `python3 -m pytest` with pytest not installed.
+    #[test]
+    fn a_pyproject_alone_does_not_mean_pytest() {
+        let root = temp("discover-pyproject");
+        let cases: [(&[(&str, &str)], &str); 6] = [
+            (&[("pyproject.toml", "[project]\nname = \"ex\"\n"), ("tests/test_widget.py", "")], "python3 -m unittest discover"),
+            (&[("pyproject.toml", "[project]\nname = \"ex\"\n"), ("test_widget.py", "")], "python3 -m unittest discover"),
+            (&[("pyproject.toml", "[tool.pytest.ini_options]\n"), ("tests/test_widget.py", "")], "python3 -m pytest"),
+            (&[("pyproject.toml", "[project.optional-dependencies]\ndev = [\"pytest\"]\n"), ("tests/test_widget.py", "")], "python3 -m pytest"),
+            (&[("pyproject.toml", "[project]\n"), ("setup.cfg", "[tool:pytest]\n"), ("tests/test_widget.py", "")], "python3 -m pytest"),
+            (&[("pyproject.toml", "[project]\n"), ("tests/conftest.py", ""), ("tests/test_widget.py", "")], "python3 -m pytest"),
+        ];
+        for (index, (files, command)) in cases.iter().enumerate() {
+            let package = root.join(index.to_string());
+            for (name, body) in files.iter() {
+                let path = package.join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, body).unwrap();
+            }
+            assert_eq!(discover(&package).unwrap(), *command, "case {index}: {files:?}");
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
