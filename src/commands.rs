@@ -134,7 +134,7 @@ fn mutate(args: &[String]) -> Envelope {
     let cwd = std::env::current_dir().unwrap_or_default();
     let flags = match with_default_package(command, &args[1..], flags, &cwd) {
         Ok(flags) => flags,
-        Err(envelope) => return envelope,
+        Err(envelope) => return *envelope,
     };
     match action {
         "generate" => generate::generate(&flags),
@@ -149,12 +149,12 @@ fn mutate(args: &[String]) -> Envelope {
 
 /// `mutate diff`, `patch`, `generate`, and `run` with no `--package` take the git root of the
 /// working directory. The flag is added to the argv, so a `nextCall` names it.
-fn with_default_package(command: &str, args: &[String], flags: Flags, cwd: &std::path::Path) -> Result<Flags, Envelope> {
+fn with_default_package(command: &str, args: &[String], flags: Flags, cwd: &std::path::Path) -> Result<Flags, Box<Envelope>> {
     if !matches!(command, "mutate.diff" | "mutate.patch" | "mutate.generate" | "mutate.run") || flags.get("package").is_some() {
         return Ok(flags);
     }
     let Some(root) = crate::worktree::default_package(cwd) else {
-        return Err(missing_package(command, cwd));
+        return Err(Box::new(missing_package(command, cwd)));
     };
     let mut args = args.to_vec();
     args.push(format!("--package={}", root.display()));
