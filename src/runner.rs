@@ -2692,24 +2692,34 @@ fn unittest_files(package: &Path, start: Option<&str>) -> Vec<String> {
     };
     let mut files = Vec::new();
     for dir in dirs {
-        let Ok(read) = fs::read_dir(&dir) else { continue };
-        for entry in read.flatten() {
-            if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !(name.starts_with("test_") && name.ends_with(".py")) {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(relative) = path.strip_prefix(package) else { continue };
-            files.push(relative.to_string_lossy().replace('\\', "/"));
-        }
+        collect_unittest_files(package, &dir, &mut files, 0);
     }
     files.sort();
     files.dedup();
     files
+}
+
+/// Test files in `dir`, and in every package folder below it (one with `__init__.py`), the way
+/// `unittest discover` recurses. sqlglot keeps most of its suite in `tests/dialects/`.
+fn collect_unittest_files(package: &Path, dir: &Path, files: &mut Vec<String>, depth: usize) {
+    let Ok(read) = fs::read_dir(dir) else { return };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            if depth < 16 && !name.starts_with('.') && path.join("__init__.py").is_file() {
+                collect_unittest_files(package, &path, files, depth + 1);
+            }
+            continue;
+        }
+        if !kind.is_file() || !(name.starts_with("test_") && name.ends_with(".py")) {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(package) else { continue };
+        files.push(relative.to_string_lossy().replace('\\', "/"));
+    }
 }
 
 fn interpreter_for(program: &str, package: &Path) -> String {
@@ -3029,6 +3039,28 @@ mod tests {
 
     /// Brownfield A/B run, 2026-11-22: sqlglot has a pyproject.toml (no pytest config) and unittest
     /// tests, and every mutant failed on `python3 -m pytest` with pytest not installed.
+    #[test]
+    fn unittest_files_recurse_into_test_packages_like_discover() {
+        let package = temp("unittest-subpackages");
+        for (rel, body) in [
+            ("tests/__init__.py", ""),
+            ("tests/test_top.py", "import unittest\n"),
+            ("tests/dialects/__init__.py", ""),
+            ("tests/dialects/test_duckdb.py", "import unittest\n"),
+            ("tests/fixtures/test_data.py", "x = 1\n"),
+            ("tests/.hidden/__init__.py", ""),
+            ("tests/.hidden/test_skip.py", "import unittest\n"),
+        ] {
+            let path = package.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        // fixtures/ has no __init__.py, so discover does not enter it; neither does a hidden folder.
+        assert_eq!(unittest_files(&package, None), vec!["tests/dialects/test_duckdb.py".to_string(), "tests/test_top.py".to_string()]);
+        assert_eq!(unittest_files(&package, Some("tests")), vec!["tests/dialects/test_duckdb.py".to_string(), "tests/test_top.py".to_string()]);
+        let _ = fs::remove_dir_all(&package);
+    }
+
     #[test]
     fn a_pyproject_alone_does_not_mean_pytest() {
         let root = temp("discover-pyproject");

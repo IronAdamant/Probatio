@@ -33,6 +33,7 @@ Fixed:
 
 - A `pyproject.toml` alone no longer means pytest. Pytest is the suite when pytest.ini, a pytest mention in pyproject.toml (`[tool.pytest...]` or a dependency), `[tool:pytest]` in setup.cfg, `[pytest]` in tox.ini, or a conftest.py in the root or `tests/` says so. Otherwise a project with `test_*.py` files runs `python3 -m unittest discover`. Before, every mutant failed on `python3 -m pytest` with pytest not installed.
 - The unittest reporter loads a test file inside a package under its real dotted name (`tests.test_optimizer`), through `sys.path`, so it comes from the tree under test. It was loaded as `probatio_<stem>`, and a test that runs work in a spawn-based process pool failed in every child, which re-imports the module by name, so the baseline was red. Files outside a package keep the old name.
+- The unittest file walk recurses into package folders (those with `__init__.py`), as `unittest discover` does. It read only the root, `tests/` and `test/`, so sqlglot's `tests/dialects/` (most of its suite) never ran: the line map named 633 of about 1,700 tests, mutants that only dialect tests reach scored as no coverage, and others ran with too few tests. On one sqlglot diff, 16 of 16 mutants were no coverage before and 0 after (13 killed, 3 survived).
 
 ## 0.9.0 - 2026-11-15
 
