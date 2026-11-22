@@ -1256,6 +1256,53 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Brownfield A/B run, 2026-11-22: sqlglot's tests are a package, and test_optimizer runs work in a
+    /// spawn-based process pool. Loading test files as `probatio_<stem>` made every child fail to
+    /// import the test module, so the baseline was red and nothing was scored.
+    #[test]
+    fn a_package_test_with_a_spawn_pool_and_package_imports_is_scored() {
+        let dir = repo("diff-unittest-package");
+        fs::write(dir.join("README.md"), "base\n").unwrap();
+        git_ok(&dir, &["add", "."]);
+        git_ok(&dir, &["commit", "-q", "-m", "base"]);
+        fs::create_dir_all(dir.join("pkg")).unwrap();
+        fs::write(dir.join("pkg/__init__.py"), "").unwrap();
+        fs::write(dir.join("pkg/calc.py"), "def big(n):\n    return n > 10\n").unwrap();
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/__init__.py"), "").unwrap();
+        fs::write(dir.join("tests/helpers.py"), "from pkg.calc import big\n\ndef check(n):\n    return big(n)\n").unwrap();
+        let test = r#"import unittest
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+from tests.helpers import check
+
+
+def work(n):
+    return check(n)
+
+
+class PoolTests(unittest.TestCase):
+    def test_in_process(self):
+        self.assertTrue(check(11))
+        self.assertFalse(check(10))
+
+    def test_in_a_spawned_child(self):
+        with ProcessPoolExecutor(1, mp_context=get_context("spawn")) as pool:
+            self.assertEqual(list(pool.map(work, [11, 10])), [True, False])
+"#;
+        fs::write(dir.join("tests/test_pool.py"), test).unwrap();
+        let out = dir.join("out").display().to_string();
+        let argv: Vec<String> = ["--package", &dir.display().to_string(), "--out", &out, "--suite-command", "python3 -m unittest discover", "--no-confirm", "--path", "pkg"]
+            .iter()
+            .map(|item| item.to_string())
+            .collect();
+        let envelope = diff(&Flags::parse(&argv));
+        assert!(envelope.ok, "{} {}", envelope.summary, envelope.next);
+        let counts = envelope.to_value("").get("counts").cloned().unwrap();
+        assert!(counts.get("killed").and_then(Value::as_int).unwrap_or(0) >= 1, "{}", envelope.summary);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A large Rust workspace: survivors and unbuildable rows were cut to 10 with no sign (one lane had 11).
     #[test]
     fn survivors_past_ten_are_counted_and_written_whole() {

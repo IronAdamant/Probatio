@@ -24,7 +24,30 @@ from pathlib import Path
 LOAD_ERRORS = ("SyntaxError", "IndentationError", "ImportError", "ModuleNotFoundError")
 
 
+def package_name(path: Path):
+    """The dotted name of a test file inside a package (every folder up to the top package has
+    __init__.py), e.g. tests/test_x.py -> tests.test_x. None for a file outside a package."""
+    parts = [path.stem]
+    folder = path.resolve().parent
+    while (folder / "__init__.py").is_file():
+        parts.insert(0, folder.name)
+        folder = folder.parent
+    return ".".join(parts) if len(parts) > 1 else None
+
+
 def load(path: Path):
+    # A test file inside a package loads under its real name, so code that imports it again by name
+    # (a spawn-based process pool, pickle, `from tests.helpers import ...`) finds the same module.
+    # The import goes through sys.path, whose first entry is the working directory (the mutant's
+    # tree), so the module comes from the tree under test.
+    real = package_name(path)
+    if real:
+        try:
+            module = importlib.import_module(real)
+        except ModuleNotFoundError:
+            module = None
+        if module is not None and Path(getattr(module, "__file__", "") or "").name == path.name:
+            return module
     name = f"probatio_{path.stem}"
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:

@@ -26,6 +26,14 @@ Changed:
 - An MCP array argument sent as the JSON text of an array (`"[\"a\",\"b\"]"`) is read as that array. An integer sent as text (`"590"`) was already read. Any other wrong type is still refused in one line, which now ends with the fix, such as `send a number such as 590`.
 - A `coverage-raw.json` line with an empty test list counts as a line that ran and named no test (the whole suite runs for it). It was dropped, which made the line no coverage.
 
+
+From a brownfield A/B run on sqlglot (88k lines, unittest tests in a `tests` package, a `pyproject.toml` with no pytest config). Probatio scored nothing there.
+
+Fixed:
+
+- A `pyproject.toml` alone no longer means pytest. Pytest is the suite when pytest.ini, a pytest mention in pyproject.toml (`[tool.pytest...]` or a dependency), `[tool:pytest]` in setup.cfg, `[pytest]` in tox.ini, or a conftest.py in the root or `tests/` says so. Otherwise a project with `test_*.py` files runs `python3 -m unittest discover`. Before, every mutant failed on `python3 -m pytest` with pytest not installed.
+- The unittest reporter loads a test file inside a package under its real dotted name (`tests.test_optimizer`), through `sys.path`, so it comes from the tree under test. It was loaded as `probatio_<stem>`, and a test that runs work in a spawn-based process pool failed in every child, which re-imports the module by name, so the baseline was red. Files outside a package keep the old name.
+
 ## 0.9.0 - 2026-11-15
 
 Fixes from a week of Probatio 0.8.1 on a large Rust workspace. Every run there found untested behaviour, but it was never run on the big crate: nothing said what a run would cost, it competed with the gate for one machine, a capped run could not be continued, and the agent made more than twenty "undo this fix, the named test must fail" checks by hand. `schemaVersion` stays 2: fields were added, none renamed or removed. MIGRATION.md has a row for each behaviour change.
